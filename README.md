@@ -124,6 +124,12 @@ Built with [GPUI](https://www.gpui.rs), [GPUI Kit](https://gpui-kit.com) and
 [Ely](https://elygpui.com). Condx is an independent project and isn't affiliated with or endorsed
 by Convex.
 
+## Support
+
+Condx is free and open source. If it helps you, you can support it:
+
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=000)](https://buymeacoffee.com/serlismaldonado)
+
 ## License
 
 [MIT](LICENSE)

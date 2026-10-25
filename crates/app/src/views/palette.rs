@@ -29,6 +29,7 @@ fn page_of(key: &str) -> Option<Page> {
         "repo" => Page::Repo,
         "frontend" => Page::Frontend,
         "incidents" => Page::Incidents,
+        "agents" => Page::Agents,
         "terminal" => Page::Terminal,
         "jobs" => Page::Jobs,
         "approvals" => Page::Approvals,

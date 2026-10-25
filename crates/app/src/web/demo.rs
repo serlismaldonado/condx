@@ -90,6 +90,12 @@ pub fn get(path: &str) -> Result<Value> {
             json!(s.incidents.iter().filter(|i| (i["status"] == "resolved") == resolved).cloned().collect::<Vec<_>>())
         }),
         ["agents"] => with(|s| s.agents.clone()),
+        ["agent-runs"] => json!({ "runs": [
+            { "id": "chat-demo-1", "kind": "chat", "title": "Which functions does the mobile app call?", "incident": null, "mode": "chat", "status": "done", "model": "claude-sonnet-5-5", "startedAt": now() - 20 * MIN, "usage": 9_310 },
+            { "id": "run-demo-1", "kind": "incident", "title": "Vercel deploy of fix/date-picker failed", "incident": "inc-1", "mode": "diagnose", "status": "done", "model": "claude-sonnet-5-5", "startedAt": now() - 45 * MIN, "usage": 18_420 },
+            { "id": "run-demo-2", "kind": "incident", "title": "Seed data failed on my-app-dev", "incident": "inc-2", "mode": "fix", "status": "done", "model": "claude-sonnet-5-5", "startedAt": now() - 2 * HOUR, "usage": 41_200 },
+        ] }),
+        ["agent-runs", "chat-demo-1"] => demo_chat(),
         ["agent-runs", _] => demo_run(),
         ["notify"] => json!({ "settings": { "enabled": true, "server": "https://ntfy.sh", "topic": "condx-8f2k1q9x7m3p0w4z5r6t", "incidents": true, "agents": true, "approvals": true }, "hasToken": false, "suggestedTopic": "condx-a1b2c3d4e5f6g7h8i9j0" }),
         ["deployments"] => deployments(&q("env").unwrap_or_default()),
@@ -151,6 +157,8 @@ pub fn post(path: &str, body: Value) -> Result<Value> {
             }
             json!({ "id": "run-demo-1", "status": "done" })
         }),
+        ["agent-chats"] => demo_chat(),
+        ["agent-runs", "chat-demo-1", _] => demo_chat(),
         ["agent-runs", _, _] => demo_run(),
         ["incidents", id, action] => with(|s| {
             let Some(i) = s.incidents.iter_mut().find(|i| i["id"] == *id) else { return json!({ "ok": false }) };
@@ -216,6 +224,22 @@ fn demo_run() -> Value {
             { "role": "assistant", "text": "→ git_show({\"commit\":\"51d0aa2\",\"stat_only\":true})" },
             { "role": "tool", "tool": "git_show", "text": "fix: date picker in Safari\n package.json | 2 +-" },
             { "role": "assistant", "text": demo_answer() },
+        ],
+    })
+}
+
+fn demo_chat() -> Value {
+    json!({
+        "id": "chat-demo-1", "kind": "chat", "title": "Which functions does the mobile app call?", "incident": null, "mode": "chat", "status": "done", "model": "claude-sonnet-5-5", "usage": { "total": 9_310 }, "error": null,
+        "transcript": [
+            { "role": "user", "text": "Which functions does the mobile app call?" },
+            { "role": "assistant", "text": "→ search_code({\"pattern\":\"api\\.\",\"under\":\"apps/mobile\"})" },
+            { "role": "tool", "tool": "search_code", "text": "apps/mobile/app/(tabs)/tasks.tsx:18: useQuery(api.tasks.list, { done: false })" },
+            { "role": "assistant", "text": "The mobile app calls four functions:\n\n- `tasks.list` and `tasks.toggle` in apps/mobile/app/(tabs)/tasks.tsx:18 and :42\n- `users.me` in apps/mobile/app/_layout.tsx:12\n- `files.uploadUrl` in apps/mobile/components/Avatar.tsx:30\n\nAll of them exist on my-app-dev and my-app-prod." },
+            { "role": "user", "text": "Is tasks.toggle safe to call twice?" },
+            { "role": "assistant", "text": "→ read_file({\"path\":\"convex/tasks.ts\"})" },
+            { "role": "tool", "tool": "read_file", "text": "41\texport const toggle = mutation({" },
+            { "role": "assistant", "text": "No: it flips `done` each time (convex/tasks.ts:44), so two calls cancel out. If the app can retry, pass the new value instead (`setDone({ id, done })`)." },
         ],
     })
 }

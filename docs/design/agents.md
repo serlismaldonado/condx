@@ -205,6 +205,19 @@ off or busy. Design only; nothing of it exists yet.
 - **Open questions:** where runners get Node and pi (container image?), whether a runner can run
   checks that need network, and how to rotate its deploy key.
 
+## 6.8 Chat with the agent (Agents page)
+
+- The Mac app's **Agents** page lists the conversations (free chats and the runs on incidents) and
+  shows one with a box to write. A new chat starts a run of kind `chat` with no incident
+  (`POST /api/agent-chats`, app only); writing to any run continues it, or steers it while it works.
+- A chat only reads: the project's files and Condx through the MCP with the agent token (no
+  approvals, no jobs). Default provider and model; today's budget and agents-at-once apply; no
+  per-run limit of its own.
+- Prompt: answer in the person's language, look before answering, don't investigate Condx itself,
+  don't invent Condx commands (approvals only happen in the app).
+- The open conversation refreshes every 2 s while the agent works, also when a message arrived from
+  elsewhere (the phone); the view follows the newest text.
+
 ## 7. Phases
 
 | Phase | What | Done when |

@@ -196,3 +196,28 @@ test("la plantilla limita las herramientas y suma sus instrucciones", async () =
     await new Promise((r) => child.once("exit", r));
   }
 });
+
+test("un chat: empieza con el mensaje de la persona, solo lee y sigue la conversación", async () => {
+  const dir = repo();
+  const storage = join(mkdtempSync(join(tmpdir(), "condx-agent-store-")), "agents.sqlite");
+  const faux = [
+    { tool: "read_file", args: { path: "convex/seed.ts" } },
+    { text: "`seed:demoData` only runs on an empty database (convex/seed.ts:2)." },
+  ];
+  const { child, url } = await start(storage, faux);
+  try {
+    assert.equal((await call(url, "POST", "/runs", { runId: "chat-1", mode: "chat", providerId: "anthropic", model: "x", cwd: dir, text: "  " })).status, 400);
+    const r = await call(url, "POST", "/runs", { runId: "chat-2", mode: "chat", providerId: "anthropic", model: "x", cwd: dir, text: "Why does the seed fail?" });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    await until(async () => (await call(url, "GET", "/runs/chat-2")).json.status === "done", "the first answer");
+    let got = (await call(url, "GET", "/runs/chat-2")).json;
+    assert.equal(got.transcript[0].text, "Why does the seed fail?");
+    assert.match(got.answer, /empty database/);
+    assert.equal((await call(url, "POST", "/runs/chat-2/message", { text: "And how do I run it?" })).status, 200);
+    // (El modelo guionado vuelve a empezar su guion con cada mensaje.)
+    await until(async () => (got = (await call(url, "GET", "/runs/chat-2")).json).status === "done" && got.transcript.some((t: any) => t.text === "And how do I run it?"), "the second answer");
+    assert.deepEqual(got.transcript.filter((t: any) => t.role === "user").map((t: any) => t.text), ["Why does the seed fail?", "And how do I run it?"]);
+  } finally {
+    child.kill();
+  }
+});

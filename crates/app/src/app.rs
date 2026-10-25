@@ -29,6 +29,8 @@ pub enum Page {
     Frontend,
     /// Lo que falló, de todos los proyectos (views::incidents).
     Incidents,
+    /// Conversar con el agente del proyecto (views::agents).
+    Agents,
     Jobs,
     Approvals,
     /// Flujos de despliegue del proyecto (views::workflows).
@@ -293,6 +295,19 @@ pub struct DevtoolApp {
     pub agent_run_open: Option<String>,
     pub agent_run: Option<Load>,
     pub agent_run_at: i64,
+    /// Página Agentes: la lista, la conversación abierta (None: un chat nuevo) y lo que se escribe.
+    pub chats: Vec<Value>,
+    pub chats_at: i64,
+    pub chat_open: Option<String>,
+    pub chat: Option<Load>,
+    pub chat_at: i64,
+    pub chat_sending: bool,
+    pub chat_error: Option<String>,
+    pub chat_input: Option<Entity<gpui_kit::component::input::TextareaState>>,
+    pub chat_clear: bool,
+    /// Para bajar a lo último cuando llegan mensajes nuevos.
+    pub chat_scroll: ScrollHandle,
+    pub chat_len: usize,
     known_incidents: std::collections::HashSet<String>,
     /// Configuración → Agentes (`/api/agents`) y el tipo de proveedor elegido para agregar.
     pub agents: Option<Value>,
@@ -465,6 +480,17 @@ impl DevtoolApp {
             agent_run_open: None,
             agent_run: None,
             agent_run_at: 0,
+            chats: vec![],
+            chats_at: 0,
+            chat_open: None,
+            chat: None,
+            chat_at: 0,
+            chat_sending: false,
+            chat_error: None,
+            chat_input: None,
+            chat_clear: false,
+            chat_scroll: ScrollHandle::new(),
+            chat_len: 0,
             known_incidents: Default::default(),
             agents: None,
             agents_error: None,
@@ -759,6 +785,11 @@ impl DevtoolApp {
             Page::Frontend => {
                 self.go(Page::Frontend, cx);
                 self.load_frontend(false, cx);
+            }
+            Page::Agents => {
+                self.go(Page::Agents, cx);
+                self.load_chats(cx);
+                self.load_agents(cx);
             }
             Page::Incidents => {
                 self.go(Page::Incidents, cx);
@@ -1324,6 +1355,7 @@ impl Render for DevtoolApp {
             Page::Repo => views::repo::render(self, window, cx).into_any_element(),
             Page::Frontend => views::frontend::render(self, window, cx).into_any_element(),
             Page::Incidents => views::incidents::render(self, window, cx).into_any_element(),
+            Page::Agents => views::agents::render(self, window, cx).into_any_element(),
             Page::Workflows => views::workflows::render(self, window, cx).into_any_element(),
             Page::Jobs => views::jobs::render(self, window, cx).into_any_element(),
             Page::Approvals => views::approvals::render(self, window, cx).into_any_element(),

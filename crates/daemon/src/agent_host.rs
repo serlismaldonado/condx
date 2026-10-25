@@ -385,6 +385,63 @@ pub async fn start(state: &Shared, incident_id: &str, by: &str, mode: &str) -> R
     Ok(run)
 }
 
+/// Una conversación libre con el agente (la página Agentes de la app): sin incidente, solo lee
+/// (el código del proyecto y Condx por el MCP). Proveedor y modelo, los de por defecto; el
+/// presupuesto del día y los agentes a la vez cuentan igual.
+pub async fn start_chat(state: &Shared, text: &str, project: Option<&str>, by: &str) -> Result<Value> {
+    let text = text.trim();
+    if text.is_empty() {
+        bail!("write a message");
+    }
+    let settings = crate::agents::settings(state);
+    let provider_id = settings.default_provider.clone().context("choose a default provider in Settings → Agents first")?;
+    let provider = state.store.agent_providers()?.into_iter().find(|p| p["id"] == provider_id.as_str()).with_context(|| format!("there's no provider “{provider_id}”"))?;
+    let model = settings.default_model.clone().filter(|m| !m.is_empty()).or_else(|| provider["model"].as_str().map(str::to_string)).filter(|m| !m.is_empty()).context("choose a model for the provider")?;
+    if settings.daily_token_budget == 0 || usage_today(state) >= settings.daily_token_budget {
+        bail!("today's token budget is used up ({} of {})", usage_today(state), settings.daily_token_budget);
+    }
+    let running = state.store.agent_runs(&["running"], None)?;
+    if running.len() as u32 >= settings.max_concurrent {
+        bail!("{} agent(s) already running (the limit is {})", running.len(), settings.max_concurrent);
+    }
+    let repo = crate::projects::get(state, project).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir());
+    let run_id = format!("chat-{:x}", now_ms());
+    let title: String = text.lines().next().unwrap_or(text).chars().take(80).collect();
+    let body = json!({ "runId": run_id, "mode": "chat", "providerId": provider_id, "model": model, "cwd": repo.display().to_string(), "text": text });
+    let st = state.clone();
+    let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/runs", Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
+    let run = json!({
+        "id": run_id, "kind": "chat", "title": title, "incident": null, "project": project, "mode": "chat", "provider": provider_id, "model": model, "by": by,
+        "status": "running", "startedAt": now_ms(), "endedAt": null, "answer": null, "error": null,
+        "usage": { "total": 0 }, "conversationId": res["conversationId"],
+        "limits": { "maxTokens": 0, "maxMinutes": 0 },
+    });
+    state.store.save_agent_run(&run)?;
+    tracing::info!("agent chat {run_id} started ({by})");
+    Ok(run)
+}
+
+/// Las conversaciones para la lista de la página Agentes: chats y corridas sobre incidentes, la
+/// más reciente primero, sin la transcripción.
+pub fn list(state: &Shared) -> Result<Value> {
+    let titles: std::collections::HashMap<String, String> = state.store.incidents(&[], 500).unwrap_or_default().into_iter().filter_map(|i| Some((i["id"].as_str()?.to_string(), i["title"].as_str()?.to_string()))).collect();
+    let runs: Vec<Value> = state
+        .store
+        .agent_runs(&[], None)?
+        .into_iter()
+        .take(100)
+        .map(|r| {
+            let incident = r["incident"].as_str().filter(|i| !i.is_empty());
+            let title = r["title"].as_str().map(str::to_string).or_else(|| incident.and_then(|i| titles.get(i).cloned())).unwrap_or_else(|| r["id"].as_str().unwrap_or("?").to_string());
+            json!({
+                "id": r["id"], "kind": if incident.is_some() { "incident" } else { "chat" }, "title": title, "incident": incident, "mode": r["mode"],
+                "status": r["status"], "model": r["model"], "startedAt": r["startedAt"], "endedAt": r["endedAt"], "usage": r["usage"]["total"], "error": r["error"],
+            })
+        })
+        .collect();
+    Ok(json!({ "runs": runs }))
+}
+
 fn set_incident_agent(state: &Shared, incident_id: &str, run: &Value) {
     if let Ok(Some(mut inc)) = state.store.incident(incident_id) {
         let answer = run["answer"].as_str().map(|a| a.chars().take(4_000).collect::<String>());
@@ -598,3 +655,26 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod chat_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn un_chat_pide_mensaje_y_proveedor_y_la_lista_junta_chats_e_incidentes() {
+        let st = crate::state::test_state();
+        assert!(start_chat(&st, "   ", None, "app").await.unwrap_err().to_string().contains("write a message"));
+        assert!(start_chat(&st, "hola", None, "app").await.unwrap_err().to_string().contains("default provider"));
+        // Una corrida de incidente y un chat ya guardados: la lista los junta, con su título.
+        let mut inc = json!({ "id": "inc-1", "title": "Seed failed on dev", "status": "open", "source": "job", "fingerprint": "job:x", "firstSeen": 1, "lastSeen": 1, "count": 1 });
+        inc["evidence"] = json!({});
+        st.store.save_incident(&inc).unwrap();
+        st.store.save_agent_run(&json!({ "id": "run-inc-1-1", "incident": "inc-1", "mode": "diagnose", "status": "done", "startedAt": 10, "usage": { "total": 5 } })).unwrap();
+        st.store.save_agent_run(&json!({ "id": "chat-1", "kind": "chat", "title": "¿Qué hace el seed?", "incident": null, "mode": "chat", "status": "running", "startedAt": 20, "usage": { "total": 7 } })).unwrap();
+        let runs = list(&st).unwrap()["runs"].as_array().cloned().unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!((runs[0]["id"].as_str(), runs[0]["kind"].as_str(), runs[0]["title"].as_str(), runs[0]["usage"].as_u64()), (Some("chat-1"), Some("chat"), Some("¿Qué hace el seed?"), Some(7)));
+        assert_eq!((runs[1]["kind"].as_str(), runs[1]["title"].as_str()), (Some("incident"), Some("Seed failed on dev")));
+        assert!(runs.iter().all(|r| r.get("transcript").is_none()));
+    }
+}

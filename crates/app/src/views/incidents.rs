@@ -179,7 +179,8 @@ fn agent_block(app: &mut DevtoolApp, inc: &Value, window: &mut Window, cx: &mut 
         convo = convo.child(match item["role"].as_str() {
             Some("user") => div().text_size(px(12.)).text_color(t.fg).child(format!("› {text}")),
             Some("tool") => {
-                let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(140).collect::<String>();
+                // Una línea: el resultado con los espacios y saltos juntados (un JSON se lee así).
+            let first = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect::<String>();
                 let color = if item["isError"] == true { rgb(0xe5756e).into() } else { t.subtle };
                 ui::mono(format!("  {} → {first}", ui::txt(&item["tool"]))).text_size(px(11.)).text_color(color).truncate()
             }
@@ -286,17 +287,88 @@ fn fix_block(app: &mut DevtoolApp, run_id: &str, fix: &Value, cx: &mut Context<D
 }
 
 /// Texto del agente: las líneas `## …` como etiquetas de sección, el resto tal cual.
-fn answer_view(text: &str, cx: &App) -> Div {
+pub(crate) fn answer_view(text: &str, cx: &App) -> Div {
     let t = crate::theme::Tokens::current(cx);
-    let mut col = v_flex().gap_0p5();
+    let mut col = v_flex().gap_1();
+    let mut code: Option<Vec<String>> = None;
     for line in text.lines() {
-        if let Some(h) = line.strip_prefix("## ") {
+        // Bloques de código (```): tal cual, en monoespaciada.
+        if line.trim_start().starts_with("```") {
+            match code.take() {
+                Some(block) => col = col.child(div().p_2().bg(t.ground).border_1().border_color(t.card_border).children(block.into_iter().map(|l| ui::mono(l).text_size(px(11.5)).text_color(t.fg)))),
+                None => code = Some(vec![]),
+            }
+            continue;
+        }
+        if let Some(block) = code.as_mut() {
+            block.push(line.to_string());
+            continue;
+        }
+        if let Some(h) = line.strip_prefix("## ").or_else(|| line.strip_prefix("### ")) {
             col = col.child(div().pt_1().child(ui::section(h.to_string(), cx)));
+        } else if let Some(h) = line.strip_prefix("# ") {
+            col = col.child(div().pt_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(t.fg).child(h.to_string()));
+        } else if let Some((bullet, rest)) = list_item(line) {
+            col = col.child(h_flex().gap_1p5().items_start().pl_1().child(div().text_size(px(12.5)).text_color(t.subtle).child(bullet)).child(div().flex_1().min_w_0().text_size(px(12.5)).text_color(t.fg).child(inline(rest, cx))));
         } else if !line.trim().is_empty() {
-            col = col.child(div().text_size(px(12.5)).text_color(t.fg).child(line.to_string()));
+            col = col.child(div().text_size(px(12.5)).text_color(t.fg).child(inline(line, cx)));
         }
     }
+    if let Some(block) = code {
+        col = col.child(div().p_2().bg(t.ground).children(block.into_iter().map(|l| ui::mono(l).text_size(px(11.5)).text_color(t.fg))));
+    }
     col
+}
+
+/// «- x», «* x» o «1. x»: la viñeta y el resto.
+fn list_item(line: &str) -> Option<(String, &str)> {
+    let l = line.trim_start();
+    if let Some(rest) = l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")) {
+        return Some(("•".into(), rest));
+    }
+    let digits = l.chars().take_while(char::is_ascii_digit).count();
+    (digits > 0 && l[digits..].starts_with(". ")).then(|| (l[..digits + 1].to_string(), &l[digits + 2..]))
+}
+
+/// Sin las marcas de `código` y **negrita**, y dónde va cada una (rangos en bytes del texto limpio).
+pub(crate) fn inline_spans(line: &str) -> (String, Vec<(std::ops::Range<usize>, bool)>) {
+    let mut out = String::new();
+    let mut spans = vec![];
+    let mut rest = line;
+    while !rest.is_empty() {
+        let (tick, bold) = (rest.find('`'), rest.find("**"));
+        let next = match (tick, bold) {
+            (Some(a), Some(b)) if b < a => Some((b, "**", false)),
+            (Some(a), _) => Some((a, "`", true)),
+            (None, Some(b)) => Some((b, "**", false)),
+            (None, None) => None,
+        };
+        let Some((at, mark, is_code)) = next else {
+            out.push_str(rest);
+            break;
+        };
+        let after = &rest[at + mark.len()..];
+        let Some(close) = after.find(mark).filter(|c| *c > 0) else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..at]);
+        let start = out.len();
+        out.push_str(&after[..close]);
+        spans.push((start..out.len(), is_code));
+        rest = &after[close + mark.len()..];
+    }
+    (out, spans)
+}
+
+fn inline(line: &str, cx: &App) -> StyledText {
+    let t = crate::theme::Tokens::current(cx);
+    let (text, spans) = inline_spans(line);
+    let highlights = spans.into_iter().map(|(r, is_code)| {
+        let style = if is_code { HighlightStyle { color: Some(t.accent_ink), background_color: Some(t.ground), ..Default::default() } } else { HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() } };
+        (r, style)
+    });
+    StyledText::new(text).with_highlights(highlights.collect::<Vec<_>>())
 }
 
 fn card(app: &mut DevtoolApp, inc: &Value, window: &mut Window, cx: &mut Context<DevtoolApp>) -> Div {
@@ -420,4 +492,16 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
         col = col.child(card(app, inc, window, cx));
     }
     col.into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn marcas_en_linea() {
+        let (t, s) = super::inline_spans("Use `tasks.list` and **never** `x`");
+        assert_eq!(t, "Use tasks.list and never x");
+        assert_eq!(s, vec![(4..14, true), (19..24, false), (25..26, true)]);
+        assert_eq!(super::inline_spans("a `b").0, "a `b");
+        assert_eq!(super::list_item("  12. done").map(|(b, r)| (b, r.to_string())), Some(("12.".into(), "done".into())));
+    }
 }

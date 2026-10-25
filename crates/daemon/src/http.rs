@@ -541,6 +541,25 @@ async fn post_notify_test(AxState(state): AxState<Shared>, Extension(client): Ex
 }
 
 /// Una corrida de agente con su transcripción (si el host la tiene).
+async fn get_agent_runs(AxState(state): AxState<Shared>) -> Response {
+    match crate::agent_host::list(&state) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+/// Un chat nuevo con el agente: solo la app (como escribirle a una corrida).
+async fn post_agent_chat(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let text = body["text"].as_str().unwrap_or_default().chars().take(4_000).collect::<String>();
+    match crate::agent_host::start_chat(&state, &text, body["project"].as_str(), "app").await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
 async fn get_agent_run(AxState(state): AxState<Shared>, Path(id): Path<String>) -> Response {
     match crate::agent_host::get(&state, &id).await {
         Ok(v) => Json(v).into_response(),
@@ -1111,6 +1130,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agents/templates", post(post_agent_template))
         .route("/api/agents/templates/reset", post(post_agent_templates_reset))
         .route("/api/agents/templates/{id}", delete(delete_agent_template))
+        .route("/api/agent-runs", get(get_agent_runs))
+        .route("/api/agent-chats", post(post_agent_chat))
         .route("/api/agent-runs/{id}", get(get_agent_run))
         .route("/api/notify", get(get_notify).post(post_notify))
         .route("/api/notify/test", post(post_notify_test))

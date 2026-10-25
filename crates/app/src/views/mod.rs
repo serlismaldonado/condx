@@ -14,6 +14,7 @@ pub mod live;
 pub mod overview;
 pub mod palette;
 pub mod agent_settings;
+pub mod agents;
 pub mod frontend;
 pub mod incidents;
 pub mod notify_settings;

@@ -84,11 +84,14 @@ fn groups(app: &DevtoolApp) -> Vec<NavGroup> {
     let mut incidents = item(Page::Incidents, t!("Incidents"), IconName::TriangleAlert);
     let open = app.incidents.iter().filter(|i| i["status"] == "open").count();
     incidents.count = (open > 0).then_some(open);
+    let mut agents = item(Page::Agents, t!("Agents"), IconName::MessageSquare);
+    let working = app.chats.iter().filter(|r| r["status"] == "running").count();
+    agents.count = (working > 0).then_some(working);
     list.push(NavGroup {
         id: "proyecto",
         label: t!("Project"),
         icon: IconName::GitBranch,
-        items: vec![incidents, item(Page::Workflows, t!("Workflows"), IconName::Rocket), item(Page::Frontend, t!("Frontend"), IconName::Globe), item(Page::Repo, t!("Git & CI"), IconName::GitBranch), terminal],
+        items: vec![incidents, agents, item(Page::Workflows, t!("Workflows"), IconName::Rocket), item(Page::Frontend, t!("Frontend"), IconName::Globe), item(Page::Repo, t!("Git & CI"), IconName::GitBranch), terminal],
     });
     // Guía y Configuración van como íconos en la barra de abajo (render_footer).
     list
@@ -586,7 +589,8 @@ pub fn render(app: &mut DevtoolApp, content: AnyElement, cx: &mut Context<Devtoo
     // La pestaña Datos se ajusta al alto de la ventana y desplaza su lista y su tabla por dentro:
     // sin scroll de página, para que la rueda no mueva las dos secciones a la vez.
     let data_tab = app.viewing(crate::app::EnvTab::Data);
-    let scroll = app.page != Page::Terminal && !schema_full && !data_tab;
+    // Agentes tampoco: su lista y la conversación se desplazan por dentro.
+    let scroll = app.page != Page::Terminal && app.page != Page::Agents && !schema_full && !data_tab;
     let body = if scroll {
         div().id("content").flex_1().min_h_0().overflow_y_scroll().child(content)
     } else {

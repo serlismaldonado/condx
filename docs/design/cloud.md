@@ -162,8 +162,11 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 
 ### 7.2 Notes from C4 (Native Shell 0.2)
 
-- **No camera**: nsh doesn't scan QR codes yet (native components need nsh embedded in your own
-  host app). The phone accepts the QR's text pasted, or the code plus the URL typed.
+- **Camera**: nsh has none. On Android "Scan the QR" opens the system camera
+  (`ACTION_IMAGE_CAPTURE`) with the photo going to a MediaStore row of the app's own (no CAMERA
+  permission needed), reads the QR from it in Rust (`rqrr`) and deletes the photo
+  (`condx-mobile/src/scan.rs`). iOS still needs `NSCameraUsageDescription`, which nsh 0.2 can't
+  declare: there the phone accepts the QR's text pasted, or the code plus the URL typed.
 - **Entitlements**: `nsh package` doesn't add any, and the Keychain needs `keychain-access-groups`.
   On the simulator, `scripts/ios-sim-install.sh` links them into the binary (sections
   `__entitlements`/`__ents_der`, as Xcode does); re-signing the `.app` doesn't launch. On a device

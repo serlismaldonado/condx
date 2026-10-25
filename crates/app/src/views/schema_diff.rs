@@ -67,7 +67,7 @@ fn line(sign: &str, text: String, color: Hsla, cx: &App) -> Div {
 fn result(v: &Value, cx: &App) -> AnyElement {
     let t = crate::theme::Tokens::current(cx);
     let (green, red, amber): (Hsla, Hsla, Hsla) = (rgb(0x10b981).into(), rgb(0xef4444).into(), rgb(0xf59e0b).into());
-    if v["same"] == true {
+    if v["same"] == true && names(&v["envVars"]["missing"]).is_empty() {
         return h_flex().gap_2().child(Icon::new(IconName2::CircleCheck).size(IconSize::Sm).color(green)).child(div().text_color(t.fg).child(t!("Same schema: nothing to change."))).into_any_element();
     }
     let risks = names(&v["risks"]);
@@ -81,6 +81,18 @@ fn result(v: &Value, cx: &App) -> AnyElement {
         let mut list = v_flex().gap_1().p_2().border_1().border_color(amber.opacity(0.4)).bg(amber.opacity(0.06));
         for r in risks {
             list = list.child(h_flex().gap_2().items_start().child(div().text_color(amber).child("!")).child(div().text_size(px(12.)).text_color(t.fg).child(r)));
+        }
+        col = col.child(list);
+    }
+    // Variables de entorno (solo nombres): lo que el código lee en local y allá no existe.
+    let vars = &v["envVars"];
+    let missing = names(&vars["missing"]);
+    if let Some(e) = vars["error"].as_str() {
+        col = col.child(ui::muted(t!("Couldn't compare environment variables: {a}", a = e), cx));
+    } else if !missing.is_empty() {
+        let mut list = v_flex().gap_0p5().child(ui::section(t!("Environment variables missing in {a}", a = ui::txt(&v["to"])), cx));
+        for n in missing {
+            list = list.child(line("!", n, amber, cx));
         }
         col = col.child(list);
     }

@@ -574,7 +574,7 @@ async fn get_schema_diff(AxState(state): AxState<Shared>, Query(q): Query<DiffQu
         (Ok(a), Ok(b)) => (a, b),
         (Err(e), _) | (_, Err(e)) => return fail(StatusCode::NOT_FOUND, e),
     };
-    match crate::schema::diff_envs(&from, &to).await {
+    match crate::schema::diff_envs(&state, &from, &to).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => fail(StatusCode::BAD_GATEWAY, format!("{e:#}")),
     }

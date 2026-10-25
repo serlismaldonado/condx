@@ -222,6 +222,7 @@ fn schema_diff(from: &str, to: &str) -> Value {
             { "table": "comments", "fieldsAdded": [{ "name": "mentions", "type": "array<id<users>>", "optional": true }], "fieldsRemoved": [], "fieldsChanged": [], "indexesAdded": ["by_task_and_time"], "indexesRemoved": [] },
             { "table": "tasks", "fieldsAdded": [{ "name": "priority", "type": "\"low\" | \"normal\" | \"high\"", "optional": false }], "fieldsRemoved": [{ "name": "legacyStatus", "type": "string" }], "fieldsChanged": [{ "name": "dueAt", "from": { "type": "string", "optional": true }, "to": { "type": "number", "optional": true } }], "indexesAdded": [], "indexesRemoved": [] }
         ],
+        "envVars": { "missing": ["RESEND_API_KEY"], "extra": [] },
         "risks": [
             "tasks.priority is new and required: existing documents don't have it",
             "tasks.legacyStatus leaves the schema: documents that still have it fail validation",

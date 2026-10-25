@@ -207,7 +207,7 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
             let name = |key: &str| args[key].as_str().map(str::to_string).ok_or_else(|| anyhow!("missing {key}"));
             let env = |n: String| state.store.environment(&n)?.ok_or_else(|| anyhow!("environment {n} doesn't exist"));
             let (from, to) = (env(name("from")?)?, env(name("to")?)?);
-            crate::schema::diff_envs(&from, &to).await?
+            crate::schema::diff_envs(state, &from, &to).await?
         }
         "get_git" => probe(state, "git"),
         "get_deployer" => probe(state, "deployer"),

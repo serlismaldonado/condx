@@ -43,8 +43,10 @@ ambos (el de cloud con su deploy key, de la pestaña Claves) y lista:
 - tablas, campos e índices que entran, salen o cambian;
 - **riesgos** que harían fallar `convex deploy` o dejarían documentos inválidos: un campo nuevo
   obligatorio, un campo que cambia de tipo o pasa a ser obligatorio, un campo que sale de una
-  tabla tipada.
+  tabla tipada;
+- **variables de entorno** que el backend local tiene y el cloud no (solo nombres, nunca
+  valores): el código las lee y allá faltarían.
 
 No se despliega nada. La misma comparación es una verificación de flujos (**El esquema local es
-seguro para desplegar aquí**) y una herramienta del MCP (`get_schema_diff`), para que un agente
+seguro para desplegar aquí**, que también falla si faltan variables) y una herramienta del MCP (`get_schema_diff`), para que un agente
 mire antes de pedir.

@@ -301,13 +301,27 @@ pub fn diff(from: &Value, to: &Value) -> Value {
     json!({ "same": same, "tablesAdded": added, "tablesRemoved": removed, "changed": changed, "risks": risks })
 }
 
-/// El diff entre lo desplegado en `from` (el backend local tiene lo del checkout) y en `to`.
-pub async fn diff_envs(from: &Environment, to: &Environment) -> Result<Value> {
-    let (a, b) = tokio::join!(deployed(from), deployed(to));
+/// El diff entre lo desplegado en `from` (el backend local tiene lo del checkout) y en `to`, con
+/// los nombres de variables de entorno que hay en uno y no en el otro (nunca valores). Si las
+/// variables no se pueden leer, el diff de esquema sigue y `envVars.error` dice por qué.
+pub async fn diff_envs(state: &Shared, from: &Environment, to: &Environment) -> Result<Value> {
+    use crate::probes::convex::env_var_names;
+    let (a, b, va, vb) = tokio::join!(deployed(from), deployed(to), env_var_names(state, from), env_var_names(state, to));
     let mut d = diff(&a?, &b?);
     d["from"] = json!(from.name);
     d["to"] = json!(to.name);
+    d["envVars"] = match (va, vb) {
+        (Ok(va), Ok(vb)) => env_var_diff(&va, &vb),
+        (Err(e), _) | (_, Err(e)) => json!({ "error": devtool_core::redact(&format!("{e:#}")) }),
+    };
     Ok(d)
+}
+
+/// Nombres en `from` que faltan en `to` (lo que el código puede leer y allá no está) y al revés.
+pub fn env_var_diff(from: &[String], to: &[String]) -> Value {
+    let missing: Vec<&String> = from.iter().filter(|n| !to.contains(n)).collect();
+    let extra: Vec<&String> = to.iter().filter(|n| !from.contains(n)).collect();
+    json!({ "missing": missing, "extra": extra })
 }
 
 #[cfg(test)]
@@ -403,5 +417,14 @@ export default defineSchema({
         // Un campo opcional nuevo no es un riesgo.
         assert!(!risks.iter().any(|r| r.contains("priority")), "{risks:?}");
         assert_eq!(super::diff(&local, &local)["same"], true);
+    }
+
+    #[test]
+    fn diff_de_variables_solo_nombres() {
+        let local = vec!["AUTH_SECRET".to_string(), "OPENAI_API_KEY".to_string(), "SITE_URL".to_string()];
+        let cloud = vec!["AUTH_SECRET".to_string(), "SITE_URL".to_string(), "SENTRY_DSN".to_string()];
+        let d = super::env_var_diff(&local, &cloud);
+        assert_eq!(d["missing"], json!(["OPENAI_API_KEY"]));
+        assert_eq!(d["extra"], json!(["SENTRY_DSN"]));
     }
 }

@@ -40,7 +40,9 @@ In an environment's **Schema** tab, **Compare local → cloud** reads the schema
 
 - tables, fields and indexes that come, go or change;
 - **risks** that would make `convex deploy` fail or leave documents invalid: a new required
-  field, a field that changes type or becomes required, a field that leaves a typed table.
+  field, a field that changes type or becomes required, a field that leaves a typed table;
+- **environment variables** the local backend has and the cloud doesn't (names only, never
+  values): the code reads them and they'd be missing there.
 
 Nothing is deployed. The same comparison is a workflow check (**The local schema is safe to
-deploy here**) and an MCP tool (`get_schema_diff`), so an agent can look before it asks.
+deploy here**, which also fails on missing variables) and an MCP tool (`get_schema_diff`), so an agent can look before it asks.

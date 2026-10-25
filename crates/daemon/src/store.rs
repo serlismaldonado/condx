@@ -99,6 +99,18 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   data TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS workflow_runs_by_workflow ON workflow_runs (workflow, created_at);
+CREATE TABLE IF NOT EXISTS incidents (
+  id TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  last_seen INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS incidents_by_status ON incidents (status, last_seen);
+CREATE TABLE IF NOT EXISTS agent_providers (
+  id TEXT PRIMARY KEY,
+  data TEXT NOT NULL
+);
 ";
 
 impl Store {
@@ -256,6 +268,74 @@ impl Store {
             .take(limit)
             .collect();
         Ok(rows)
+    }
+
+    /// Incidentes (incidents.rs): cada uno es un JSON con `id`, `fingerprint`, `status`, `lastSeen`.
+    pub fn save_incident(&self, incident: &Value) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO incidents (id, fingerprint, status, last_seen, data) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET fingerprint = ?2, status = ?3, last_seen = ?4, data = ?5",
+            params![
+                incident["id"].as_str().unwrap_or_default(),
+                incident["fingerprint"].as_str().unwrap_or_default(),
+                incident["status"].as_str().unwrap_or_default(),
+                incident["lastSeen"].as_i64().unwrap_or(0),
+                incident.to_string()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn incident(&self, id: &str) -> Result<Option<Value>> {
+        self.incident_where("id", id)
+    }
+
+    pub fn incident_by_fingerprint(&self, fingerprint: &str) -> Result<Option<Value>> {
+        self.incident_where("fingerprint", fingerprint)
+    }
+
+    fn incident_where(&self, column: &str, value: &str) -> Result<Option<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let data: Option<String> =
+            conn.query_row(&format!("SELECT data FROM incidents WHERE {column} = ?1"), [value], |r| r.get(0)).optional()?;
+        Ok(data.and_then(|d| serde_json::from_str(&d).ok()))
+    }
+
+    /// Los incidentes con alguno de esos estados (todos si está vacío), el más reciente primero.
+    pub fn incidents(&self, statuses: &[&str], limit: usize) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT status, data FROM incidents ORDER BY last_seen DESC")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .filter_map(|r| r.ok())
+            .filter(|(s, _)| statuses.is_empty() || statuses.contains(&s.as_str()))
+            .filter_map(|(_, d)| serde_json::from_str(&d).ok())
+            .take(limit)
+            .collect();
+        Ok(rows)
+    }
+
+    /// Proveedores de modelos de los agentes (agents.rs), con la clave cifrada.
+    pub fn save_agent_provider(&self, provider: &Value) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO agent_providers (id, data) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET data = ?2",
+            params![provider["id"].as_str().unwrap_or_default(), provider.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn agent_providers(&self) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT data FROM agent_providers ORDER BY id")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.filter_map(|r| r.ok()).filter_map(|d| serde_json::from_str(&d).ok()).collect();
+        Ok(rows)
+    }
+
+    pub fn delete_agent_provider(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute("DELETE FROM agent_providers WHERE id = ?1", [id])? > 0)
     }
 
     pub fn add_backup(&self, env: &str, path: &str, encrypted: bool, size: i64, commit: Option<&str>, job: &str) -> Result<i64> {

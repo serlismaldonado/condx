@@ -2,6 +2,7 @@
 // (docs/diseno-devtool-escritorio.md). F0: entornos, sondas, telemetría de la
 // app y MCP de lectura; nada despliega ni escribe datos.
 
+mod agents;
 mod auth;
 mod cloud;
 mod cmd;
@@ -10,6 +11,7 @@ mod create;
 mod data;
 mod doctor;
 mod http;
+mod incidents;
 mod mcp;
 mod jobs;
 mod overview;
@@ -127,6 +129,7 @@ fn serve() -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         probes::spawn_all(&state);
+        incidents::spawn(&state);
         jobs::recover(&state);
         workflows::recover(&state);
         if let Err(e) = projects::ensure_default(&state) {

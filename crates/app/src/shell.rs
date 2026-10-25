@@ -81,11 +81,14 @@ fn groups(app: &DevtoolApp) -> Vec<NavGroup> {
     }
     let mut terminal = item(Page::Terminal, t!("Terminal"), IconName::Terminal);
     terminal.count = (!app.terminals.is_empty()).then_some(app.terminals.len());
+    let mut incidents = item(Page::Incidents, t!("Incidents"), IconName::TriangleAlert);
+    let open = app.incidents.iter().filter(|i| i["status"] == "open").count();
+    incidents.count = (open > 0).then_some(open);
     list.push(NavGroup {
         id: "proyecto",
         label: t!("Project"),
         icon: IconName::GitBranch,
-        items: vec![item(Page::Workflows, t!("Workflows"), IconName::Rocket), item(Page::Frontend, t!("Frontend"), IconName::Globe), item(Page::Repo, t!("Git & CI"), IconName::GitBranch), terminal],
+        items: vec![incidents, item(Page::Workflows, t!("Workflows"), IconName::Rocket), item(Page::Frontend, t!("Frontend"), IconName::Globe), item(Page::Repo, t!("Git & CI"), IconName::GitBranch), terminal],
     });
     // Guía y Configuración van como íconos en la barra de abajo (render_footer).
     list

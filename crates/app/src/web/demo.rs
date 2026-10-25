@@ -30,6 +30,8 @@ struct State {
     /// Con `?welcome` en la URL la demo arranca sin proyectos: la guía del primer arranque.
     registered: bool,
     backend: bool,
+    incidents: Vec<Value>,
+    agents: Value,
 }
 
 fn welcome_mode() -> bool {
@@ -83,6 +85,11 @@ pub fn get(path: &str) -> Result<Value> {
         ["mcp"] => json!({ "lastAt": now() - 3 * MIN, "client": "claude-code", "command": "~/.condx/daemon/bin/condxd", "url": "http://127.0.0.1:4790/mcp", "tokenFile": "~/.condx/daemon/token" }),
         ["git"] => git(),
         ["frontend"] => frontend(),
+        ["incidents"] => with(|s| {
+            let resolved = q("status").as_deref() == Some("resolved");
+            json!(s.incidents.iter().filter(|i| (i["status"] == "resolved") == resolved).cloned().collect::<Vec<_>>())
+        }),
+        ["agents"] => with(|s| s.agents.clone()),
         ["deployments"] => deployments(&q("env").unwrap_or_default()),
         ["approval"] => approval(&q("recipe").unwrap_or_default(), &q("env").unwrap_or_default(), q("function").as_deref()),
         ["promotion"] => json!({ "ok": true, "checks": [] }),
@@ -136,12 +143,80 @@ pub fn post(path: &str, body: Value) -> Result<Value> {
         ["workflows", "suggested"] => json!({ "created": [] }),
         ["workflows", id, "run"] => run_workflow(id, body["commit"].as_str().unwrap_or("main")),
         ["environments", _, "keys"] => json!({ "ok": true, "deployment": "happy-otter-123" }),
+        ["incidents", id, action] => with(|s| {
+            let Some(i) = s.incidents.iter_mut().find(|i| i["id"] == *id) else { return json!({ "ok": false }) };
+            match *action {
+                "ignore" => i["status"] = json!("ignored"),
+                "resolve" => {
+                    i["status"] = json!("resolved");
+                    i["resolvedAt"] = json!(now());
+                    i["resolvedBy"] = json!("app");
+                }
+                _ => i["status"] = json!("open"),
+            }
+            i.clone()
+        }),
+        ["agents", "settings"] => with(|s| {
+            s.agents["settings"] = body.clone();
+            body.clone()
+        }),
+        // La demo no guarda la clave: solo su pista, como el daemon.
+        ["agents", "providers"] => with(|s| {
+            let kind = body["kind"].as_str().unwrap_or("anthropic").to_string();
+            let label = body["label"].as_str().map(str::to_string).unwrap_or_else(|| kind.clone());
+            let hint = body["apiKey"].as_str().map(|k| format!("…{}", &k[k.len().saturating_sub(4)..]));
+            let model = body["model"].as_str().map(str::to_string).or_else(|| s.agents["kinds"].as_array().and_then(|l| l.iter().find(|k| k["id"] == kind.as_str())).and_then(|k| k["model"].as_str().map(str::to_string)));
+            let p = json!({ "id": label.to_lowercase().replace(' ', "-"), "kind": kind, "label": label, "model": model, "baseUrl": body["baseUrl"], "keyHint": hint });
+            if let Some(list) = s.agents["providers"].as_array_mut() {
+                list.retain(|x| x["id"] != p["id"]);
+                list.push(p.clone());
+            }
+            p
+        }),
         _ => json!({ "ok": true }),
     })
 }
 
-pub fn delete(_: &str) -> Result<Value> {
+pub fn delete(path: &str) -> Result<Value> {
+    if let Some(id) = path.strip_prefix("/api/agents/providers/") {
+        with(|s| {
+            if let Some(list) = s.agents["providers"].as_array_mut() {
+                list.retain(|p| p["id"] != id);
+            }
+            if s.agents["settings"]["defaultProvider"] == id {
+                s.agents["settings"]["defaultProvider"] = Value::Null;
+            }
+        });
+    }
     Ok(json!({ "ok": true }))
+}
+
+fn default_incidents() -> Vec<Value> {
+    let t = now();
+    vec![
+        json!({ "id": "inc-1", "fingerprint": "vercel:fix/date-picker", "source": "vercel", "project": PROJECT, "env": null, "title": "Vercel deploy of fix/date-picker failed", "status": "open", "count": 2, "firstSeen": t - 90 * MIN, "lastSeen": t - 50 * MIN,
+                "evidence": { "url": "https://my-app-m3z7-ada.vercel.app", "branch": "fix/date-picker", "commit": "51d0aa2c3e11", "log": "src/components/DatePicker.tsx (41:18): \"formatISO\" is not exported by \"node_modules/date-fns/index.js\"\nerror during build:\nError: Command \"vite build\" exited with 1" } }),
+        json!({ "id": "inc-2", "fingerprint": "job:seed:my-app-dev:uncaught error", "source": "job", "project": PROJECT, "env": DEV, "title": "Seed data failed on my-app-dev", "status": "open", "count": 1, "firstSeen": t - 3 * HOUR, "lastSeen": t - 3 * HOUR,
+                "evidence": { "jobId": "j-demo-5", "recipe": "seed", "error": "Uncaught Error: seed:demoData only runs on an empty database", "commit": null } }),
+        json!({ "id": "inc-3", "fingerprint": "ci:ada/my-app:Tests", "source": "ci", "project": PROJECT, "env": null, "title": "CI “Tests” failed on feat/task-labels", "status": "ignored", "count": 4, "firstSeen": t - 26 * HOUR, "lastSeen": t - 2 * HOUR,
+                "evidence": { "repo": "ada/my-app", "workflow": "Tests", "branch": "feat/task-labels", "commit": "e81b0c4a99", "title": "feat: labels on tasks", "url": "https://github.com" } }),
+        json!({ "id": "inc-4", "fingerprint": "convex:my-app-dev", "source": "convex", "project": PROJECT, "env": DEV, "title": "Convex for my-app-dev isn't responding", "status": "resolved", "count": 1, "firstSeen": t - 5 * HOUR, "lastSeen": t - 5 * HOUR + 4 * MIN, "resolvedAt": t - 5 * HOUR + 4 * MIN, "resolvedBy": "auto",
+                "evidence": { "error": "connection timed out", "url": "https://happy-otter-123.convex.cloud" } }),
+    ]
+}
+
+fn default_agents() -> Value {
+    let kind = |id: &str, label: &str, url: bool, model: &str| json!({ "id": id, "label": label, "needsBaseUrl": url, "model": model });
+    json!({
+        "settings": { "autonomy": { "job": "diagnose", "vercel": "fix", "ci": "notify", "convex": "notify" }, "defaultProvider": "anthropic", "defaultModel": "claude-sonnet-5-5", "dailyTokenBudget": 500_000, "maxConcurrent": 1 },
+        "providers": [{ "id": "anthropic", "kind": "anthropic", "label": "Anthropic", "model": "claude-sonnet-5-5", "baseUrl": null, "keyHint": "…x9Qa" }],
+        "kinds": [
+            kind("anthropic", "Anthropic", false, "claude-sonnet-5-5"), kind("openai", "OpenAI", false, "gpt-5"), kind("google", "Google Gemini", false, "gemini-2.5-pro"),
+            kind("openrouter", "OpenRouter", false, "anthropic/claude-sonnet-5.5"), kind("xai", "xAI", false, "grok-4"), kind("groq", "Groq", false, "llama-3.3-70b-versatile"),
+            kind("mistral", "Mistral", false, "mistral-large-latest"), kind("openai-compatible", "OpenAI-compatible (Ollama, vLLM…)", true, ""),
+        ],
+        "sources": ["job", "vercel", "ci", "convex"],
+    })
 }
 
 pub fn tool(name: &str, _: Value) -> Result<Value> {
@@ -391,7 +466,7 @@ impl State {
             job("j-demo-5", "run-function", "Run a function", "local", "failed", "claude-code", 5 * HOUR, json!({ "function": "seed:demoData", "payload": "{}" }), "none"),
             job("j-demo-6", "deploy-cloud", "Deploy to cloud dev", DEV, "succeeded", "workflow “Deploy to cloud dev”", 20 * HOUR, json!({ "commit": &PREV[..8] }), "simple"),
         ];
-        Self { jobs, policy: default_policy(), workflows: default_workflows(), runs: default_runs(), next: 7, registered: !welcome_mode(), backend: false }
+        Self { jobs, policy: default_policy(), workflows: default_workflows(), runs: default_runs(), next: 7, registered: !welcome_mode(), backend: false, incidents: default_incidents(), agents: default_agents() }
     }
 }
 

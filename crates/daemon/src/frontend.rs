@@ -236,7 +236,7 @@ async fn scan_cached(site: String, deployment: String, known: Vec<String>) -> Va
     v
 }
 
-async fn failed_log(repo: &Path, url: &str) -> Value {
+pub async fn failed_log(repo: &Path, url: &str) -> Value {
     if let Some(v) = cache(&LOGS).lock().unwrap().get(url).cloned() {
         return v;
     }

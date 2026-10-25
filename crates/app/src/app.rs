@@ -27,6 +27,8 @@ pub enum Page {
     Repo,
     /// El frontend del proyecto en Vercel (views::frontend).
     Frontend,
+    /// Lo que falló, de todos los proyectos (views::incidents).
+    Incidents,
     Jobs,
     Approvals,
     /// Flujos de despliegue del proyecto (views::workflows).
@@ -256,6 +258,15 @@ pub struct DevtoolApp {
     pub git: HashMap<String, Load>,
     /// `/api/frontend` por proyecto.
     pub frontend: HashMap<String, Load>,
+    /// Incidentes abiertos e ignorados (`/api/incidents`, en cada sondeo) y los resueltos (a pedido).
+    pub incidents: Vec<Value>,
+    pub incidents_resolved: Option<Load>,
+    pub incidents_tab_resolved: bool,
+    known_incidents: std::collections::HashSet<String>,
+    /// Configuración → Agentes (`/api/agents`) y el tipo de proveedor elegido para agregar.
+    pub agents: Option<Value>,
+    pub agents_error: Option<String>,
+    pub agent_kind: String,
     pub live_json_open: bool,
     /// Pestaña y modo del esquema de cada entorno (los de `env_tab`/`schema_mode` son del abierto).
     pub env_tabs: HashMap<String, EnvTab>,
@@ -409,6 +420,13 @@ impl DevtoolApp {
             approval_folds: HashMap::new(),
             git: HashMap::new(),
             frontend: HashMap::new(),
+            incidents: vec![],
+            incidents_resolved: None,
+            incidents_tab_resolved: false,
+            known_incidents: Default::default(),
+            agents: None,
+            agents_error: None,
+            agent_kind: "anthropic".into(),
             live_json_open: false,
             env_tabs: HashMap::new(),
             schema_modes: HashMap::new(),
@@ -475,7 +493,7 @@ impl DevtoolApp {
             let services_path = format!("/api/services?project={project}");
             let overview_path = format!("/api/overview?project={project}");
             let jobs_path = format!("/api/jobs?limit=60&project={project}");
-            let (overview, probes, jobs, approvals, recipes, backups, services, projects) = cx
+            let (overview, probes, jobs, approvals, recipes, backups, services, projects, incidents) = cx
                 .background_executor()
                 .spawn(async move {
                     (
@@ -487,6 +505,7 @@ impl DevtoolApp {
                         d.get("/api/backups"),
                         d.get(&services_path),
                         d.get("/api/projects"),
+                        d.get("/api/incidents?limit=100"),
                     )
                 })
                 .await;
@@ -510,6 +529,10 @@ impl DevtoolApp {
                     if let Ok(Value::Array(list)) = approvals {
                         app.notify_approvals(&list, window, cx);
                         app.approvals = list;
+                    }
+                    if let Ok(Value::Array(list)) = incidents {
+                        app.notify_incidents(&list, window, cx);
+                        app.incidents = list;
                     }
                     if let Ok(Value::Array(list)) = backups {
                         app.backups = list;
@@ -602,6 +625,17 @@ impl DevtoolApp {
         }
     }
 
+    /// Un incidente nuevo (o que vuelve) se avisa una vez; los que ya estaban al abrir la app, no.
+    fn notify_incidents(&mut self, list: &[Value], window: &mut Window, cx: &mut Context<Self>) {
+        for inc in list.iter().filter(|i| i["status"] == "open") {
+            let Some(id) = inc["id"].as_str() else { continue };
+            let key = format!("incident:{id}:{}", inc["count"]);
+            if self.known_incidents.insert(key.clone()) && !self.first_poll {
+                self.notify(&key, "error", t!("Incident"), &ui::txt(&inc["title"]), window, cx);
+            }
+        }
+    }
+
     /// Guarda una notificación en el centro y, si es nueva, la muestra como aviso.
     pub fn notify(&mut self, id: &str, kind: &str, title: &str, body: &str, window: &mut Window, cx: &mut Context<Self>) {
         if !self.prefs.notify(id, kind, title, body, ui::now_ms()) {
@@ -680,6 +714,12 @@ impl DevtoolApp {
                 self.go(Page::Frontend, cx);
                 self.load_frontend(false, cx);
             }
+            Page::Incidents => {
+                self.go(Page::Incidents, cx);
+                if self.incidents_tab_resolved {
+                    self.load_resolved_incidents(cx);
+                }
+            }
             Page::Live => {
                 self.snapshot = None;
                 self.go(Page::Live, cx);
@@ -694,6 +734,7 @@ impl DevtoolApp {
             Page::Settings => {
                 self.go(page, cx);
                 self.load_policy(cx);
+                self.load_agents(cx);
                 self.get("/api/mcp".into(), |app, res| {
                     if let Load::Ready(v) = res {
                         app.mcp_status = Some(v);
@@ -1235,6 +1276,7 @@ impl Render for DevtoolApp {
             Page::Live => views::live::render(self, window, cx).into_any_element(),
             Page::Repo => views::repo::render(self, window, cx).into_any_element(),
             Page::Frontend => views::frontend::render(self, window, cx).into_any_element(),
+            Page::Incidents => views::incidents::render(self, window, cx).into_any_element(),
             Page::Workflows => views::workflows::render(self, window, cx).into_any_element(),
             Page::Jobs => views::jobs::render(self, window, cx).into_any_element(),
             Page::Approvals => views::approvals::render(self, window, cx).into_any_element(),

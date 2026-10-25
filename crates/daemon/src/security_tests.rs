@@ -83,6 +83,12 @@ async fn el_token_de_agentes_no_aprueba_ni_toca_reglas_ni_claves() {
         (Method::POST, "/api/cloud/pair/confirm", json!({ "deviceId": "phone-x" })),
         (Method::POST, "/api/cloud/pair/cancel", json!({})),
         (Method::DELETE, "/api/cloud/devices/phone-x", json!({})),
+        // Un agente no apaga avisos ni toca proveedores, claves o su propia autonomía.
+        (Method::POST, "/api/incidents/inc-x/ignore", json!({})),
+        (Method::POST, "/api/incidents/inc-x/resolve", json!({})),
+        (Method::POST, "/api/agents/settings", json!({ "autonomy": { "job": "fix" } })),
+        (Method::POST, "/api/agents/providers", json!({ "kind": "anthropic", "apiKey": "sk-x" })),
+        (Method::DELETE, "/api/agents/providers/anthropic", json!({})),
     ];
     for (method, path, body) in cases {
         let (status, res) = call(method.clone(), path, &host, Some(CLI), Some(body)).await;

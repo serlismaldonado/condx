@@ -70,3 +70,10 @@ impl State {
         list
     }
 }
+
+/// Un estado con el almacén en memoria, para las pruebas.
+#[cfg(test)]
+pub fn test_state() -> Shared {
+    let config = Config { repo: None, port: 4790, telemetry_origins: vec![] };
+    Arc::new(State::new(config, Store::memory(), Tokens::fixed("cli-token-for-tests", "app-token-for-tests")))
+}

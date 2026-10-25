@@ -64,6 +64,7 @@ pub fn tools() -> Vec<Value> {
         tool("get_deployer", "Devbox deployer: phase (idle, syncing, error), image and latest log lines.", json!({}), &[]),
         tool("get_containers", "Docker containers (name, image, state, compose service).", json!({}), &[]),
         tool("get_vercel", "Vercel frontend: production deploy, latest preview, in progress and latest failed.", json!({}), &[]),
+        tool("list_incidents", "Incidents Condx detected (failed jobs, failed Vercel deploys, CI in red, Convex not responding): title, source, environment, evidence (redacted), how many times it happened and its status. status: open (default; includes ignored), resolved or all. Ignoring or resolving is only done in the app.", json!({ "status": { "type": "string", "enum": ["open", "resolved", "all"] }, "project": project_arg(), "limit": { "type": "integer", "default": 30 } }), &[]),
         tool("get_frontend", "A project's frontend on Vercel: production, previews (latest per branch), building, the latest failed deploy with the end of its build log, which Convex deployment production and the latest preview point to (read from the published site) and the production frontend's commit against Convex production's.", json!({ "project": { "type": "string", "description": "Project name (see list_projects); optional" } }), &[]),
         // Trabajos (F2). Aprobar no está: solo desde la app.
         tool("list_recipes", "Available recipes: what they do, which environments they run on, what approval they need, which arguments they take and whether they run on other projects' environments (projects).", json!({}), &[]),
@@ -214,6 +215,7 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
         "get_deployer" => probe(state, "deployer"),
         "get_containers" => probe(state, "docker"),
         "get_vercel" => probe(state, "vercel"),
+        "list_incidents" => json!(crate::incidents::list(state, args["status"].as_str(), args["project"].as_str(), args["limit"].as_u64().unwrap_or(30).min(200) as usize)),
         "get_frontend" => match crate::projects::get(state, args["project"].as_str()) {
             Ok(p) => crate::frontend::report(state, &p, false).await,
             Err(e) => json!({ "error": e.to_string() }),

@@ -42,6 +42,7 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
         .gap_3()
         .p_4()
         .max_w(px(720.))
+        .child(super::agent_settings::card(app, window, cx))
         .child(agents(app, cx))
         .child(super::cloud::card(app, window, cx))
         .child(data_rules(app, cx))

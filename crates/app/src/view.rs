@@ -62,6 +62,7 @@ pub fn page_key(page: &Page) -> String {
         Page::Live => "live".into(),
         Page::Repo => "repo".into(),
         Page::Frontend => "frontend".into(),
+        Page::Incidents => "incidents".into(),
         Page::Jobs => "jobs".into(),
         Page::Approvals => "approvals".into(),
         Page::Workflows => "workflows".into(),
@@ -80,6 +81,7 @@ pub fn parse_page(key: &str) -> Option<Page> {
         "live" => Page::Live,
         "repo" => Page::Repo,
         "frontend" => Page::Frontend,
+        "incidents" => Page::Incidents,
         "jobs" => Page::Jobs,
         "approvals" => Page::Approvals,
         "workflows" => Page::Workflows,
@@ -281,7 +283,7 @@ mod tests {
 
     #[test]
     fn lee_cada_pagina_y_pestana() {
-        for p in [Page::Overview, Page::Local, Page::Terminal, Page::Env("a:b".into()), Page::Live, Page::Repo, Page::Frontend, Page::Jobs, Page::Approvals, Page::Guide(3), Page::Settings] {
+        for p in [Page::Overview, Page::Local, Page::Terminal, Page::Env("a:b".into()), Page::Live, Page::Repo, Page::Frontend, Page::Incidents, Page::Jobs, Page::Approvals, Page::Guide(3), Page::Settings] {
             assert_eq!(parse_page(&page_key(&p)), Some(p));
         }
         for (t, _) in TABS {

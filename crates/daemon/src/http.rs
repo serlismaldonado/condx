@@ -30,7 +30,7 @@ use axum::extract::{Extension, Path, Query, Request, State as AxState};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
@@ -373,6 +373,66 @@ struct FrontendQuery {
 async fn get_frontend(AxState(state): AxState<Shared>, Query(q): Query<FrontendQuery>) -> Response {
     match crate::projects::get(&state, q.project.as_deref()) {
         Ok(p) => Json(crate::frontend::report(&state, &p, q.fresh).await).into_response(),
+        Err(e) => fail(StatusCode::NOT_FOUND, e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct IncidentsQuery {
+    status: Option<String>,
+    project: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn get_incidents(AxState(state): AxState<Shared>, Query(q): Query<IncidentsQuery>) -> Response {
+    Json(json!(crate::incidents::list(&state, q.status.as_deref(), q.project.as_deref(), q.limit.unwrap_or(100).min(500)))).into_response()
+}
+
+/// Ignorar, resolver o reabrir es de la persona: solo la app (un agente no apaga avisos).
+async fn post_incident_action(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Path((id, action)): Path<(String, String)>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::incidents::act(&state, &id, &action) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+/// Configuración → Agentes: proveedores (sin sus claves), autonomía y presupuestos.
+async fn get_agents(AxState(state): AxState<Shared>) -> Response {
+    Json(crate::agents::json(&state)).into_response()
+}
+
+async fn post_agent_settings(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::agents::save_settings(&state, &body) {
+        Ok(s) => Json(json!(s)).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+/// La API key llega una vez y se guarda cifrada (agents.rs); no hay ruta que la devuelva.
+async fn post_agent_provider(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Json(body): Json<crate::agents::ProviderBody>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let st = state.clone();
+    match tokio::task::spawn_blocking(move || crate::agents::upsert_provider(&st, body, &crate::agents::seal_for_mac)).await {
+        Ok(Ok(p)) => Json(p).into_response(),
+        Ok(Err(e)) => fail(StatusCode::BAD_REQUEST, e),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, anyhow::anyhow!(e.to_string())),
+    }
+}
+
+async fn delete_agent_provider(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Path(id): Path<String>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::agents::delete_provider(&state, &id) {
+        Ok(()) => Json(json!({ "deleted": id })).into_response(),
         Err(e) => fail(StatusCode::NOT_FOUND, e),
     }
 }
@@ -910,6 +970,12 @@ pub fn router(state: Shared) -> Router {
         .route("/api/environments/{name}/functions", get(get_functions))
         .route("/api/git", get(get_git))
         .route("/api/frontend", get(get_frontend))
+        .route("/api/incidents", get(get_incidents))
+        .route("/api/incidents/{id}/{action}", post(post_incident_action))
+        .route("/api/agents", get(get_agents))
+        .route("/api/agents/settings", post(post_agent_settings))
+        .route("/api/agents/providers", post(post_agent_provider))
+        .route("/api/agents/providers/{id}", delete(delete_agent_provider))
         .route("/api/projects", get(get_projects).post(post_project))
         .route("/api/projects/discover", get(get_discover))
         .route("/api/doctor", get(get_doctor))

@@ -115,7 +115,7 @@ async fn build_project(state: &Shared, project: &crate::projects::Project) -> Va
             "branch": git["branch"], "head": short(&git["head"]), "subject": git["subject"], "ahead": git["ahead"],
             "behind": git["behind"], "changed": git["changed"], "untracked": git["untracked"], "submodules": [],
         },
-        "ci": [],
+        "ci": ci_summary(&state.probe(&crate::probes::ci::probe_key(&project.name)).unwrap_or(Value::Null), &mut attention),
         "deployer": { "phase": phase, "running": deployer_running, "image": "convex dev (native)" },
         "tabs": { "count": 0, "list": [] },
         "jobs": jobs.iter().map(crate::jobs::summary).collect::<Vec<_>>(),
@@ -213,30 +213,7 @@ pub async fn build(state: &Shared) -> Value {
         }
     }
 
-    let ci_summary: Vec<Value> = ci["data"]["repos"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|r| {
-            let latest = &r["latest"];
-            if latest["conclusion"] == "failure" {
-                attention.push(format!("CI of {} failed: {}", r["repo"].as_str().unwrap_or("?"), latest["displayTitle"].as_str().unwrap_or("")));
-            }
-            json!({
-                "repo": r["repo"],
-                "status": latest["status"],
-                "conclusion": latest["conclusion"],
-                "title": latest["displayTitle"],
-                "branch": latest["headBranch"],
-                "commit": short(&latest["headSha"]),
-                "url": latest["url"],
-                "at": latest["updatedAt"],
-            })
-        })
-        .collect();
-    if let Some(err) = ci["error"].as_str() {
-        attention.push(format!("CI: {err}"));
-    }
+    let ci_summary = ci_summary(&ci, &mut attention);
 
     if deployer["phase"] == "error" {
         attention.push("The devbox deployer is in error (see get_deployer)".into());
@@ -300,4 +277,33 @@ pub async fn build(state: &Shared) -> Value {
         "jobs": crate::projects::jobs_of(state, &[], 10, Some(crate::projects::DEFAULT)).unwrap_or_default().iter().map(crate::jobs::summary).collect::<Vec<_>>(),
         "approvals": approvals,
     })
+}
+
+/// Lo último de cada repo de la sonda de CI, y lo que pide atención (un CI rojo, un error de gh).
+fn ci_summary(ci: &Value, attention: &mut Vec<String>) -> Vec<Value> {
+    let summary: Vec<Value> = ci["data"]["repos"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| {
+            let latest = &r["latest"];
+            if latest["conclusion"] == "failure" {
+                attention.push(format!("CI of {} failed: {}", r["repo"].as_str().unwrap_or("?"), latest["displayTitle"].as_str().unwrap_or("")));
+            }
+            json!({
+                "repo": r["repo"],
+                "status": latest["status"],
+                "conclusion": latest["conclusion"],
+                "title": latest["displayTitle"],
+                "branch": latest["headBranch"],
+                "commit": short(&latest["headSha"]),
+                "url": latest["url"],
+                "at": latest["updatedAt"],
+            })
+        })
+        .collect();
+    if let Some(err) = ci["error"].as_str() {
+        attention.push(format!("CI: {err}"));
+    }
+    summary
 }

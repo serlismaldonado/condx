@@ -153,7 +153,7 @@ pub fn render(app: &mut DevtoolApp, _: &mut Window, cx: &mut Context<DevtoolApp>
         )
         .item("commits", t!("Latest commits · {commit_count}", commit_count = commit_count), div().h(px((commit_count * 36 + 8) as f32)).child(CommitList::new("commits", std::rc::Rc::new(commits))));
     let mut col = v_flex().gap_3().p_4().child(toolbar);
-    // Submódulos y CI: sondas del ERP.
+    // Submódulos: sonda del ERP.
     if erp {
         let git = app.probes.get("git").map(|p| p["data"].clone()).unwrap_or(Value::Null);
         let short = |v: &Value| -> SharedString { v.as_str().map(|s| s[..s.len().min(8)].to_string().into()).unwrap_or("—".into()) };
@@ -183,7 +183,14 @@ pub fn render(app: &mut DevtoolApp, _: &mut Window, cx: &mut Context<DevtoolApp>
                 DataTable::new("submodules", [Column::new("path", t!("Submodule")), Column::new("rec", t!("Pointer")), Column::new("remote", t!("Remote")), Column::new("state", t!("Status"))]).rows(subs),
             );
         }
-        let ci = app.probes.get("ci").cloned().unwrap_or(Value::Null);
+    }
+    // CI de GitHub (`gh run list`) del `origin` del proyecto; en heskala-erp, también de sus submódulos.
+    {
+        let key = if erp { "ci".to_string() } else { format!("ci:{}", app.project) };
+        let ci = app.probes.get(&key).cloned().unwrap_or(Value::Null);
+        if ci.is_null() && !erp {
+            details = details.item("ci", t!("CI"), ui::muted(t!("No CI yet: it needs a GitHub origin and gh logged in (gh auth login)."), cx));
+        }
         for r in ci["data"]["repos"].as_array().cloned().unwrap_or_default() {
             let repo = ui::txt(&r["repo"]).to_string();
             let runs = r["runs"].as_array().cloned().unwrap_or_default();

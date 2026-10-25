@@ -55,7 +55,7 @@ pub fn get(path: &str) -> Result<Value> {
         ["projects"] => if with(|s| s.registered) { json!([project()]) } else { json!([]) },
         ["projects", "discover"] => json!({ "root": "~/code", "candidates": [{ "path": "~/code/my-app", "convexProject": "my-app", "frontend": "vite", "project": null }] }),
         ["doctor"] => doctor(),
-        ["probes"] => json!([]),
+        ["probes"] => json!([ci_probe()]),
         ["jobs"] => with(|s| json!(s.jobs)),
         ["jobs", id] => with(|s| s.jobs.iter().find(|j| j["id"] == *id).cloned()).ok_or_else(|| anyhow!("job {id} doesn't exist"))?,
         ["jobs", id, "log"] => json!({ "offset": 0, "text": job_log(id) }),
@@ -210,6 +210,24 @@ fn overview() -> Value {
         "frontendProduction": null,
         "tabs": { "count": 0, "list": [] },
     })
+}
+
+/// El CI de la demo como lo deja la sonda (`gh run list` del origin del proyecto).
+fn ci_probe() -> Value {
+    let iso = |ago: i64| {
+        let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64((now() - ago) as f64));
+        d.to_iso_string().as_string().unwrap_or_default()
+    };
+    let run = |wf: &str, title: &str, branch: &str, conclusion: &str, ago: i64| {
+        json!({ "status": "completed", "conclusion": conclusion, "workflowName": wf, "displayTitle": title, "headBranch": branch, "headSha": HEAD, "updatedAt": iso(ago), "url": "https://github.com/serlismaldonado/condx/actions" })
+    };
+    let runs = vec![
+        run("CI", "feat: task comments with mentions", "main", "success", 22 * MIN),
+        run("CI", "fix: invite expiry uses the server clock", "main", "success", 3 * HOUR),
+        run("Preview", "feat: file previews", "files-preview", "failure", 5 * HOUR),
+        run("CI", "chore: bump convex", "main", "success", 26 * HOUR),
+    ];
+    json!({ "key": format!("ci:{PROJECT}"), "ok": true, "data": { "repos": [{ "repo": "acme/my-app", "latest": runs[0].clone(), "runs": runs }] } })
 }
 
 fn services() -> Value {

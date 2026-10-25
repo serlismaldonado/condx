@@ -725,7 +725,7 @@ async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut
             }
             Ok(format!("waited {minutes} min"))
         }
-        NodeKind::Check => check(state, &s("check"), &s("env"), p["hours"].as_f64().unwrap_or(24.)).await,
+        NodeKind::Check => check(state, &run.project, &s("check"), &s("env"), p["hours"].as_f64().unwrap_or(24.)).await,
         NodeKind::Notify => {
             let msg = substitute(&s("message"), run);
             run.nodes[i].outputs.insert("message".into(), msg.clone());
@@ -734,7 +734,7 @@ async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut
     }
 }
 
-async fn check(state: &Shared, kind: &str, env: &str, hours: f64) -> Result<String> {
+async fn check(state: &Shared, project: &str, kind: &str, env: &str, hours: f64) -> Result<String> {
     match kind {
         "recent-backup" => {
             let last = state.store.backups(Some(env), 1)?.into_iter().next();
@@ -747,10 +747,11 @@ async fn check(state: &Shared, kind: &str, env: &str, hours: f64) -> Result<Stri
             }
         }
         "ci-green" => {
-            let ci = state.store.probes()?.into_iter().find(|(k, _)| k == "ci").map(|(_, v)| v).unwrap_or(Value::Null);
+            let key = crate::probes::ci::probe_key(project);
+            let ci = state.probe(&key).or_else(|| state.store.probes().ok()?.into_iter().find(|(k, _)| *k == key).map(|(_, v)| v)).unwrap_or(Value::Null);
             let repos = ci["data"]["repos"].as_array().cloned().unwrap_or_default();
             if repos.is_empty() {
-                bail!("no CI data for this project");
+                bail!("no CI data for this project (does it have a GitHub origin, and is gh logged in?)");
             }
             for r in &repos {
                 let last = &r["runs"][0];

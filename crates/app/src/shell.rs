@@ -51,7 +51,6 @@ fn logo() -> Arc<Image> {
 /// (servicios, trabajos, promoción, en vivo…). Lo del proyecto entero (Git y CI, la terminal) va
 /// aparte, y lo que espera al usuario (trabajos en curso, aprobaciones) está en los avisos de arriba.
 fn groups(app: &DevtoolApp) -> Vec<NavGroup> {
-    let erp = app.project == "heskala-erp";
     let services_up = app.services.iter().filter(|s| s["status"] == "running").count();
     let mut list = vec![NavGroup { id: "inicio", label: t!("Home"), icon: IconName::LayoutDashboard, items: vec![item(Page::Overview, t!("Overview"), IconName::LayoutDashboard)] }];
     let envs: Vec<NavItem> = app
@@ -86,7 +85,7 @@ fn groups(app: &DevtoolApp) -> Vec<NavGroup> {
         id: "proyecto",
         label: t!("Project"),
         icon: IconName::GitBranch,
-        items: vec![item(Page::Workflows, t!("Workflows"), IconName::Rocket), item(Page::Repo, if erp { t!("Git & CI") } else { t!("Git") }, IconName::GitBranch), terminal],
+        items: vec![item(Page::Workflows, t!("Workflows"), IconName::Rocket), item(Page::Repo, t!("Git & CI"), IconName::GitBranch), terminal],
     });
     // Guía y Configuración van como íconos en la barra de abajo (render_footer).
     list

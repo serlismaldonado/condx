@@ -1,4 +1,4 @@
-// CI de GitHub del ERP y de los submódulos (`gh run list`): el 2026-10-24 el
+// CI de GitHub de cada proyecto (y de los submódulos del de por defecto) con `gh run list`: el 2026-10-24 el
 // CI de la librería falló y se vio tarde; aquí se ve apenas termina.
 
 use std::sync::OnceLock;
@@ -47,39 +47,76 @@ pub fn is_invalid_workflow(run: &Value) -> bool {
     run["workflowName"].as_str().map(|n| n.starts_with(".github/")).unwrap_or(false)
 }
 
-pub async fn runs(state: Shared) -> Duration {
-    // Los submódulos salen de la sonda de git: al arrancar, esperarla.
-    if state.probe_data("git").is_none() {
-        return Duration::from_secs(2);
+/// La sonda de CI de un proyecto: `ci` para el de por defecto (con sus submódulos), `ci:<nombre>`
+/// para los demás.
+pub fn probe_key(project: &str) -> String {
+    if project.is_empty() || project == crate::projects::DEFAULT {
+        "ci".into()
+    } else {
+        format!("ci:{project}")
     }
+}
+
+/// Las últimas corridas de un repo de GitHub, sin los workflows que GitHub no pudo leer.
+/// Devuelve también si alguna sigue corriendo.
+async fn repo_runs(slug: &str) -> Result<(Value, bool), String> {
+    let out = run(
+        "gh",
+        &[
+            "run", "list", "-R", slug, "--limit", "20", "--json",
+            "databaseId,status,conclusion,headSha,headBranch,displayTitle,workflowName,event,createdAt,updatedAt,url",
+        ],
+        None,
+        &[],
+        T,
+    )
+    .await;
+    if !out.ok {
+        return Err(format!("{slug}: {}", out.error()));
+    }
+    let all: Vec<Value> = serde_json::from_str(&out.stdout).unwrap_or_default();
+    let (list, invalid): (Vec<Value>, Vec<Value>) = all.into_iter().partition(|r| !is_invalid_workflow(r));
+    let in_progress = list.iter().any(|r| r["status"] != "completed");
+    let latest = list.first().cloned();
+    let invalid: Vec<&Value> = invalid.iter().map(|r| &r["workflowName"]).collect();
+    Ok((json!({ "repo": slug, "latest": latest, "runs": list, "invalidWorkflows": invalid }), in_progress))
+}
+
+async fn record(state: &Shared, key: &str, slugs: Vec<String>) -> bool {
     let mut repos = vec![];
     let mut in_progress = false;
     let mut errors = vec![];
-    for slug in slugs(&state).await {
-        let out = run(
-            "gh",
-            &[
-                "run", "list", "-R", &slug, "--limit", "20", "--json",
-                "databaseId,status,conclusion,headSha,headBranch,displayTitle,workflowName,event,createdAt,updatedAt,url",
-            ],
-            None,
-            &[],
-            T,
-        )
-        .await;
-        if !out.ok {
-            errors.push(format!("{slug}: {}", out.error()));
-            continue;
+    for slug in slugs {
+        match repo_runs(&slug).await {
+            Ok((r, busy)) => {
+                in_progress |= busy;
+                repos.push(r);
+            }
+            Err(e) => errors.push(e),
         }
-        let all: Vec<Value> = serde_json::from_str(&out.stdout).unwrap_or_default();
-        let (list, invalid): (Vec<Value>, Vec<Value>) = all.into_iter().partition(|r| !is_invalid_workflow(r));
-        in_progress |= list.iter().any(|r| r["status"] != "completed");
-        let latest = list.first().cloned();
-        let invalid: Vec<&Value> = invalid.iter().map(|r| &r["workflowName"]).collect();
-        repos.push(json!({ "repo": slug, "latest": latest, "runs": list, "invalidWorkflows": invalid }));
     }
     let ok = !repos.is_empty();
-    state.set_probe("ci", ok, json!({ "repos": repos }), (!errors.is_empty()).then(|| errors.join("\n")));
+    state.set_probe(key, ok, json!({ "repos": repos }), (!errors.is_empty()).then(|| errors.join("\n")));
+    in_progress
+}
+
+pub async fn runs(state: Shared) -> Duration {
+    // Los submódulos salen de la sonda de git: al arrancar, esperarla (si hay repo por defecto;
+    // sin él la sonda de git no corre nunca y los demás proyectos no deben quedarse esperando).
+    if state.config.repo.is_some() && state.probe("git").is_none() {
+        return Duration::from_secs(2);
+    }
+    let mut in_progress = false;
+    if state.config.repo.is_some() {
+        in_progress |= record(&state, "ci", slugs(&state).await).await;
+    }
+    // Los demás proyectos: su `origin`, si es de GitHub. Sin remoto, sin sonda (no es un error).
+    for project in state.store.projects().unwrap_or_default().into_iter().filter(|p| !p.is_default()) {
+        let origin = run("git", &["remote", "get-url", "origin"], Some(&project.repo), &[], T).await;
+        if let Some(slug) = github_slug(&origin.stdout) {
+            in_progress |= record(&state, &probe_key(&project.name), vec![slug]).await;
+        }
+    }
     if in_progress { Duration::from_secs(10) } else { Duration::from_secs(60) }
 }
 

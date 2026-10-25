@@ -141,6 +141,11 @@
 
     pre { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 18px; overflow-x: auto; font-size: 13px; line-height: 1.75; margin: 0; }
     pre .c { color: var(--subtle); }
+    .code { position: relative; min-width: 0; }
+    .code pre { padding-right: 72px; }
+    .copy { position: absolute; top: 10px; right: 10px; font: 500 10px/1 "JetBrains Mono", monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); background: var(--card); border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px; cursor: pointer; }
+    .copy:hover { color: var(--fg); border-color: #3a3a3a; }
+    .copy.done { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
 
     /* Cierre con un patrón de cuadros */
     .pattern { height: 150px; background:
@@ -381,6 +386,26 @@ scripts/bundle-app.sh &amp;&amp; open ~/Applications/Condx.app</pre>
   </main>
 
   <script>
+    // Un botón de copiar en cada bloque de comandos (sin las líneas de comentario).
+    document.querySelectorAll("pre").forEach((pre) => {
+      const box = document.createElement("div");
+      box.className = "code";
+      pre.replaceWith(box);
+      box.appendChild(pre);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "copy";
+      button.textContent = "Copy";
+      button.addEventListener("click", async () => {
+        const text = pre.innerText.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#")).join("\n");
+        try { await navigator.clipboard.writeText(text); } catch { return; }
+        button.textContent = "Copied";
+        button.classList.add("done");
+        setTimeout(() => { button.textContent = "Copy"; button.classList.remove("done"); }, 1600);
+      });
+      box.appendChild(button);
+    });
+
     // La demo es la app real compilada a WebAssembly (~6 MB): se carga solo al pedirla.
     document.getElementById("launch").addEventListener("click", () => {
       const stage = document.getElementById("stage");

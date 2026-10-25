@@ -1,0 +1,22 @@
+name = "import"
+title = "Restore backup (import --replace-all)"
+description = "Replaces ALL the deployment's data with a backup from ~/.condx/backups (.age files are decrypted to a temporary file). Anything written after the backup is lost."
+kinds = ["devbox", "throwaway", "cloud-dev", "cloud-prod"]
+projects = true
+writes = true
+
+[approval]
+devbox = "simple"
+throwaway = "none"
+cloud-dev = "typed"
+cloud-prod = "reinforced"
+
+[[args]]
+name = "path"
+type = "backup"
+description = ".zip or .zip.age file inside ~/.condx/backups"
+
+[[step]]
+name = "Import"
+builtin = "import"
+timeout_secs = 3600

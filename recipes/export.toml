@@ -1,0 +1,27 @@
+name = "export"
+title = "Backup (export)"
+description = "Exports the whole deployment to ~/.condx/backups/<environment>-<date>.zip. On cloud dev and production it's encrypted with age (key in the Keychain) and deleted after 14 days."
+kinds = ["devbox", "throwaway", "cloud-dev", "cloud-prod"]
+projects = true
+writes = false
+
+[approval]
+devbox = "none"
+throwaway = "none"
+cloud-dev = "none"
+cloud-prod = "none"
+
+# Lo que deja para los nodos siguientes de un flujo: {node.<id>.backup_id}.
+[[outputs]]
+name = "backup_id"
+description = "Number of the backup it made"
+
+[[outputs]]
+name = "backup_path"
+description = "Where the backup file is"
+
+[[step]]
+name = "Export"
+builtin = "export"
+idempotent = true
+timeout_secs = 1800

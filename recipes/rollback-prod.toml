@@ -1,0 +1,19 @@
+name = "rollback-prod"
+title = "Roll back production (functions)"
+description = "Redeploys a previously recorded commit to production (defaults to the previous deploy). Data isn't touched; the frontend is rolled back with `vercel rollback`."
+kinds = ["cloud-prod"]
+writes = true
+
+[approval]
+cloud-prod = "typed"
+
+[[args]]
+name = "commit"
+type = "commit"
+default = "previous"
+description = "“previous” or a commit"
+
+[[step]]
+name = "Deploy previous commit"
+builtin = "deploy-commit"
+timeout_secs = 1500

@@ -1,0 +1,29 @@
+name = "backfill"
+title = "Run a backfill"
+description = "Same as running a function, marked idempotent: safe to retry."
+kinds = ["devbox", "throwaway", "cloud-dev"]
+projects = true
+writes = true
+
+[approval]
+devbox = "none"
+throwaway = "none"
+cloud-dev = "simple"
+
+[[args]]
+name = "function"
+type = "function"
+description = "Backfill function, e.g. migrations:backfillDefaults"
+
+[[args]]
+name = "payload"
+type = "json"
+default = "{}"
+description = "Arguments as JSON"
+
+[[step]]
+name = "Run backfill"
+run = ["{convex}", "run", "{args.function}", "{args.payload}"]
+convex = true
+idempotent = true
+timeout_secs = 1800

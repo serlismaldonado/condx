@@ -1,0 +1,14 @@
+name = "throwaway-destroy"
+title = "Destroy throwaway backend"
+description = "Deletes the container, its volume and the environment record."
+kinds = ["throwaway"]
+writes = true
+
+[approval]
+throwaway = "none"
+
+[[step]]
+name = "Delete container and volume"
+builtin = "throwaway-destroy"
+idempotent = true
+timeout_secs = 120

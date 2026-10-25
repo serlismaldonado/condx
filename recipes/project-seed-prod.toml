@@ -1,0 +1,45 @@
+name = "project-seed-prod"
+title = "Copy a project's production to its local instance"
+description = "Like “Pull a project's cloud dev…”, but reads the project's production (`--prod`). Production is only read; the data stays on your Mac (the temporary zip is deleted after import). Approval requires typing the project name."
+kinds = ["devbox"]
+projects = true
+writes = true
+
+[approval]
+devbox = "typed"
+
+[[args]]
+name = "project"
+type = "project"
+description = "Like “Pull a project's cloud dev…”, but reads the project's production (`--prod`). Production is only read; the data stays on your Mac (the temporary zip is deleted after import). Approval requires typing the project name."
+
+[[args]]
+name = "files"
+type = "flag"
+default = "no"
+description = "Like “Pull a project's cloud dev…”, but reads the project's production (`--prod`). Production is only read; the data stays on your Mac (the temporary zip is deleted after import). Approval requires typing the project name."
+
+[[step]]
+name = "Export production"
+builtin = "project-export"
+timeout_secs = 3600
+
+[[step]]
+name = "Read environment variables"
+builtin = "project-read-env"
+timeout_secs = 300
+
+[[step]]
+name = "Import into the local backend"
+builtin = "project-import"
+timeout_secs = 3600
+
+[[step]]
+name = "Copy environment variables"
+builtin = "project-write-env"
+timeout_secs = 300
+
+[[step]]
+name = "Start the deployer"
+builtin = "project-start-deployer"
+timeout_secs = 120

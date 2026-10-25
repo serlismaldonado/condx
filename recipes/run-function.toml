@@ -1,0 +1,32 @@
+name = "run-function"
+title = "Run a function"
+description = "Runs a query, mutation or action with `convex run`."
+kinds = ["devbox", "throwaway", "cloud-dev"]
+projects = true
+writes = true
+# Con deploy key guardada (pestaña Claves), corre con ella; si no, con la sesión de la CLI.
+deploy_key = true
+# Aprobación de base para mutaciones y acciones; una query no la pide si Configuración deja leer
+# los datos de ese tipo de entorno. Las reglas de Configuración (Cambios) mandan sobre esto.
+
+[approval]
+devbox = "none"
+throwaway = "none"
+cloud-dev = "simple"
+
+[[args]]
+name = "function"
+type = "function"
+description = "Function path, e.g. migrations:backfillDefaults"
+
+[[args]]
+name = "payload"
+type = "json"
+default = "{}"
+description = "Arguments as JSON"
+
+[[step]]
+name = "Run function"
+run = ["{convex}", "run", "{args.function}", "{args.payload}"]
+convex = true
+timeout_secs = 600

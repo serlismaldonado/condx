@@ -1,0 +1,19 @@
+name = "local-mode"
+title = "Change local environment mode"
+description = "native: backend and deployer as daemon processes (with the migrated data). docker: back to the containers, with the data they had before migrating."
+kinds = ["devbox"]
+writes = true
+
+[approval]
+devbox = "none"
+
+[[args]]
+name = "mode"
+type = "localmode"
+default = "native"
+description = "native or docker"
+
+[[step]]
+name = "Switch mode"
+builtin = "local-mode"
+timeout_secs = 900

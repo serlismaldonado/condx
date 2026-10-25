@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Condx demo</title>
+  <style>html, body { margin: 0; height: 100%; background: #0f0f0f; overflow: hidden; }</style>
+</head>
+<body>
+  <script>
+    // La app enfoca su campo de texto oculto seguido; dentro de la landing (un iframe) eso
+    // arrastraría la página hasta la demo. Enfocar nunca desplaza.
+    const focus = HTMLElement.prototype.focus;
+    HTMLElement.prototype.focus = function (options) {
+      focus.call(this, Object.assign({}, options, { preventScroll: true }));
+    };
+  </script>
+  <script type="module">
+    import init from "./pkg/devtool_app.js";
+    init();
+  </script>
+</body>
+</html>

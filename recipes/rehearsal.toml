@@ -1,0 +1,103 @@
+name = "rehearsal"
+title = "Rehearsal with real data"
+description = "Environment backup (or an existing one) → throwaway backend → import → deploy the candidate commit → backfills → no function errors. The source is only read. If it passes, it's recorded for the promotion."
+kinds = ["cloud-dev", "cloud-prod"]
+writes = false
+
+[approval]
+cloud-dev = "none"
+cloud-prod = "none"
+
+# Lo que deja para los nodos siguientes de un flujo.
+[[outputs]]
+name = "backup_id"
+description = "Number of the backup it used"
+
+[[outputs]]
+name = "throwaway"
+description = "Name of the throwaway environment of the rehearsal"
+
+[[args]]
+name = "commit"
+type = "commit"
+default = "dev"
+description = "Candidate commit"
+
+[[args]]
+name = "backup"
+type = "string"
+default = "new"
+description = "“new” for a new backup, or an existing backup's number"
+
+[[args]]
+name = "base_commit"
+type = "commit"
+default = "none"
+description = "Commit to deploy before the import (if the new schema doesn't accept the old data); “none” = empty backend"
+
+[[args]]
+name = "backfills"
+type = "functions"
+default = ""
+description = "Backfills to run after the deploy, comma-separated"
+
+[[args]]
+name = "port"
+type = "port"
+default = "3330"
+description = "Throwaway port"
+
+[[args]]
+name = "keep"
+type = "flag"
+default = "no"
+description = "yes to keep the throwaway at the end"
+
+[[step]]
+name = "Back up the source"
+builtin = "rehearsal-backup"
+idempotent = true
+timeout_secs = 1800
+
+[[step]]
+name = "Create throwaway"
+builtin = "rehearsal-create"
+checkpoint = true
+timeout_secs = 180
+
+[[step]]
+name = "Deploy base commit"
+builtin = "rehearsal-base"
+timeout_secs = 1500
+
+[[step]]
+name = "Import backup"
+builtin = "rehearsal-import"
+timeout_secs = 3600
+
+[[step]]
+name = "Deploy candidate"
+builtin = "rehearsal-deploy"
+timeout_secs = 1500
+
+[[step]]
+name = "Backfills"
+builtin = "rehearsal-backfills"
+idempotent = true
+timeout_secs = 3600
+
+[[step]]
+name = "Check for errors"
+builtin = "rehearsal-verify"
+idempotent = true
+timeout_secs = 120
+
+[[step]]
+name = "Record rehearsal"
+builtin = "rehearsal-record"
+
+[[step]]
+name = "Destroy throwaway"
+builtin = "rehearsal-destroy"
+finally = true
+timeout_secs = 120

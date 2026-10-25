@@ -1,0 +1,58 @@
+name = "project-create"
+title = "Create a new Convex project"
+description = "Creates a project from scratch: generates the folder from a Convex template (npm create convex), installs dependencies, creates the project in your Convex account with its development deployment (convex dev --configure new, using this Mac's CLI session) and adds it to Condx. Unlike “Add project”, which only registers an existing folder."
+kinds = ["devbox"]
+projects = true
+writes = true
+
+[approval]
+# Crea recursos en la cuenta de Convex: se aprueba en la app.
+devbox = "simple"
+
+# Lo que deja para los nodos siguientes de un flujo.
+[[outputs]]
+name = "project"
+description = "Name of the project it created"
+
+[[args]]
+name = "name"
+type = "string"
+description = "Folder and Convex project name (lowercase letters, digits and hyphens)"
+
+[[args]]
+name = "parent"
+type = "string"
+default = "~/Documents/Software"
+description = "Parent folder (the project's folder goes inside)"
+
+[[args]]
+name = "template"
+type = "string"
+default = "react-vite"
+description = "create-convex template: react-vite, react-vite-shadcn, react-vite-convexauth-shadcn, react-vite-clerk-shadcn, react-vite-authkit, nextjs, nextjs-shadcn, nextjs-convexauth, nextjs-clerk-shadcn, nextjs-authkit, tanstack-start, tanstack-start-clerk, bare (or a GitHub owner/repo)"
+
+[[args]]
+name = "team"
+type = "string"
+default = "auto"
+description = "Convex team (slug). “auto”: the session's team, if there's only one"
+
+[[step]]
+name = "Generate the folder from the template"
+builtin = "project-create-scaffold"
+timeout_secs = 600
+
+[[step]]
+name = "Install dependencies"
+builtin = "project-create-install"
+timeout_secs = 900
+
+[[step]]
+name = "Create the project on Convex"
+builtin = "project-create-convex"
+timeout_secs = 600
+
+[[step]]
+name = "Add to Condx"
+builtin = "project-create-register"
+timeout_secs = 60

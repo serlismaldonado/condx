@@ -1,0 +1,19 @@
+name = "throwaway-create"
+title = "Create throwaway backend"
+description = "Starts an empty convex-backend in Docker and registers it as a “throwaway” environment with its admin key."
+kinds = ["new"]
+writes = true
+
+[approval]
+new = "none"
+
+[[args]]
+name = "port"
+type = "port"
+default = "3310"
+description = "API port (the site uses the next one)"
+
+[[step]]
+name = "Create container and register"
+builtin = "throwaway-create"
+timeout_secs = 180

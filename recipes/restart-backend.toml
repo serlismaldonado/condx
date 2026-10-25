@@ -1,0 +1,14 @@
+name = "restart-backend"
+title = "Restart the devbox backend"
+description = "docker compose restart of the self-hosted backend."
+kinds = ["devbox"]
+writes = true
+
+[approval]
+devbox = "none"
+
+[[step]]
+name = "Restart"
+run = ["docker", "compose", "-f", "docker/onprem-dev/compose.yaml", "-p", "heskala", "restart", "backend"]
+idempotent = true
+timeout_secs = 180

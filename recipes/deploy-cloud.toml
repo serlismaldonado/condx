@@ -1,0 +1,20 @@
+name = "deploy-cloud"
+title = "Deploy to cloud dev"
+description = "Deploys a commit to cloud dev with `convex dev --once` (like the rollout scripts) from a worktree with the submodule, and records it: that's what the production promotion checks."
+kinds = ["cloud-dev"]
+projects = true
+writes = true
+
+[approval]
+cloud-dev = "simple"
+
+[[args]]
+name = "commit"
+type = "commit"
+default = "dev"
+description = "Branch, tag or commit"
+
+[[step]]
+name = "Deploy and record"
+builtin = "deploy-commit"
+timeout_secs = 1500

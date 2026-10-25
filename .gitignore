@@ -1,0 +1,6 @@
+target/
+.DS_Store
+.vercel/
+# Generados por scripts/build-web-demo.sh
+site/demo/pkg/
+site/assets/icons/

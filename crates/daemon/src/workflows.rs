@@ -1,0 +1,873 @@
+// Flujos de despliegue configurables (como n8n): cada proyecto tiene uno o más
+// flujos, grafos de nodos unidos por aristas. Un nodo pide una receta (un
+// trabajo normal, con su aprobación si la receta la pide), espera unos minutos,
+// pide una aprobación (un trabajo de la receta workflow-approval: se aprueba
+// solo desde la app), verifica algo (un respaldo reciente, el CI en verde, que
+// el entorno responda) o deja un aviso. Cada nodo se puede apagar (se salta) y
+// dice qué hacer si falla (parar o seguir).
+//
+// Una corrida recorre los nodos en orden topológico, uno por vez, y se guarda
+// en SQLite: se puede cancelar, reintentar desde el nodo que falló y sigue sola
+// si el daemon se reinicia. Los flujos se exportan e importan como JSON (para
+// tenerlos en el repo del proyecto).
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+use anyhow::{anyhow, bail, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tokio::sync::watch;
+
+use crate::jobs::{self, Status};
+use crate::state::Shared;
+use crate::store::now_ms;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeKind {
+    /// Pide un trabajo de una receta: `{recipe, env, args}`.
+    Recipe,
+    /// Espera: `{minutes}`.
+    Wait,
+    /// Aprobación en la app: `{env, level: simple|strict, message}`.
+    Approval,
+    /// Verificación: `{check: recent-backup|ci-green|env-reachable, env, hours}`.
+    Check,
+    /// Aviso: `{message}`.
+    Notify,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum OnFailure {
+    #[default]
+    Stop,
+    Continue,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Node {
+    pub id: String,
+    pub kind: NodeKind,
+    pub title: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub on_failure: OnFailure,
+    #[serde(default)]
+    pub params: Value,
+    /// Lugar en el editor.
+    #[serde(default)]
+    pub x: f32,
+    #[serde(default)]
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Workflow {
+    pub id: String,
+    pub project: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub nodes: Vec<Node>,
+    /// Apagado: se conserva (con sus corridas) pero no se puede correr, ni desde la app ni por
+    /// el MCP.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Aristas `[desde, hasta]`.
+    #[serde(default)]
+    pub edges: Vec<(String, String)>,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeStatus {
+    Pending,
+    Running,
+    WaitingApproval,
+    Succeeded,
+    Failed,
+    Skipped,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeRun {
+    pub id: String,
+    pub status: NodeStatus,
+    #[serde(default)]
+    pub job: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    #[serde(default)]
+    pub ended_at: Option<i64>,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub outputs: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RunStatus {
+    Running,
+    WaitingApproval,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl RunStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            RunStatus::Running => "running",
+            RunStatus::WaitingApproval => "waiting-approval",
+            RunStatus::Succeeded => "succeeded",
+            RunStatus::Failed => "failed",
+            RunStatus::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Run {
+    pub id: String,
+    pub workflow_id: String,
+    pub workflow_name: String,
+    pub project: String,
+    /// Commit o rama que se lleva (`{run.commit}` en los argumentos).
+    pub commit: String,
+    pub status: RunStatus,
+    /// El flujo tal como estaba al empezar: editarlo después no cambia la corrida.
+    pub snapshot: Workflow,
+    pub order: Vec<String>,
+    pub nodes: Vec<NodeRun>,
+    pub requested_by: String,
+    pub created_at: i64,
+    #[serde(default)]
+    pub ended_at: Option<i64>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+fn new_id(prefix: &str) -> String {
+    let mut bytes = [0u8; 3];
+    use std::io::Read;
+    let _ = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes));
+    format!("{prefix}{}{:02x}{:02x}{:02x}", now_ms(), bytes[0], bytes[1], bytes[2])
+}
+
+// ---------- Validación y orden ----------
+
+/// Orden topológico de los nodos (Kahn, estable por el orden de la lista). Error si hay un ciclo.
+pub fn topo_order(w: &Workflow) -> Result<Vec<String>> {
+    let ids: Vec<&str> = w.nodes.iter().map(|n| n.id.as_str()).collect();
+    let mut indeg: HashMap<&str, usize> = ids.iter().map(|i| (*i, 0)).collect();
+    let mut out: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (a, b) in &w.edges {
+        if !indeg.contains_key(a.as_str()) || !indeg.contains_key(b.as_str()) {
+            bail!("connection {a} → {b} uses a node that doesn't exist");
+        }
+        out.entry(a.as_str()).or_default().push(b.as_str());
+        *indeg.get_mut(b.as_str()).unwrap() += 1;
+    }
+    let mut ready: VecDeque<&str> = ids.iter().copied().filter(|i| indeg[i] == 0).collect();
+    let mut order = vec![];
+    while let Some(n) = ready.pop_front() {
+        order.push(n.to_string());
+        for m in out.get(n).cloned().unwrap_or_default() {
+            let d = indeg.get_mut(m).unwrap();
+            *d -= 1;
+            if *d == 0 {
+                ready.push_back(m);
+            }
+        }
+    }
+    if order.len() != ids.len() {
+        bail!("the workflow has a cycle: a node can't depend on itself");
+    }
+    Ok(order)
+}
+
+/// Problemas del flujo (vacío = se puede correr). `envs` y `recipe_exists` vienen del daemon.
+pub fn problems(w: &Workflow, envs: &HashSet<String>, recipe_exists: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut out = vec![];
+    if w.name.trim().is_empty() {
+        out.push("the workflow has no name".into());
+    }
+    if w.nodes.is_empty() {
+        out.push("the workflow has no nodes".into());
+    }
+    let mut seen = HashSet::new();
+    for n in &w.nodes {
+        if !seen.insert(n.id.as_str()) {
+            out.push(format!("id {} is duplicated", n.id));
+        }
+    }
+    if let Err(e) = topo_order(w) {
+        out.push(e.to_string());
+    }
+    let s = |n: &Node, k: &str| n.params[k].as_str().unwrap_or_default().trim().to_string();
+    for n in w.nodes.iter().filter(|n| n.enabled) {
+        let t = &n.title;
+        let env_ok = |out: &mut Vec<String>| {
+            let e = s(n, "env");
+            if e.is_empty() {
+                out.push(format!("“{t}”: missing environment"));
+            } else if !envs.contains(&e) {
+                out.push(format!("“{t}”: environment {e} doesn't exist"));
+            }
+        };
+        match n.kind {
+            NodeKind::Recipe => {
+                let r = s(n, "recipe");
+                if r.is_empty() {
+                    out.push(format!("“{t}”: missing recipe"));
+                } else if !recipe_exists(&r) {
+                    out.push(format!("“{t}”: recipe {r} doesn't exist"));
+                }
+                env_ok(&mut out);
+            }
+            NodeKind::Wait => {
+                if n.params["minutes"].as_f64().is_none_or(|m| m <= 0.) {
+                    out.push(format!("“{t}”: minutes must be more than 0"));
+                }
+            }
+            NodeKind::Approval => env_ok(&mut out),
+            NodeKind::Check => {
+                match s(n, "check").as_str() {
+                    "recent-backup" | "env-reachable" => env_ok(&mut out),
+                    "ci-green" => {}
+                    other => out.push(format!("“{t}”: unknown check “{other}”")),
+                }
+            }
+            NodeKind::Notify => {}
+        }
+    }
+    out
+}
+
+fn check_daemon(state: &Shared, w: &Workflow) -> Result<()> {
+    let envs: HashSet<String> = state.store.environments()?.into_iter().map(|e| e.name).collect();
+    let p = problems(w, &envs, |r| crate::recipes::get(r).is_some());
+    if p.is_empty() {
+        Ok(())
+    } else {
+        bail!("{}", p.join("; "))
+    }
+}
+
+/// `{run.commit}` y `{node.<id>.<salida>}` en los argumentos de un nodo.
+pub fn substitute(text: &str, run: &Run) -> String {
+    let mut out = text.replace("{run.commit}", &run.commit);
+    for nr in &run.nodes {
+        for (k, v) in &nr.outputs {
+            out = out.replace(&format!("{{node.{}.{k}}}", nr.id), v);
+        }
+    }
+    out
+}
+
+// ---------- Plantillas ----------
+
+fn node(id: &str, kind: NodeKind, title: &str, x: f32, y: f32, params: Value) -> Node {
+    Node { id: id.into(), kind, title: title.into(), enabled: true, on_failure: OnFailure::Stop, params, x, y }
+}
+
+fn chain(nodes: &[Node]) -> Vec<(String, String)> {
+    nodes.windows(2).map(|w| (w[0].id.clone(), w[1].id.clone())).collect()
+}
+
+/// Plantillas para un proyecto: la promoción de heskala-erp (la cadena de siempre) solo en su
+/// proyecto; las demás, genéricas. `envs` = entornos del proyecto por tipo.
+pub fn templates(project: &str, is_default: bool, envs: &[(String, String)]) -> Vec<Workflow> {
+    let of = |kind: &str| envs.iter().find(|(_, k)| k == kind).map(|(n, _)| n.clone()).unwrap_or_default();
+    let (local, dev, prod) = (of("devbox"), of("cloud-dev"), of("cloud-prod"));
+    let mut out = vec![];
+    if is_default {
+        let nodes = vec![
+            node("backup", NodeKind::Recipe, "Production backup", 0., 0., json!({ "recipe": "export", "env": prod, "args": {} })),
+            node("rehearsal", NodeKind::Recipe, "Rehearsal with real data", 300., 0., json!({ "recipe": "rehearsal", "env": prod, "args": { "commit": "{run.commit}", "backup": "{node.backup.backup_id}" } })),
+            node("deploy-dev", NodeKind::Recipe, "Deploy to cloud dev", 600., 0., json!({ "recipe": "deploy-cloud", "env": dev, "args": { "commit": "{run.commit}" } })),
+            node("quiet", NodeKind::Wait, "Wait 30 minutes", 900., 0., json!({ "minutes": 30 })),
+            node("promote", NodeKind::Recipe, "Promote to production", 1200., 0., json!({ "recipe": "promote-prod", "env": prod, "args": { "commit": "{run.commit}" } })),
+        ];
+        let edges = chain(&nodes);
+        out.push(Workflow { id: String::new(), project: project.into(), name: "Promotion to production".into(), description: "The usual chain: backup, rehearsal, cloud dev, a 30-minute wait and production.".into(), nodes, edges, enabled: true, updated_at: 0 });
+    }
+    // Los sugeridos (`suggested`): se crean apagados con «Crear los sugeridos».
+    let flow = |name: &str, description: &str, nodes: Vec<Node>| {
+        let edges = chain(&nodes);
+        Workflow { id: String::new(), project: project.into(), name: name.into(), description: description.into(), nodes, edges, enabled: true, updated_at: 0 }
+    };
+    if !local.is_empty() {
+        out.push(flow(
+            "Deploy to local",
+            "The local backend responds, the commit is deployed to it and you get a notice.",
+            vec![
+                node("check", NodeKind::Check, "Local responds", 0., 0., json!({ "check": "env-reachable", "env": local })),
+                node("deploy", NodeKind::Recipe, "Deploy to local", 300., 0., json!({ "recipe": "deploy", "env": local, "args": { "commit": "{run.commit}" } })),
+                node("notify", NodeKind::Notify, "Notice", 600., 0., json!({ "message": "{run.commit} deployed to local" })),
+            ],
+        ));
+    }
+    if !dev.is_empty() {
+        out.push(flow(
+            "Deploy to cloud dev",
+            "CI green, cloud dev responds, your approval in the app, deploy the commit and a notice. Safe for agents: they can start it but only you approve.",
+            vec![
+                node("ci", NodeKind::Check, "CI is green", 0., 0., json!({ "check": "ci-green" })),
+                node("check", NodeKind::Check, "Cloud dev responds", 300., 0., json!({ "check": "env-reachable", "env": dev })),
+                node("approve", NodeKind::Approval, "Approve the deploy", 600., 0., json!({ "env": dev, "level": "simple", "message": "Deploy to cloud dev?" })),
+                node("deploy", NodeKind::Recipe, "Deploy to cloud dev", 900., 0., json!({ "recipe": "deploy-cloud", "env": dev, "args": { "commit": "{run.commit}" } })),
+                node("notify", NodeKind::Notify, "Notice", 1200., 0., json!({ "message": "{run.commit} deployed to cloud dev" })),
+            ],
+        ));
+    }
+    if is_default && !dev.is_empty() {
+        out.push(flow(
+            "Rehearsal with cloud dev data",
+            "Backs up cloud dev and tries the commit on a copy of that data in a throwaway backend; cloud dev is only read.",
+            vec![
+                node("backup", NodeKind::Recipe, "Cloud dev backup", 0., 0., json!({ "recipe": "export", "env": dev, "args": {} })),
+                node("rehearsal", NodeKind::Recipe, "Rehearsal", 300., 0., json!({ "recipe": "rehearsal", "env": dev, "args": { "commit": "{run.commit}", "backup": "{node.backup.backup_id}" } })),
+                node("notify", NodeKind::Notify, "Notice", 600., 0., json!({ "message": "Rehearsal of {run.commit} passed" })),
+            ],
+        ));
+    }
+    if is_default && !prod.is_empty() {
+        out.push(flow(
+            "Roll back production",
+            "Reinforced approval, a production backup and back to the previous deploy.",
+            vec![
+                node("approve", NodeKind::Approval, "Approve the rollback", 0., 0., json!({ "env": prod, "level": "strict", "message": "Roll production back to the previous deploy?" })),
+                node("backup", NodeKind::Recipe, "Production backup", 300., 0., json!({ "recipe": "export", "env": prod, "args": {} })),
+                node("rollback", NodeKind::Recipe, "Roll back", 600., 0., json!({ "recipe": "rollback-prod", "env": prod, "args": { "commit": "previous" } })),
+                node("notify", NodeKind::Notify, "Notice", 900., 0., json!({ "message": "Production rolled back" })),
+            ],
+        ));
+    }
+    let clouds: Vec<&String> = [&dev, &prod].into_iter().filter(|e| !e.is_empty()).collect();
+    if !clouds.is_empty() {
+        let mut nodes: Vec<Node> = clouds
+            .iter()
+            .enumerate()
+            .map(|(i, e)| node(&format!("backup-{i}"), NodeKind::Recipe, &format!("Backup of {e}"), 300. * i as f32, 0., json!({ "recipe": "export", "env": e, "args": {} })))
+            .collect();
+        let x = 300. * nodes.len() as f32;
+        nodes.push(node("notify", NodeKind::Notify, "Notice", x, 0., json!({ "message": "Cloud backups done" })));
+        out.push(flow("Cloud backups", "An encrypted backup of each cloud environment (kept 14 days).", nodes));
+    }
+
+    let target = if !dev.is_empty() { dev.clone() } else { local.clone() };
+    let nodes = vec![
+        node("check", NodeKind::Check, "The environment responds", 0., 0., json!({ "check": "env-reachable", "env": target })),
+        node("approve", NodeKind::Approval, "Approve", 300., 0., json!({ "env": target, "level": "simple", "message": "Continue?" })),
+        node("run", NodeKind::Recipe, "Run a function", 600., 0., json!({ "recipe": "run-function", "env": target, "args": { "function": "", "payload": "{}" } })),
+        node("notify", NodeKind::Notify, "Notify", 900., 0., json!({ "message": "Done" })),
+    ];
+    let edges = chain(&nodes);
+    out.push(Workflow { id: String::new(), project: project.into(), name: "Example: check, approve and run".into(), description: "A starting point for building your own.".into(), nodes, edges, enabled: true, updated_at: 0 });
+    out.push(Workflow { id: String::new(), project: project.into(), name: "Blank".into(), description: String::new(), nodes: vec![], edges: vec![], enabled: true, updated_at: 0 });
+    out
+}
+
+/// Los sugeridos: las plantillas sin el ejemplo ni el flujo en blanco.
+fn is_suggested(w: &Workflow) -> bool {
+    !w.nodes.is_empty() && !w.name.starts_with("Example")
+}
+
+/// Crea, apagados, los flujos sugeridos que el proyecto todavía no tiene (por nombre); devuelve
+/// los que creó. Se encienden desde la app cuando se quieran usar.
+pub fn seed_suggested(state: &Shared, project: &str) -> Result<Vec<String>> {
+    let is_default = crate::projects::get(state, Some(project)).map(|p| p.is_default()).unwrap_or(false);
+    let existing: HashSet<String> = list(state, project)?.into_iter().map(|w| w.name).collect();
+    let envs = project_envs(state, project);
+    let mut created = vec![];
+    for mut w in templates(project, is_default, &envs).into_iter().filter(is_suggested) {
+        if existing.contains(&w.name) {
+            continue;
+        }
+        w.enabled = false;
+        let w = save(state, w)?;
+        created.push(w.name);
+    }
+    Ok(created)
+}
+
+// ---------- Guardar, exportar, importar ----------
+
+pub fn list(state: &Shared, project: &str) -> Result<Vec<Workflow>> {
+    let mut list: Vec<Workflow> = state.store.workflows(project)?.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect();
+    // heskala-erp empieza con su promoción ya armada (lo de siempre no se pierde).
+    if list.is_empty() {
+        if let Ok(p) = crate::projects::get(state, Some(project)) {
+            if p.is_default() {
+                let envs = project_envs(state, project);
+                if let Some(mut w) = templates(project, true, &envs).into_iter().next() {
+                    w.id = new_id("w");
+                    w.updated_at = now_ms();
+                    state.store.save_workflow(&w.id, project, &serde_json::to_value(&w)?)?;
+                    list.push(w);
+                }
+            }
+        }
+    }
+    Ok(list)
+}
+
+pub fn project_envs(state: &Shared, project: &str) -> Vec<(String, String)> {
+    let default = crate::projects::get(state, Some(project)).map(|p| p.is_default()).unwrap_or(false);
+    state
+        .store
+        .environments()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| match &e.project {
+            Some(p) => p == project,
+            None => default,
+        })
+        .map(|e| (e.name.clone(), e.kind.as_str().to_string()))
+        .collect()
+}
+
+/// Guarda (crea si no tiene id). Se puede guardar con problemas; correrlo, no.
+pub fn save(state: &Shared, mut w: Workflow) -> Result<Workflow> {
+    if w.id.is_empty() {
+        w.id = new_id("w");
+    }
+    w.updated_at = now_ms();
+    state.store.save_workflow(&w.id, &w.project, &serde_json::to_value(&w)?)?;
+    Ok(w)
+}
+
+pub fn get(state: &Shared, id: &str) -> Result<Workflow> {
+    let v = state.store.workflow(id)?.ok_or_else(|| anyhow!("workflow {id} doesn't exist"))?;
+    Ok(serde_json::from_value(v)?)
+}
+
+/// JSON para el repo: sin id ni proyecto (se asignan al importar).
+pub fn export(w: &Workflow) -> Value {
+    json!({ "condxWorkflow": 1, "name": w.name, "description": w.description, "enabled": w.enabled, "nodes": w.nodes, "edges": w.edges })
+}
+
+pub fn import(project: &str, raw: &Value) -> Result<Workflow> {
+    if raw["condxWorkflow"].as_i64() != Some(1) {
+        bail!("not an exported workflow (missing \"condxWorkflow\": 1)");
+    }
+    Ok(Workflow {
+        id: String::new(),
+        project: project.into(),
+        name: raw["name"].as_str().unwrap_or("Imported workflow").to_string(),
+        description: raw["description"].as_str().unwrap_or_default().to_string(),
+        nodes: serde_json::from_value(raw["nodes"].clone())?,
+        edges: serde_json::from_value(raw["edges"].clone()).unwrap_or_default(),
+        enabled: raw["enabled"].as_bool().unwrap_or(true),
+        updated_at: 0,
+    })
+}
+
+// ---------- Corridas ----------
+
+fn cancels() -> &'static Mutex<HashMap<String, watch::Sender<bool>>> {
+    static C: OnceLock<Mutex<HashMap<String, watch::Sender<bool>>>> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+fn persist(state: &Shared, run: &Run) {
+    if let Ok(v) = serde_json::to_value(run) {
+        let _ = state.store.save_run(&run.id, &run.workflow_id, run.created_at, run.status.as_str(), &v);
+    }
+}
+
+pub fn load_run(state: &Shared, id: &str) -> Result<Run> {
+    let v = state.store.run(id)?.ok_or_else(|| anyhow!("run {id} doesn't exist"))?;
+    Ok(serde_json::from_value(v)?)
+}
+
+pub fn start(state: &Shared, workflow_id: &str, commit: &str, by: &str) -> Result<Run> {
+    let w = get(state, workflow_id)?;
+    if !w.enabled {
+        bail!("“{}” is turned off: turn it on in Condx (Workflows) to run it", w.name);
+    }
+    check_daemon(state, &w)?;
+    if state.store.runs(Some(workflow_id), &["running", "waiting-approval"], 1)?.into_iter().next().is_some() {
+        bail!("“{}” already has a run in progress", w.name);
+    }
+    let order = topo_order(&w)?;
+    let nodes = order.iter().map(|id| NodeRun { id: id.clone(), status: NodeStatus::Pending, job: None, started_at: None, ended_at: None, message: String::new(), outputs: HashMap::new() }).collect();
+    let run = Run {
+        id: new_id("r"),
+        workflow_id: w.id.clone(),
+        workflow_name: w.name.clone(),
+        project: w.project.clone(),
+        commit: if commit.trim().is_empty() { "dev".into() } else { commit.trim().into() },
+        status: RunStatus::Running,
+        snapshot: w,
+        order,
+        nodes,
+        requested_by: by.into(),
+        created_at: now_ms(),
+        ended_at: None,
+        error: None,
+    };
+    persist(state, &run);
+    spawn(state, run.id.clone());
+    Ok(run)
+}
+
+pub fn cancel(state: &Shared, run_id: &str, by: &str) -> Result<Run> {
+    let mut run = load_run(state, run_id)?;
+    if !matches!(run.status, RunStatus::Running | RunStatus::WaitingApproval) {
+        bail!("the run already finished");
+    }
+    if let Some(tx) = cancels().lock().unwrap().get(run_id) {
+        let _ = tx.send(true);
+    }
+    // El trabajo en curso también se cancela (o se rechaza si esperaba aprobación).
+    for nr in run.nodes.iter_mut().filter(|n| matches!(n.status, NodeStatus::Running | NodeStatus::WaitingApproval)) {
+        if let Some(job) = &nr.job {
+            let _ = jobs::cancel(state, job, by);
+        }
+        nr.status = NodeStatus::Cancelled;
+        nr.ended_at = Some(now_ms());
+    }
+    run.status = RunStatus::Cancelled;
+    run.ended_at = Some(now_ms());
+    run.error = Some(format!("cancelled by {by}"));
+    persist(state, &run);
+    Ok(run)
+}
+
+/// Reintenta desde el primer nodo que falló o se canceló: ese y los siguientes vuelven a pendiente.
+pub fn retry(state: &Shared, run_id: &str) -> Result<Run> {
+    let mut run = load_run(state, run_id)?;
+    if !matches!(run.status, RunStatus::Failed | RunStatus::Cancelled) {
+        bail!("only a failed or cancelled run can be retried");
+    }
+    let from = run.nodes.iter().position(|n| matches!(n.status, NodeStatus::Failed | NodeStatus::Cancelled)).ok_or_else(|| anyhow!("there's no node to retry"))?;
+    for nr in run.nodes.iter_mut().skip(from) {
+        if nr.status != NodeStatus::Skipped {
+            *nr = NodeRun { id: nr.id.clone(), status: NodeStatus::Pending, job: None, started_at: None, ended_at: None, message: String::new(), outputs: HashMap::new() };
+        }
+    }
+    run.status = RunStatus::Running;
+    run.ended_at = None;
+    run.error = None;
+    persist(state, &run);
+    spawn(state, run.id.clone());
+    Ok(run)
+}
+
+/// Al arrancar el daemon: las corridas que quedaron a medias siguen solas.
+pub fn recover(state: &Shared) {
+    for v in state.store.runs(None, &["running", "waiting-approval"], 50).unwrap_or_default() {
+        if let Some(id) = v["id"].as_str() {
+            spawn(state, id.to_string());
+        }
+    }
+}
+
+fn spawn(state: &Shared, run_id: String) {
+    let (tx, rx) = watch::channel(false);
+    cancels().lock().unwrap().insert(run_id.clone(), tx);
+    let state = state.clone();
+    tokio::spawn(async move {
+        execute(&state, &run_id, rx).await;
+        cancels().lock().unwrap().remove(&run_id);
+    });
+}
+
+async fn execute(state: &Shared, run_id: &str, mut cancel: watch::Receiver<bool>) {
+    loop {
+        let Ok(mut run) = load_run(state, run_id) else { return };
+        if !matches!(run.status, RunStatus::Running | RunStatus::WaitingApproval) || *cancel.borrow() {
+            return;
+        }
+        let Some(i) = run.nodes.iter().position(|n| !matches!(n.status, NodeStatus::Succeeded | NodeStatus::Skipped | NodeStatus::Failed)) else {
+            // Todo terminó: ok, salvo que un nodo «seguir» haya fallado (queda anotado).
+            run.status = RunStatus::Succeeded;
+            run.ended_at = Some(now_ms());
+            persist(state, &run);
+            return;
+        };
+        let node = run.snapshot.nodes.iter().find(|n| n.id == run.nodes[i].id).cloned();
+        let Some(node) = node else {
+            run.nodes[i].status = NodeStatus::Skipped;
+            persist(state, &run);
+            continue;
+        };
+        if !node.enabled {
+            run.nodes[i].status = NodeStatus::Skipped;
+            run.nodes[i].message = "disabled in the workflow".into();
+            persist(state, &run);
+            continue;
+        }
+        if run.nodes[i].started_at.is_none() {
+            run.nodes[i].started_at = Some(now_ms());
+        }
+        run.nodes[i].status = NodeStatus::Running;
+        persist(state, &run);
+        let result = step(state, &mut run, i, &node, &mut cancel).await;
+        if *cancel.borrow() {
+            return;
+        }
+        // La corrida pudo cambiar afuera (cancelada desde la app): no pisarla.
+        if load_run(state, run_id).map(|r| r.status == RunStatus::Cancelled).unwrap_or(true) {
+            return;
+        }
+        run.nodes[i].ended_at = Some(now_ms());
+        match result {
+            Ok(msg) => {
+                run.nodes[i].status = NodeStatus::Succeeded;
+                run.nodes[i].message = msg;
+                run.status = RunStatus::Running;
+            }
+            Err(e) => {
+                run.nodes[i].status = NodeStatus::Failed;
+                run.nodes[i].message = format!("{e:#}");
+                if node.on_failure == OnFailure::Stop {
+                    run.status = RunStatus::Failed;
+                    run.error = Some(format!("“{}”: {e:#}", node.title));
+                    run.ended_at = Some(now_ms());
+                    persist(state, &run);
+                    return;
+                }
+            }
+        }
+        persist(state, &run);
+    }
+}
+
+/// Espera a que el trabajo termine, reflejando su estado en el nodo (y en la corrida si espera
+/// aprobación). Devuelve el resumen o el error.
+async fn follow_job(state: &Shared, run: &mut Run, i: usize, job_id: &str, cancel: &mut watch::Receiver<bool>) -> Result<String> {
+    loop {
+        let job = jobs::load(state, job_id)?;
+        let (ns, rs) = match job.status {
+            Status::WaitingApproval => (NodeStatus::WaitingApproval, RunStatus::WaitingApproval),
+            Status::Queued | Status::Running => (NodeStatus::Running, RunStatus::Running),
+            Status::Succeeded => {
+                run.nodes[i].outputs = job.outputs.clone();
+                return Ok(format!("{} finished", job.title));
+            }
+            Status::Failed => bail!("{} failed: {}", job.title, job.error.unwrap_or_default()),
+            Status::Rejected => bail!("{}: approval rejected", job.title),
+            Status::Expired => bail!("{}: the approval expired", job.title),
+            Status::Cancelled => bail!("{}: cancelled", job.title),
+        };
+        if run.nodes[i].status != ns || run.status != rs {
+            run.nodes[i].status = ns;
+            run.status = rs;
+            persist(state, run);
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+            _ = cancel.changed() => return Err(anyhow!("cancelada")),
+        }
+    }
+}
+
+async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut watch::Receiver<bool>) -> Result<String> {
+    let p = &node.params;
+    let s = |k: &str| p[k].as_str().unwrap_or_default().to_string();
+    let by = format!("workflow “{}”", run.workflow_name);
+    match node.kind {
+        NodeKind::Recipe | NodeKind::Approval => {
+            // Un nodo que ya pidió su trabajo (el daemon se reinició) lo sigue en vez de pedir otro.
+            let job_id = match run.nodes[i].job.clone() {
+                Some(j) => j,
+                None => {
+                    let (recipe, args) = if node.kind == NodeKind::Recipe {
+                        let mut args = serde_json::Map::new();
+                        for (k, v) in p["args"].as_object().cloned().unwrap_or_default() {
+                            let text = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+                            args.insert(k, json!(substitute(&text, run)));
+                        }
+                        (s("recipe"), Value::Object(args))
+                    } else {
+                        let recipe = if s("level") == "strict" { "workflow-approval-strict" } else { "workflow-approval" };
+                        (recipe.to_string(), json!({ "message": if s("message").is_empty() { node.title.clone() } else { s("message") } }))
+                    };
+                    let job = jobs::request(state, &recipe, &s("env"), &args, &by).await?;
+                    run.nodes[i].job = Some(job.id.clone());
+                    persist(state, run);
+                    job.id
+                }
+            };
+            follow_job(state, run, i, &job_id, cancel).await
+        }
+        NodeKind::Wait => {
+            let minutes = p["minutes"].as_f64().unwrap_or(1.);
+            let started = run.nodes[i].started_at.unwrap_or_else(now_ms);
+            let until = started + (minutes * 60_000.) as i64;
+            run.nodes[i].outputs.insert("until".into(), until.to_string());
+            run.nodes[i].message = format!("waiting {minutes} min");
+            persist(state, run);
+            while now_ms() < until {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(((until - now_ms()).max(1) as u64).min(2000))) => {}
+                    _ = cancel.changed() => return Err(anyhow!("cancelada")),
+                }
+            }
+            Ok(format!("waited {minutes} min"))
+        }
+        NodeKind::Check => check(state, &s("check"), &s("env"), p["hours"].as_f64().unwrap_or(24.)).await,
+        NodeKind::Notify => {
+            let msg = substitute(&s("message"), run);
+            run.nodes[i].outputs.insert("message".into(), msg.clone());
+            Ok(msg)
+        }
+    }
+}
+
+async fn check(state: &Shared, kind: &str, env: &str, hours: f64) -> Result<String> {
+    match kind {
+        "recent-backup" => {
+            let last = state.store.backups(Some(env), 1)?.into_iter().next();
+            let at = last.as_ref().and_then(|b| b["at"].as_i64()).unwrap_or(0);
+            let age_h = (now_ms() - at) as f64 / 3_600_000.;
+            if last.is_some() && age_h <= hours {
+                Ok(format!("backup of {env} from {age_h:.1} h ago"))
+            } else {
+                bail!("no backup of {env} in the last {hours} h")
+            }
+        }
+        "ci-green" => {
+            let ci = state.store.probes()?.into_iter().find(|(k, _)| k == "ci").map(|(_, v)| v).unwrap_or(Value::Null);
+            let repos = ci["data"]["repos"].as_array().cloned().unwrap_or_default();
+            if repos.is_empty() {
+                bail!("no CI data for this project");
+            }
+            for r in &repos {
+                let last = &r["runs"][0];
+                if last["conclusion"] != "success" {
+                    bail!("CI of {} isn't green", r["repo"].as_str().unwrap_or("?"));
+                }
+            }
+            Ok("CI green".into())
+        }
+        "env-reachable" => {
+            let e = state.store.environment(env)?.ok_or_else(|| anyhow!("environment {env} doesn't exist"))?;
+            let base = e.convex_url.clone().ok_or_else(|| anyhow!("{env} has no Convex URL"))?;
+            let url = format!("{}/version", base.trim_end_matches('/'));
+            let ok = tokio::task::spawn_blocking(move || ureq::AgentBuilder::new().timeout(Duration::from_secs(5)).build().get(&url).call().is_ok()).await.unwrap_or(false);
+            if ok {
+                Ok(format!("{env} responds"))
+            } else {
+                bail!("{env} isn't responding")
+            }
+        }
+        other => bail!("unknown check: {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wf(nodes: Vec<Node>, edges: Vec<(&str, &str)>) -> Workflow {
+        Workflow { id: "w1".into(), project: "p".into(), name: "Prueba".into(), description: String::new(), nodes, edges: edges.into_iter().map(|(a, b)| (a.into(), b.into())).collect(), enabled: true, updated_at: 0 }
+    }
+
+    #[test]
+    fn orden_topologico_y_ciclos() {
+        let n = |id: &str| node(id, NodeKind::Notify, id, 0., 0., json!({}));
+        let w = wf(vec![n("c"), n("a"), n("b")], vec![("a", "b"), ("b", "c")]);
+        assert_eq!(topo_order(&w).unwrap(), vec!["a", "b", "c"]);
+        let ciclo = wf(vec![n("a"), n("b")], vec![("a", "b"), ("b", "a")]);
+        assert!(topo_order(&ciclo).is_err());
+        let fantasma = wf(vec![n("a")], vec![("a", "z")]);
+        assert!(topo_order(&fantasma).is_err());
+    }
+
+    #[test]
+    fn problemas_del_flujo() {
+        let envs: HashSet<String> = ["local".to_string()].into();
+        let w = wf(
+            vec![
+                node("r", NodeKind::Recipe, "Receta", 0., 0., json!({ "recipe": "export", "env": "local" })),
+                node("x", NodeKind::Recipe, "Mala", 0., 0., json!({ "recipe": "nada", "env": "otro" })),
+                node("w", NodeKind::Wait, "Espera", 0., 0., json!({ "minutes": 0 })),
+                node("c", NodeKind::Check, "Ver", 0., 0., json!({ "check": "raro" })),
+            ],
+            vec![],
+        );
+        let p = problems(&w, &envs, |r| r == "export");
+        assert!(p.iter().any(|m| m.contains("recipe nada doesn't exist")));
+        assert!(p.iter().any(|m| m.contains("environment otro doesn't exist")));
+        assert!(p.iter().any(|m| m.contains("minutes")));
+        assert!(p.iter().any(|m| m.contains("unknown check")));
+        // Un nodo apagado no se valida.
+        let mut w2 = w.clone();
+        w2.nodes.retain(|n| n.id == "r" || n.id == "x");
+        w2.nodes[1].enabled = false;
+        assert!(problems(&w2, &envs, |r| r == "export").is_empty());
+    }
+
+    #[test]
+    fn exportar_e_importar() {
+        let w = templates("heskala-erp", true, &[("prod".into(), "cloud-prod".into()), ("dev".into(), "cloud-dev".into())]).remove(0);
+        let raw = export(&w);
+        let back = import("otro", &raw).unwrap();
+        assert_eq!(back.name, w.name);
+        assert_eq!(back.nodes.len(), 5);
+        assert_eq!(back.edges.len(), 4);
+        assert_eq!(back.project, "otro");
+        assert!(back.id.is_empty());
+        assert!(import("otro", &json!({ "nodes": [] })).is_err());
+        // La promoción de siempre: respaldo → ensayo → cloud dev → espera → producción.
+        assert_eq!(topo_order(&back).unwrap(), vec!["backup", "rehearsal", "deploy-dev", "quiet", "promote"]);
+    }
+
+    #[test]
+    fn sustituye_commit_y_salidas() {
+        let w = wf(vec![], vec![]);
+        let mut outs = HashMap::new();
+        outs.insert("backup_id".to_string(), "42".to_string());
+        let run = Run {
+            id: "r".into(),
+            workflow_id: "w1".into(),
+            workflow_name: "Prueba".into(),
+            project: "p".into(),
+            commit: "abc123".into(),
+            status: RunStatus::Running,
+            snapshot: w,
+            order: vec![],
+            nodes: vec![NodeRun { id: "backup".into(), status: NodeStatus::Succeeded, job: None, started_at: None, ended_at: None, message: String::new(), outputs: outs }],
+            requested_by: "x".into(),
+            created_at: 0,
+            ended_at: None,
+            error: None,
+        };
+        assert_eq!(substitute("{run.commit}/{node.backup.backup_id}", &run), "abc123/42");
+    }
+
+    #[test]
+    fn sugeridos_sin_problemas() {
+        let envs = vec![("local".to_string(), "devbox".to_string()), ("dev".to_string(), "cloud-dev".to_string()), ("prod".to_string(), "cloud-prod".to_string())];
+        let names: HashSet<String> = envs.iter().map(|(n, _)| n.clone()).collect();
+        let list: Vec<Workflow> = templates("heskala-erp", true, &envs).into_iter().filter(is_suggested).collect();
+        assert!(list.len() >= 6, "{}", list.len());
+        for w in &list {
+            let p = problems(w, &names, |r| crate::recipes::get(r).is_some());
+            assert!(p.is_empty(), "{}: {p:?}", w.name);
+        }
+        // Otro proyecto: solo los genéricos (sin promoción, ensayo ni reversión).
+        let other: Vec<String> = templates("otro", false, &envs).into_iter().filter(is_suggested).map(|w| w.name).collect();
+        assert!(other.contains(&"Deploy to cloud dev".to_string()) && !other.iter().any(|n| n.contains("production") || n.contains("Rehearsal")));
+    }
+}

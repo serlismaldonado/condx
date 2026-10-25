@@ -1,0 +1,55 @@
+[package]
+name = "devtool-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# La app es una biblioteca (también compila a WebAssembly para la demo de la web, con datos de
+# ejemplo) más el binario de escritorio.
+[lib]
+name = "devtool_app"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "condx"
+path = "src/main.rs"
+
+[dependencies]
+devtool-core = { path = "../core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Componentes Ely sobre el mismo gpui-pre que GPUI Kit (ver su guía «GPUI Kit»).
+ely-core = { git = "https://github.com/ELY-Open-Source/Ely-GPUI-Components", rev = "1018af449569f629f25485b3dace216b57b31ce4" }
+ely-editor = { git = "https://github.com/ELY-Open-Source/Ely-GPUI-Components", rev = "1018af449569f629f25485b3dace216b57b31ce4" }
+ely-devtools = { git = "https://github.com/ELY-Open-Source/Ely-GPUI-Components", rev = "1018af449569f629f25485b3dace216b57b31ce4" }
+ely-terminal = { git = "https://github.com/ELY-Open-Source/Ely-GPUI-Components", rev = "1018af449569f629f25485b3dace216b57b31ce4" }
+ely-git = { git = "https://github.com/ELY-Open-Source/Ely-GPUI-Components", rev = "1018af449569f629f25485b3dace216b57b31ce4" }
+ely-dashboard = { git = "https://github.com/ELY-Open-Source/Ely-GPUI-Components", rev = "1018af449569f629f25485b3dace216b57b31ce4" }
+ely-debug = { git = "https://github.com/ELY-Open-Source/Ely-GPUI-Components", rev = "1018af449569f629f25485b3dace216b57b31ce4" }
+jiff = "0.2"
+web-time = "1"
+
+# Solo en el escritorio: daemon por HTTP, preferencias en SQLite, terminal, ícono de la barra.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+# tree-sitter: resaltado del editor JSON (trae tree-sitter-json).
+gpui-kit = { version = "0.8.0", features = ["tree-sitter"] }
+ureq = { version = "2", features = ["json"] }
+dirs = "5"
+tray-icon = "0.26"
+portable-pty = "0.9"
+vt100 = "0.16"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# En la web (la demo): sin tree-sitter (código C) y con el punto de entrada de wasm-bindgen.
+[target.'cfg(target_family = "wasm")'.dependencies]
+gpui-kit = { version = "0.8.0" }
+wasm-bindgen = "0.2.129"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSError"] }
+objc2-local-authentication = { version = "0.3", features = ["LAContext", "LAError", "block2"] }

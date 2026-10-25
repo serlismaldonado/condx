@@ -1,0 +1,60 @@
+name = "promote-prod"
+title = "Promote to production"
+description = "Requires green CI, the same commit on cloud dev without errors, a production backup less than 2 h old and a passed rehearsal with that backup. Deploys Convex with the Keychain deploy key, runs the backfills, watches for errors and deploys the frontend to Vercel."
+kinds = ["cloud-prod"]
+writes = true
+preconditions = true
+
+[approval]
+cloud-prod = "typed"
+
+[[args]]
+name = "commit"
+type = "commit"
+default = "dev"
+description = "Commit to promote (the same one running on cloud dev)"
+
+[[args]]
+name = "backfills"
+type = "functions"
+default = ""
+description = "Backfills after the deploy, comma-separated"
+
+[[args]]
+name = "verify_minutes"
+type = "minutes"
+default = "5"
+description = "Minutes watching function errors before the frontend"
+
+[[args]]
+name = "frontend"
+type = "frontend"
+default = "auto"
+description = "auto (Vercel if the environment has a frontend), vercel or none"
+
+[[step]]
+name = "Check preconditions"
+builtin = "check-preconditions"
+timeout_secs = 180
+
+[[step]]
+name = "Deploy Convex"
+builtin = "deploy-commit"
+timeout_secs = 1500
+
+[[step]]
+name = "Backfills"
+builtin = "backfills"
+idempotent = true
+timeout_secs = 3600
+
+[[step]]
+name = "Watch for errors"
+builtin = "verify-logs"
+idempotent = true
+timeout_secs = 3900
+
+[[step]]
+name = "Deploy frontend"
+builtin = "vercel-deploy"
+timeout_secs = 1900

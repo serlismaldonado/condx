@@ -1,0 +1,20 @@
+name = "deployer-rebuild"
+title = "Rebuild the deployer image"
+description = "Rebuilds convex-deployer:dev and recreates the deployer-dev container."
+kinds = ["devbox"]
+writes = true
+
+[approval]
+devbox = "none"
+
+[[step]]
+name = "Build image"
+run = ["node", "scripts/convex-deployer-build.mjs"]
+idempotent = true
+timeout_secs = 1800
+
+[[step]]
+name = "Recreate container"
+run = ["docker", "compose", "-f", "docker/onprem-dev/compose.yaml", "-p", "heskala", "up", "-d", "--force-recreate", "deployer-dev"]
+idempotent = true
+timeout_secs = 300

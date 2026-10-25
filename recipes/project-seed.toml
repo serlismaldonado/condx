@@ -1,0 +1,45 @@
+name = "project-seed"
+title = "Pull a project's cloud dev into its local instance"
+description = "For a project other than heskala-erp: exports its cloud dev data (the CONVEX_DEPLOYMENT in its .env.local), copies its environment variables, replaces its local backend's data and restarts its deployer. Cloud dev is only read."
+kinds = ["devbox"]
+projects = true
+writes = true
+
+[approval]
+devbox = "none"
+
+[[args]]
+name = "project"
+type = "project"
+description = "Project (see list_projects); not heskala-erp"
+
+[[args]]
+name = "files"
+type = "flag"
+default = "no"
+description = "yes = include file storage files (slower)"
+
+[[step]]
+name = "Export cloud dev"
+builtin = "project-export"
+timeout_secs = 3600
+
+[[step]]
+name = "Read environment variables"
+builtin = "project-read-env"
+timeout_secs = 300
+
+[[step]]
+name = "Import into the local backend"
+builtin = "project-import"
+timeout_secs = 3600
+
+[[step]]
+name = "Copy environment variables"
+builtin = "project-write-env"
+timeout_secs = 300
+
+[[step]]
+name = "Start the deployer"
+builtin = "project-start-deployer"
+timeout_secs = 120

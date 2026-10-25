@@ -1,0 +1,23 @@
+name = "workflow-approval"
+title = "Workflow approval"
+description = "A deploy workflow step that only waits for the user's approval in the app. It does nothing else."
+kinds = ["devbox", "throwaway", "cloud-dev", "cloud-prod"]
+projects = true
+writes = false
+
+[approval]
+devbox = "simple"
+throwaway = "simple"
+cloud-dev = "simple"
+cloud-prod = "simple"
+
+[[args]]
+name = "message"
+type = "string"
+default = "Aprobar"
+description = "What is being approved"
+
+[[step]]
+name = "Approved"
+builtin = "workflow-gate"
+timeout_secs = 10

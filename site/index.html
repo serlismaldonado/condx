@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Condx — a local devtool for Convex</title>
+  <meta name="description" content="Run your Convex projects locally, see every environment at a glance, browse their data and deploy through approvals — from one macOS app, with an MCP server for your AI agents.">
+  <meta property="og:title" content="Condx — a local devtool for Convex">
+  <meta property="og:description" content="Local backends, every environment, a data browser, approvals and workflows, and an MCP server your agents can use but can't ship with.">
+  <meta property="og:image" content="/shots/overview.jpg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ground: #0d0d0d;
+      --panel: #121212;
+      --card: #161616;
+      --line: #262626;
+      --line-soft: #1d1d1d;
+      --fg: #ededed;
+      --muted: #a1a1a1;
+      --subtle: #6b6b6b;
+      --accent: #f3b01c;
+      --on-accent: #1f1503;
+      --ok: #4ade80;
+      --warn: #f59e0b;
+      --bad: #f87171;
+      --side: 216px;
+      --col: 1040px;
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+    body { margin: 0; background: var(--ground); color: var(--fg); font: 15px/1.65 "IBM Plex Sans", system-ui, sans-serif; }
+    a { color: inherit; }
+    img { display: block; max-width: 100%; height: auto; }
+    .mono, code, pre { font-family: "JetBrains Mono", ui-monospace, monospace; }
+    .serif { font-family: "Instrument Serif", Georgia, serif; font-weight: 400; }
+
+    /* Franja de color arriba, como una cinta de la marca. */
+    .ribbon { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 30; background: linear-gradient(90deg, var(--accent) 0 34%, #3a3a3a 34% 52%, var(--accent) 52% 60%, #2b2b2b 60% 100%); }
+
+    /* Menú lateral fijo (en el celular, una barra arriba). */
+    .side { position: fixed; top: 3px; bottom: 0; left: 0; width: var(--side); border-right: 1px solid var(--line); padding: 22px 20px; display: flex; flex-direction: column; gap: 28px; background: var(--ground); z-index: 20; }
+    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+    .brand svg { width: 22px; height: 22px; }
+    .brand b { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+    .brand + small { display: block; margin-top: -22px; padding-left: 32px; color: var(--subtle); font-style: italic; font-size: 13px; }
+    .side nav { display: grid; gap: 2px; }
+    .side nav a { font: 500 11px/1 "JetBrains Mono", monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); text-decoration: none; padding: 7px 8px; border-radius: 3px; display: flex; align-items: center; gap: 8px; }
+    .side nav a:hover { color: var(--fg); background: var(--card); }
+    .side nav a.on { color: var(--on-accent); background: var(--accent); }
+    .side nav a .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.6; }
+    .side .foot { margin-top: auto; display: grid; gap: 6px; font-size: 12px; color: var(--subtle); }
+
+    /* Columna central con sus líneas, como una hoja cuadriculada. */
+    main { margin-left: var(--side); padding-top: 3px; }
+    .col { max-width: var(--col); margin: 0 auto; border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
+    section { border-top: 1px solid var(--line); position: relative; }
+    section:first-child { border-top: 0; }
+    .pad { padding: 56px 48px; }
+    .tick { position: absolute; width: 9px; height: 9px; border: 1px solid var(--subtle); background: var(--ground); }
+    .tick.tl { top: -5px; left: -5px; } .tick.tr { top: -5px; right: -5px; }
+    .label { font: 500 11px/1 "JetBrains Mono", monospace; letter-spacing: 0.1em; text-transform: uppercase; color: var(--subtle); display: flex; gap: 10px; align-items: center; margin-bottom: 18px; }
+    .label b { color: var(--accent); font-weight: 500; }
+    h1, h2, h3 { margin: 0; font-weight: 500; letter-spacing: -0.015em; }
+    h2 { font-size: clamp(26px, 3.4vw, 36px); line-height: 1.15; margin-bottom: 12px; }
+    h2 em, h1 em { font-family: "Instrument Serif", Georgia, serif; font-style: italic; color: var(--accent); font-weight: 400; letter-spacing: 0; }
+    .sub { color: var(--muted); max-width: 640px; margin: 0; }
+
+    /* Hero */
+    .hero { display: grid; grid-template-columns: 1fr 240px; gap: 32px; align-items: center; }
+    .kicker { font-family: "Instrument Serif", Georgia, serif; font-style: italic; color: var(--muted); font-size: 17px; margin-bottom: 14px; }
+    h1 { font-size: clamp(38px, 5.6vw, 64px); line-height: 1.04; }
+    .lede { color: var(--muted); font-size: 16.5px; max-width: 580px; margin: 22px 0 28px; }
+    .ctas { display: flex; flex-wrap: wrap; gap: 10px; }
+    .btn { font: 500 12px/1 "JetBrains Mono", monospace; letter-spacing: 0.08em; text-transform: uppercase; text-decoration: none; padding: 12px 16px; border: 1px solid var(--line); border-radius: 3px; display: inline-flex; gap: 10px; align-items: center; background: var(--card); color: var(--fg); cursor: pointer; }
+    .btn:hover { border-color: #3a3a3a; }
+    .btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+    .btn.primary:hover { filter: brightness(1.06); }
+    .mark { justify-self: end; width: 220px; height: 220px; }
+
+    /* Ventana con la demo real */
+    .window { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); box-shadow: 0 30px 80px -40px rgba(243, 176, 28, 0.25); }
+    .window .bar { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--line); font: 12px "JetBrains Mono", monospace; color: var(--subtle); }
+    .window .bar i { width: 10px; height: 10px; border-radius: 50%; background: #2c2c2c; display: block; }
+    .window .bar span { margin-left: 8px; }
+    .window .bar .live { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--muted); }
+    .window .bar .live b { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); display: block; }
+    .stage { position: relative; aspect-ratio: 16 / 10; background: #1b1b1b; }
+    .stage img, .stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; object-fit: cover; object-position: top left; }
+    .stage .veil { position: absolute; inset: 0; display: grid; place-items: center; background: linear-gradient(180deg, rgba(13,13,13,0) 30%, rgba(13,13,13,0.82)); }
+    .stage .veil div { text-align: center; display: grid; gap: 10px; justify-items: center; padding: 16px; }
+    .stage .veil p { margin: 0; color: var(--muted); font-size: 13px; max-width: 460px; }
+    .stage.loading .veil::after { content: "Loading the app…"; position: absolute; bottom: 18px; font: 12px "JetBrains Mono", monospace; color: var(--muted); }
+    .caption { display: flex; flex-wrap: wrap; gap: 8px 20px; justify-content: space-between; padding: 12px 2px 0; font-size: 12.5px; color: var(--subtle); }
+
+    /* Tarjetas */
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
+    .grid2 > div { padding: 32px 48px; }
+    .grid2 > div + div { border-left: 1px solid var(--line); }
+    .card { border: 1px solid var(--line); background: var(--panel); border-radius: 4px; padding: 20px; }
+    .card .tagline { font-family: "Instrument Serif", Georgia, serif; font-style: italic; color: var(--subtle); font-size: 14px; margin-bottom: 8px; }
+    .card h3 { font-size: 17px; margin-bottom: 8px; }
+    .card p { color: var(--muted); margin: 0 0 14px; font-size: 14px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { font: 500 10px/1 "JetBrains Mono", monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 2px; padding: 5px 7px; }
+    .chip.soon { color: var(--accent); border-color: rgba(243, 176, 28, 0.4); }
+
+    /* Tabla de lo que puede un agente */
+    .spec { border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: var(--panel); }
+    .spec div { display: flex; justify-content: space-between; gap: 12px; padding: 11px 14px; border-top: 1px solid var(--line); font: 12px "JetBrains Mono", monospace; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+    .spec div:first-child { border-top: 0; color: var(--subtle); font-size: 11px; }
+    .spec b { font-weight: 500; padding: 2px 6px; border-radius: 2px; font-size: 11px; }
+    .yes { color: var(--ok); background: rgba(74, 222, 128, 0.1); }
+    .no { color: var(--bad); background: rgba(248, 113, 113, 0.1); }
+    .you { color: var(--accent); background: rgba(243, 176, 28, 0.12); }
+
+    /* Funciones con captura (como Zed) */
+    .feature { display: grid; grid-template-columns: 0.9fr 1.1fr; border-top: 1px solid var(--line); }
+    .feature .text { padding: 40px 48px; border-right: 1px solid var(--line); }
+    .feature .text h3 { font-size: 21px; margin-bottom: 10px; }
+    .feature .text p { color: var(--muted); margin: 0 0 16px; }
+    .feature .shot { padding: 28px; background: var(--panel); display: flex; align-items: center; }
+    .feature .shot img { border: 1px solid var(--line); border-radius: 6px; }
+    .feature.flip { grid-template-columns: 1.1fr 0.9fr; }
+    .feature.flip .text { order: 2; border-right: 0; border-left: 1px solid var(--line); }
+    ul.list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    ul.list li { padding-left: 18px; position: relative; color: var(--muted); font-size: 14px; }
+    ul.list li::before { content: ""; position: absolute; left: 0; top: 9px; width: 7px; height: 7px; background: var(--accent); border-radius: 1px; }
+
+    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); }
+    .grid3 > div { padding: 28px 32px; border-left: 1px solid var(--line); border-top: 1px solid var(--line); }
+    .grid3 > div:nth-child(3n + 1) { border-left: 0; }
+    .grid3 > div:nth-child(-n + 3) { border-top: 0; }
+    .grid3 h3 { font-size: 15px; margin-bottom: 6px; }
+    .grid3 p { margin: 0; color: var(--muted); font-size: 13.5px; }
+
+    pre { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 18px; overflow-x: auto; font-size: 13px; line-height: 1.75; margin: 0; }
+    pre .c { color: var(--subtle); }
+
+    /* Cierre con un patrón de cuadros */
+    .pattern { height: 150px; background:
+      repeating-linear-gradient(90deg, transparent 0 46px, var(--line-soft) 46px 48px),
+      conic-gradient(from 90deg at 50% 50%, var(--accent) 0 25%, #1c1c1c 0 50%, #2a2a2a 0 75%, var(--accent) 0) 0 0 / 96px 96px; opacity: 0.9; }
+    .close { text-align: center; padding: 48px 32px 56px; }
+    .close h2 { margin-bottom: 18px; }
+    footer { border-top: 1px solid var(--line); padding: 18px 48px; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; font: 11px "JetBrains Mono", monospace; letter-spacing: 0.06em; text-transform: uppercase; color: var(--subtle); }
+
+    @media (max-width: 1100px) {
+      .hero { grid-template-columns: 1fr; }
+      .mark { display: none; }
+    }
+    @media (max-width: 900px) {
+      :root { --side: 0px; }
+      .side { position: sticky; top: 3px; width: auto; height: auto; flex-direction: row; align-items: center; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--line); gap: 12px; }
+      .brand + small, .side .foot { display: none; }
+      .side nav { display: flex; margin-left: auto; overflow-x: auto; }
+      .side nav a .dot { display: none; }
+      .side nav a.hide-sm { display: none; }
+      main { margin-left: 0; }
+      .col { border: 0; }
+      .pad { padding: 40px 16px; }
+      .grid2, .feature, .feature.flip { grid-template-columns: 1fr; }
+      .grid2 > div { padding: 24px 16px; }
+      .grid2 > div + div { border-left: 0; border-top: 1px solid var(--line); }
+      .feature .text, .feature.flip .text { order: 0; padding: 28px 16px; border: 0; }
+      .feature .shot { padding: 16px; }
+      .grid3 { grid-template-columns: 1fr; }
+      .grid3 > div { border-left: 0 !important; border-top: 1px solid var(--line) !important; padding: 22px 16px; }
+      .grid3 > div:first-child { border-top: 0 !important; }
+      footer { padding: 18px 16px; }
+      .tick { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="ribbon"></div>
+
+  <aside class="side">
+    <div>
+      <a class="brand" href="#top">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#f3b01c" stroke-width="2"><path d="M18 5.5A9 9 0 1 0 18 18.5"/><path d="M15 9a4.5 4.5 0 1 0 0 6"/></svg>
+        <b>Condx</b>
+      </a>
+    </div>
+    <small>Now in early access</small>
+    <nav>
+      <a class="on hide-sm" href="#top"><span class="dot"></span>Home</a>
+      <a href="#demo"><span class="dot"></span>Demo</a>
+      <a href="#features"><span class="dot"></span>Features</a>
+      <a class="hide-sm" href="#agents"><span class="dot"></span>Agents</a>
+      <a href="#install"><span class="dot"></span>Install</a>
+    </nav>
+    <div class="foot">
+      <span class="mono">v0.1 · macOS</span>
+      <span>Open source · MIT</span>
+    </div>
+  </aside>
+
+  <main id="top">
+    <div class="col">
+
+      <section class="pad">
+        <span class="tick tl"></span><span class="tick tr"></span>
+        <div class="hero">
+          <div>
+            <div class="kicker">A local devtool for Convex</div>
+            <h1>Condx brings <em>calm</em><br>to your Convex deploys</h1>
+            <p class="lede">Your local backend, every environment, your data and your deploys live in one app. Changes wait for your approval, and your AI agents can do the legwork without ever shipping on their own.</p>
+            <div class="ctas">
+              <a class="btn primary" href="#install">Install <span>▸</span></a>
+              <a class="btn" href="#demo">Try the live demo</a>
+            </div>
+          </div>
+          <svg class="mark" viewBox="0 0 220 220" fill="none" stroke="#f3b01c" stroke-width="2.2" aria-hidden="true">
+            <path d="M176 44A93 93 0 1 0 176 176"/>
+            <path d="M160 62A70 70 0 1 0 160 158"/>
+            <path d="M144 80A47 47 0 1 0 144 140"/>
+            <path d="M128 98A24 24 0 1 0 128 122"/>
+            <path d="M176 44L196 24M176 176L196 196" stroke-opacity="0.5"/>
+          </svg>
+        </div>
+      </section>
+
+      <section class="pad" id="demo">
+        <div class="label"><b>01</b> Live demo</div>
+        <div class="window">
+          <div class="bar"><i></i><i></i><i></i><span>Condx — my-app</span><span class="live"><b></b>runs in your browser</span></div>
+          <div class="stage" id="stage">
+            <img src="shots/overview.jpg" alt="Condx showing the environments of a sample project" width="1800" height="1125">
+            <div class="veil">
+              <div>
+                <button class="btn primary" id="launch" type="button">▶ Launch the real app</button>
+                <p>This is Condx itself, compiled to WebAssembly, running on a sample project. Approve a deploy, browse the data, open a workflow. About 6&nbsp;MB.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="caption"><span>Sample data, nothing leaves your browser. Best in Chrome, Edge or Safari.</span><a href="demo/" class="mono">Open full screen ↗</a></div>
+      </section>
+
+      <section id="ways">
+        <div class="pad" style="padding-bottom:28px">
+          <div class="label"><b>02</b> How it works</div>
+          <h2>Two ways in, <em>one daemon</em></h2>
+          <p class="sub">A small daemon on your Mac knows your projects and environments. You use the app; your agents use the MCP. Both go through the same rules.</p>
+        </div>
+        <div class="grid2">
+          <div style="display:grid;gap:16px">
+            <div class="card">
+              <div class="tagline">For you</div>
+              <h3>Condx, the app</h3>
+              <p>Every environment, your data, jobs, workflows and approvals. The only place where changes are approved and keys are saved.</p>
+              <div class="chips"><span class="chip">macOS</span><span class="chip">GPUI</span><span class="chip soon">signed app soon</span></div>
+            </div>
+            <div class="card">
+              <div class="tagline">For your agents</div>
+              <h3>The MCP server</h3>
+              <p>Claude Code, Cursor, Codex or any MCP client see what you see and can request jobs or start workflows.</p>
+              <div class="chips"><span class="chip">stdio</span><span class="chip">HTTP</span><span class="chip">no approve tool</span></div>
+            </div>
+          </div>
+          <div style="display:grid;gap:16px;align-content:start">
+            <div class="spec">
+              <div><span>An agent can</span><span>Answer</span></div>
+              <div><span>See environments, logs, CI</span><b class="yes">Yes</b></div>
+              <div><span>Request jobs</span><b class="yes">Yes</b></div>
+              <div><span>Start workflows</span><b class="yes">Yes</b></div>
+              <div><span>Approve a change</span><b class="you">Only you</b></div>
+              <div><span>Change the rules</span><b class="no">No</b></div>
+              <div><span>Read deploy keys</span><b class="no">No</b></div>
+            </div>
+            <p class="sub" style="font-size:14px">The daemon listens only on 127.0.0.1. Agents get a token without the approve scope; approvals, rules and keys only change from the app.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="features">
+        <div class="pad" style="padding-bottom:28px">
+          <div class="label"><b>03</b> Features</div>
+          <h2>Everything around <em>your backend</em></h2>
+          <p class="sub">The parts of working with Convex that live outside your editor, in one place.</p>
+        </div>
+
+        <div class="feature">
+          <div class="text">
+            <h3>Data, in every environment</h3>
+            <p>Browse tables with record counts and real paging. Relation ids show where they point, dates read as dates, and the document opens beside the table.</p>
+            <ul class="list"><li>Read-only, production hidden unless you allow it</li><li>Double-click an _id to copy it</li><li>Counts in cloud with the environment's deploy key</li></ul>
+          </div>
+          <div class="shot"><img src="shots/data.jpg" alt="The Data tab: tasks table with relation ids and the JSON document" loading="lazy" width="1800" height="1125"></div>
+        </div>
+
+        <div class="feature flip">
+          <div class="text">
+            <h3>Workflows you can trust</h3>
+            <p>Chain checks, approvals, waits and recipes: CI green, cloud dev responds, your approval, deploy, a notice. Agents can start them; only you approve.</p>
+            <ul class="list"><li>Turn workflows and nodes on and off</li><li>Retry from the node that failed</li><li>Export them as JSON for your repo</li></ul>
+          </div>
+          <div class="shot"><img src="shots/workflows.jpg" alt="The workflow editor with checks, an approval and a deploy" loading="lazy" width="1800" height="1125"></div>
+        </div>
+
+        <div class="feature">
+          <div class="text">
+            <h3>Jobs and approvals</h3>
+            <p>Deploys, encrypted backups, rehearsals on a copy of real data, running a function. Each job keeps its steps, arguments and full log.</p>
+            <ul class="list"><li>Queries run right away; mutations ask first</li><li>Touch ID or typing the name for production</li><li>See which credential each job runs with</li></ul>
+          </div>
+          <div class="shot"><img src="shots/jobs.jpg" alt="Recent jobs, one waiting for approval, and a job's steps" loading="lazy" width="1800" height="1125"></div>
+        </div>
+
+        <div class="feature flip">
+          <div class="text">
+            <h3>Your schema, drawn</h3>
+            <p>The schema deployed on each backend as a tree and a diagram, with the relations between tables and every index.</p>
+            <ul class="list"><li>Focus a table and its relations</li><li>Indexes, search and vector indexes</li><li>Local or cloud</li></ul>
+          </div>
+          <div class="shot"><img src="shots/schema.jpg" alt="The schema diagram of the sample project" loading="lazy" width="1800" height="1125"></div>
+        </div>
+
+        <div class="grid3">
+          <div><h3>Local backend, no Docker</h3><p>Convex's local backend, its deployer and your Vite or Next frontend as managed processes.</p></div>
+          <div><h3>Rehearsals</h3><p>Try a commit on a copy of real data in a throwaway backend before it reaches anyone.</p></div>
+          <div><h3>Encrypted backups</h3><p>Cloud exports encrypted with age, kept for 14 days.</p></div>
+          <div><h3>Keys in the Keychain</h3><p>Save each cloud environment's deploy key once; it's never shown again.</p></div>
+          <div><h3>Rules per environment</h3><p>Who reads records and how much a change needs, for local, cloud dev and production.</p></div>
+          <div><h3>English and Spanish</h3><p>Switch languages in Settings.</p></div>
+        </div>
+      </section>
+
+      <section class="pad" id="agents">
+        <div class="label"><b>04</b> Agents</div>
+        <div class="hero" style="grid-template-columns:1fr 1fr;align-items:start">
+          <div>
+            <h2>Built for agents, <em>with a leash</em></h2>
+            <p class="sub">Connect your agent once. It gets the full picture of your environments and can do the legwork; anything that changes them waits for you in the app.</p>
+          </div>
+          <pre><span class="c"># Claude Code</span>
+claude mcp add condx -- ~/.condx/daemon/bin/condxd mcp
+
+<span class="c"># Cursor, Codex and others: Settings → Connect an agent</span></pre>
+        </div>
+      </section>
+
+      <section class="pad" id="install">
+        <div class="label"><b>05</b> Install</div>
+        <div class="hero" style="grid-template-columns:1fr 1fr;align-items:start">
+          <div>
+            <h2>Start in <em>two commands</em></h2>
+            <p class="sub">v0.1 runs on macOS 15 or later and builds from source with Rust; the toolchain installs itself. A signed app and Homebrew are on the way.</p>
+          </div>
+          <pre>git clone https://github.com/serlismaldonado/condx.git
+cd condx &amp;&amp; cargo build --release
+
+<span class="c"># The daemon (launchd) and the app</span>
+./target/release/condxd install
+scripts/bundle-app.sh &amp;&amp; open ~/Applications/Condx.app</pre>
+        </div>
+      </section>
+
+      <section>
+        <div class="pattern" aria-hidden="true"></div>
+        <div class="close">
+          <h2>Deploy with <em>calm</em></h2>
+          <div class="ctas" style="justify-content:center">
+            <a class="btn primary" href="#install">Install Condx <span>▸</span></a>
+            <a class="btn" href="#demo">Try the live demo</a>
+          </div>
+        </div>
+        <footer><span>Condx · MIT license</span><span>An independent project, not affiliated with Convex</span></footer>
+      </section>
+
+    </div>
+  </main>
+
+  <script>
+    // La demo es la app real compilada a WebAssembly (~6 MB): se carga solo al pedirla.
+    document.getElementById("launch").addEventListener("click", () => {
+      const stage = document.getElementById("stage");
+      stage.classList.add("loading");
+      const frame = document.createElement("iframe");
+      frame.src = "demo/";
+      frame.title = "Condx live demo";
+      frame.addEventListener("load", () => setTimeout(() => {
+        stage.querySelector(".veil")?.remove();
+        stage.querySelector("img")?.remove();
+        stage.classList.remove("loading");
+      }, 1200));
+      stage.appendChild(frame);
+    });
+
+    // El enlace del menú de la sección que se ve.
+    const links = [...document.querySelectorAll(".side nav a")];
+    const observer = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        links.forEach((a) => a.classList.toggle("on", a.getAttribute("href") === "#" + e.target.id));
+      }
+    }, { rootMargin: "-40% 0px -55% 0px" });
+    ["top", "demo", "features", "agents", "install"].forEach((id) => { const el = document.getElementById(id); if (el) observer.observe(el); });
+  </script>
+</body>
+</html>

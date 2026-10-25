@@ -1,0 +1,52 @@
+name = "migrate-native"
+title = "Migrate the local environment to native mode"
+description = "Moves the local backend from Docker to the convex-local-backend binary: backs up the Docker backend, copies its environment variables, stops it, starts the native backend, imports the data and starts convex dev as a daemon process. The Docker volume stays intact (you can go back with “Change local environment mode”)."
+kinds = ["devbox"]
+writes = true
+
+[approval]
+devbox = "simple"
+
+[[step]]
+name = "Back up the Docker backend"
+builtin = "native-backup"
+timeout_secs = 1800
+
+[[step]]
+name = "Read environment variables"
+builtin = "native-read-env"
+timeout_secs = 300
+
+[[step]]
+name = "Prepare native backend"
+builtin = "native-prepare"
+timeout_secs = 120
+
+[[step]]
+name = "Stop Docker backend and deployer"
+builtin = "native-stop-docker"
+timeout_secs = 300
+
+[[step]]
+name = "Start native backend"
+builtin = "native-start-backend"
+timeout_secs = 120
+
+[[step]]
+name = "Import the data"
+builtin = "native-import"
+timeout_secs = 3600
+
+[[step]]
+name = "Copy environment variables"
+builtin = "native-write-env"
+timeout_secs = 300
+
+[[step]]
+name = "Switch to native mode"
+builtin = "native-switch"
+
+[[step]]
+name = "Start native deployer"
+builtin = "native-start-deployer"
+timeout_secs = 120

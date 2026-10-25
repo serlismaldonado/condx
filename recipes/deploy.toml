@@ -1,0 +1,37 @@
+name = "deploy"
+title = "Deploy a commit"
+description = "Deploys a commit's functions (temporary worktree with the submodule). On the devbox, the deployer redeploys the checkout on the next change."
+kinds = ["devbox", "throwaway"]
+projects = true
+writes = true
+
+[approval]
+devbox = "none"
+throwaway = "none"
+
+[[args]]
+name = "commit"
+type = "commit"
+default = "dev"
+description = "Branch, tag or commit"
+
+[[step]]
+name = "Prepare worktree"
+builtin = "worktree"
+setup = true
+
+[[step]]
+name = "Deploy functions"
+run = ["{convex}", "dev", "--once"]
+cwd = "worktree"
+convex = true
+timeout_secs = 900
+
+[[step]]
+name = "Record deploy"
+builtin = "record-deployment"
+
+[[step]]
+name = "Remove worktree"
+builtin = "cleanup-worktree"
+finally = true

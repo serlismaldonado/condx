@@ -1,0 +1,32 @@
+[package]
+name = "devtool-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "condxd"
+path = "src/main.rs"
+
+[dependencies]
+devtool-core = { path = "../core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+rusqlite = { version = "0.32", features = ["bundled"] }
+ureq = "2"
+dirs = "5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "0.8"
+libc = "0.2"
+keyring = { version = "3", features = ["apple-native"] }
+age = "0.12"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,56 @@
+name: Release
+
+# Un tag vX.Y.Z publica el release con la app y el daemon para Mac con Apple Silicon.
+# Sin firma de Developer ID: install.sh quita la cuarentena al instalar.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (it must exist)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - name: Tests
+        run: cargo test --workspace
+      - name: Build
+        run: cargo build --release -p devtool-app -p devtool-daemon
+      - name: Package
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          NAME="condx-${TAG}-macos-arm64"
+          mkdir -p dist
+          APP_DIR="$PWD/dist" SKIP_BUILD=1 scripts/bundle-app.sh release
+          cp target/release/condxd dist/condxd
+          codesign --force --sign - dist/condxd
+          tar -czf "$NAME.tar.gz" -C dist Condx.app condxd
+          shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$NAME.tar.gz" "$NAME.tar.gz.sha256" install.sh --clobber
+          else
+            gh release create "$TAG" "$NAME.tar.gz" "$NAME.tar.gz.sha256" install.sh --generate-notes --title "Condx $TAG"
+          fi

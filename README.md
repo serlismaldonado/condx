@@ -47,6 +47,19 @@ No accounts and no telemetry: everything stays on your machine.
 - [Rust](https://rustup.rs) (the toolchain is pinned in `rust-toolchain.toml` and installs itself).
 - Node.js and the Convex CLI in your projects (`npx convex`), logged in for cloud environments.
 
+## Install
+
+On a Mac with Apple Silicon and macOS 15 or later:
+
+```bash
+curl -fsSL https://condx.vercel.app/install.sh | bash
+```
+
+It downloads the latest [release](https://github.com/serlismaldonado/condx/releases), checks its
+SHA-256, installs the daemon as a launchd service and the app in `~/Applications`. The builds
+aren't signed with a Developer ID yet, so the script clears macOS's quarantine flag on what it
+downloaded. Read it first if you like: [`install.sh`](install.sh).
+
 ## Install from source
 
 ```bash

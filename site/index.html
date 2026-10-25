@@ -356,15 +356,15 @@ claude mcp add condx -- ~/.condx/daemon/bin/condxd mcp
         <div class="label"><b>05</b> Install</div>
         <div class="hero" style="grid-template-columns:1fr 1fr;align-items:start">
           <div>
-            <h2>Start in <em>two commands</em></h2>
-            <p class="sub">macOS 15+, built from source with Rust. Homebrew soon.</p>
+            <h2>Start in <em>one command</em></h2>
+            <p class="sub">macOS 15+ on Apple Silicon. The app guides the rest. Or build from source with Rust.</p>
           </div>
-          <pre>git clone https://github.com/serlismaldonado/condx.git
-cd condx &amp;&amp; cargo build --release
+          <pre>curl -fsSL https://condx.vercel.app/install.sh | bash
 
-<span class="c"># The daemon (launchd) and the app</span>
-./target/release/condxd install
-scripts/bundle-app.sh &amp;&amp; open ~/Applications/Condx.app</pre>
+<span class="c"># From source</span>
+git clone https://github.com/serlismaldonado/condx.git
+cd condx &amp;&amp; cargo build --release
+./target/release/condxd install &amp;&amp; scripts/bundle-app.sh</pre>
         </div>
       </section>
 

@@ -16,3 +16,5 @@ mkdir -p "$ROOT/site/assets"
 rm -rf "$ROOT/site/assets/icons"
 cp -R "$KIT_ASSETS/icons" "$ROOT/site/assets/icons"
 echo "Demo: $OUT ($(du -sh "$OUT/pkg" | cut -f1))"
+# El instalador también se sirve desde la web (condx.vercel.app/install.sh).
+cp "$ROOT/install.sh" "$ROOT/site/install.sh"

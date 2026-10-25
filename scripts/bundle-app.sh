@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Empaqueta la app GPUI como «Condx.app» (bundle mínimo, sin firma de Developer ID)
-# en ~/Applications. Uso: tools/devtool/scripts/bundle-app.sh [debug|release]
+# en ~/Applications. Uso: scripts/bundle-app.sh [debug|release]
+# APP_DIR cambia la carpeta (el release la arma en dist/); SKIP_BUILD=1 usa lo ya compilado.
 set -euo pipefail
 PROFILE="${1:-release}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-if [ "$PROFILE" = "release" ]; then cargo build --release -p devtool-app; else cargo build -p devtool-app; fi
-APP="$HOME/Applications/Condx.app"
+if [ -z "${SKIP_BUILD:-}" ]; then
+  if [ "$PROFILE" = "release" ]; then cargo build --release -p devtool-app; else cargo build -p devtool-app; fi
+fi
+APP_DIR="${APP_DIR:-$HOME/Applications}"
+mkdir -p "$APP_DIR"
+APP="$APP_DIR/Condx.app"
 # La del nombre viejo, si quedó.
-rm -rf "$HOME/Applications/Heskala Devtool.app"
+rm -rf "$APP_DIR/Heskala Devtool.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp assets/brand/Condx.icns "$APP/Contents/Resources/Condx.icns"

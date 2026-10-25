@@ -28,6 +28,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace
+      - name: The installer served by the site is the repo's
+        run: cmp install.sh site/install.sh && bash -n install.sh
 
   # La demo de la web: la app compila a WebAssembly.
   wasm:

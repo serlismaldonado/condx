@@ -132,6 +132,7 @@
     ul.list li { padding-left: 18px; position: relative; color: var(--muted); font-size: 14px; }
     ul.list li::before { content: ""; position: absolute; left: 0; top: 9px; width: 7px; height: 7px; background: var(--accent); border-radius: 1px; }
 
+    kbd { font-family: inherit; font-size: 11px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 3px; }
     .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); }
     .grid3 > div { padding: 28px 32px; border-left: 1px solid var(--line); border-top: 1px solid var(--line); }
     .grid3 > div:nth-child(3n + 1) { border-left: 0; }
@@ -246,7 +247,7 @@
             </div>
           </div>
         </div>
-        <div class="caption"><span>Sample data. Best in Chrome, Edge or Safari.</span><a href="demo/" class="mono">Open full screen ↗</a></div>
+        <div class="caption"><span>Sample data. Try <kbd>Ctrl</kbd>+<kbd>K</kbd>. Best in Chrome, Edge or Safari.</span><span><a href="demo/?welcome" class="mono">First launch ↗</a> &nbsp; <a href="demo/" class="mono">Open full screen ↗</a></span></div>
       </section>
 
       <section id="ways">
@@ -321,14 +322,17 @@
 
         <div class="feature flip">
           <div class="text">
-            <h3>Your schema, drawn</h3>
-            <p>Each backend's schema as a diagram, with relations and indexes.</p>
-            <ul class="list"><li>Focus a table and its relations</li><li>Local or cloud</li></ul>
+            <h3>Your schema, drawn and checked</h3>
+            <p>Each backend's schema as a diagram. Compare local with cloud before you deploy.</p>
+            <ul class="list"><li>Flags changes that would break the deploy</li><li>Also a workflow check and an MCP tool</li></ul>
           </div>
           <div class="shot"><img src="shots/schema.jpg" alt="The schema diagram of the sample project" loading="lazy" width="1800" height="1125"></div>
         </div>
 
         <div class="grid3">
+          <div><h3>⌘K for everything</h3><p>Any page, environment tab or table, fuzzy.</p></div>
+          <div><h3>Guided first launch</h3><p>Checks your Mac and fetches the backend.</p></div>
+          <div><h3>CI per project</h3><p>GitHub Actions of each repo, in the app.</p></div>
           <div><h3>Local backend, no Docker</h3><p>Backend, deployer and frontend as processes.</p></div>
           <div><h3>Rehearsals</h3><p>Try a commit on a copy of real data first.</p></div>
           <div><h3>Encrypted backups</h3><p>Encrypted, kept 14 days.</p></div>

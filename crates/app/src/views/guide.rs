@@ -12,6 +12,7 @@ use crate::ui;
 
 /// Título (en inglés, se traduce con `tr`), texto en inglés y texto en español.
 pub const CHAPTERS: &[(&str, &str, &str)] = &[
+    ("First launch, palette and checks", include_str!("../../../../docs/guide/14-first-launch.md"), include_str!("../../../../docs/guia/14-primer-arranque.md")),
     ("Pieces and environments", include_str!("../../../../docs/guide/01-pieces.md"), include_str!("../../../../docs/guia/01-piezas.md")),
     ("Checking status", include_str!("../../../../docs/guide/02-status.md"), include_str!("../../../../docs/guia/02-estado.md")),
     ("Local environment and terminal", include_str!("../../../../docs/guide/10-local-terminal.md"), include_str!("../../../../docs/guia/10-local-terminal.md")),

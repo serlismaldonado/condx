@@ -250,6 +250,12 @@ pub struct DevtoolApp {
 const POLL: Duration = Duration::from_secs(3);
 const LIVE_POLL: Duration = Duration::from_secs(2);
 
+/// Si la vista ya no existe. En la web (un solo hilo) una actualización puede caer mientras la
+/// ventana se dibuja y fallar sin que la vista se haya ido: los sondeos solo paran si se fue.
+fn gone<T: 'static>(this: &WeakEntity<T>) -> bool {
+    this.upgrade().is_none()
+}
+
 impl DevtoolApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (daemon, error) = match Daemon::from_home() {
@@ -427,7 +433,13 @@ impl DevtoolApp {
         let Some(daemon) = self.daemon.clone() else { return };
         cx.spawn_in(window, async move |this, cx| loop {
             let d = daemon.clone();
-            let Ok(project) = this.update(cx, |app, _| app.project.clone()) else { break };
+            let Ok(project) = this.update(cx, |app, _| app.project.clone()) else {
+                if gone(&this) {
+                    break;
+                }
+                cx.background_executor().timer(POLL).await;
+                continue;
+            };
             let services_path = format!("/api/services?project={project}");
             let overview_path = format!("/api/overview?project={project}");
             let jobs_path = format!("/api/jobs?limit=60&project={project}");
@@ -498,7 +510,7 @@ impl DevtoolApp {
                     cx.notify();
                 })
                 .is_ok();
-            if !alive {
+            if !alive && gone(&this) {
                 break;
             }
             cx.background_executor().timer(POLL).await;
@@ -724,7 +736,12 @@ impl DevtoolApp {
         let Some(daemon) = self.daemon.clone() else { return };
         cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_millis(500)).await;
-            let Ok(project) = this.update(cx, |app, _| app.project.clone()) else { break };
+            let Ok(project) = this.update(cx, |app, _| app.project.clone()) else {
+                if gone(&this) {
+                    break;
+                }
+                continue;
+            };
             let d = daemon.clone();
             let path = format!("/api/services?project={project}");
             let res = cx.background_executor().spawn(async move { d.get(&path) }).await;
@@ -736,7 +753,7 @@ impl DevtoolApp {
                     }
                     app.pending.keys().any(|k| k.starts_with(&format!("{project}/")))
                 })
-                .unwrap_or(false);
+                .unwrap_or_else(|_| !gone(&this));
             if !more {
                 break;
             }
@@ -1011,7 +1028,7 @@ impl DevtoolApp {
                     cx.notify();
                     true
                 })
-                .unwrap_or(false);
+                .unwrap_or_else(|_| !gone(&this));
             if !keep || finished {
                 break;
             }

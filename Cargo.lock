@@ -1674,6 +1674,7 @@ dependencies = [
  "ureq",
  "vt100",
  "wasm-bindgen",
+ "web-sys",
  "web-time",
 ]
 

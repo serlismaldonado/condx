@@ -105,7 +105,10 @@ pub fn run_desktop() {
 pub fn start() {
     gpui_kit::platform::web_init();
     i18n::set_lang(i18n::Lang::En);
-    gpui_kit::platform::application().with_assets(ely_core::Assets::before(gpui_kit::assets::Assets::default())).run(|cx| {
+    // Los íconos de GPUI Kit se piden por HTTP: con la URL entera (el cliente no acepta rutas
+    // relativas), desde el origen de la página.
+    let origin = web_sys::window().and_then(|w| w.location().origin().ok()).unwrap_or_default();
+    gpui_kit::platform::application().with_assets(ely_core::Assets::before(gpui_kit::assets::Assets::new(origin))).run(|cx| {
         init(cx);
         ely_core::init(cx).expect("Ely resources failed to load");
         i18n::apply_ely(cx);

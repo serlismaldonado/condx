@@ -1,6 +1,6 @@
 # Flows with agents, events and threads
 
-Status: design (2026-10-25). First event sources: Convex errors, frontend errors and external agents through the MCP. Builds on the workflow engine (`workflows.rs`), the agent host
+Status: design (2026-10-25). First event sources: Convex and frontend errors and user reports through the Condx SDK (any Convex app), and external agents through the MCP. Builds on the workflow engine (`workflows.rs`), the agent host
 (`agent_host.rs`, `agent-host/` with pi durable), incidents, notifications and the phone.
 
 ## 1. Goal
@@ -28,6 +28,7 @@ fingerprint, severity, payload, at }` (payload redacted, size-capped, untrusted)
 | --- | --- | --- |
 | `convex-error` | **First.** Errors of Convex functions (uncaught errors, failed mutations/actions) on cloud dev and prod | the daemon reads them on demand (`function_logs`, `convex logs`); not as events |
 | `frontend-error` | **First.** Errors of the frontend: in the browser of real users (production) and in local tabs (dev), plus failed Vercel builds | local tabs: Condx telemetry (`get_errors`); Vercel builds: incidents; production browsers: new |
+| `user-report` | **First.** A user of the app (not the developer) reports a problem from inside the app | new (`<ReportProblem>`, §2.8) |
 | `mcp` | **First.** An external agent (Claude Code, another tool) reports an event through Condx's MCP | new tool `report_event` |
 | `incident` | An incident opened or reopened (job, Vercel, CI, Convex down) | exists (incidents.rs) |
 | `webhook` | Any JSON a service posts to Condx Cloud (Sentry, an uptime check), signed with a per-source secret | new |
@@ -36,6 +37,9 @@ fingerprint, severity, payload, at }` (payload redacted, size-capped, untrusted)
 | `manual` | Run it from the app or the phone | exists |
 
 How the first three arrive:
+
+Convex and frontend errors and user reports come from the **Condx SDK** (§2.8), which any Convex
+app can add; the daemon's own capture below covers projects that don't use it yet.
 
 - **Convex errors.** The daemon follows the log stream of each cloud environment it has a key for
   (`npx convex logs --deployment …`, the same deploy keys it already keeps in the Keychain; dev and
@@ -134,6 +138,46 @@ medium; above that, wait for my OK", "deploy to dev automatically when review an
 - event payloads and logs are data, never instructions;
 - a budget per run and per day (today's), and agents-at-once.
 
+### 2.8 The Condx SDK: capture in any Convex app
+
+Condx is project-agnostic: nothing here is specific to one app. Two small packages, added to any
+Convex project (by hand, or by `condx init` / an agent through the MCP guide):
+
+**`@condx/react` (frontend).**
+
+- `<CondxProvider ingestKey="…">` around the app (next to `ConvexProvider`). It captures:
+  uncaught errors and unhandled promise rejections; render errors (an error boundary it provides);
+  failed Convex calls (it wraps the `ConvexReactClient`: the function name and the error, never the
+  arguments); and a short trail of what happened before (route changes, `console.error`, the last
+  Convex calls by name). It groups repeats in the browser and sends in batches.
+- `<ReportProblem />` (a button that opens a small form) and `useReportProblem()` (for apps that
+  want their own UI): the **user of the app** says what went wrong, in their words; optionally a
+  screenshot of the page and a contact email, each only if they choose it. The report carries the
+  same context (route, app version, recent errors and calls) so an agent can connect it to code.
+- Privacy by default: no cookies, no argument values, no input contents; `beforeSend` to drop or
+  edit anything; the developer's app shows its own notice. Works without Condx (no key: it does
+  nothing).
+
+**`@condx/convex` (backend, a Convex component).**
+
+- Installed with `app.use(condx)` in `convex.config.ts`; it keeps its own tables in the app's
+  deployment (errors, reports) and a secret set as an environment variable of the deployment.
+- `reportError(ctx, error, info?)` and a wrapper for functions (`withCondx(mutation({...}))`) record
+  server errors **from inside the deployment**: no paid log streams and no Mac needed to catch them.
+  Reports from `<ReportProblem>` can also be stored here first, so they're never lost.
+- A scheduled internal action forwards new rows to Condx Cloud in batches (with the secret), and
+  retries if it's down.
+
+**Condx Cloud ingest.** An HTTP endpoint (`/ingest`) that accepts the browser's events (public,
+per-project ingest key, rotatable) and the component's batches (secret key). Rate limits and size
+caps per key; only redacted, capped payloads are kept, in a per-daemon scope the daemon pulls by
+sync (like the phone's requests). The daemon turns them into events, groups them by fingerprint and
+starts the flows (§2.2).
+
+So an error in production reaches a thread with the Mac on or off: the component or the browser
+send it to Condx Cloud, and the daemon picks it up when it's running (a flow that must react while
+the Mac is off is a remote runner's job, A7).
+
 ## 3. Example: "Error in production"
 
 ```
@@ -185,7 +229,8 @@ the checks, the approval buttons, and anything the developer asks along the way.
 | F1 | Agent catalog (roles, mode, output schema) and the `agent` node; outputs flow to the next nodes | a manual flow Triage → Risk produces a validated risk report in the run |
 | F2 | Edge conditions; `notify` with a summary to the phone and the thread | the same flow notifies only when risk ≥ the threshold, and skips the rest with a reason |
 | F3 | Threads: each run is a thread with its agents, flow messages, cards and mentions; the Agents page lists threads; `ask` node | the developer asks `@risk` something in the run's thread and gets the answer in context |
-| F4 | Events and triggers, in this order: convex-error (log stream of dev/prod), frontend-error (dev telemetry; production client via Condx Cloud), mcp (`report_event`), then incident, webhook, task, schedule; dedupe by fingerprint | a Convex error on dev and a browser error in production each start their flow once, later occurrences join the thread, and an external agent can raise one through the MCP |
+| F4a | Condx SDK: `@condx/react` (provider, error boundary, Convex call errors, `<ReportProblem>`), `@condx/convex` (component, `reportError`, forwarder) and the Condx Cloud ingest | a test Convex app (not heskala) sends a browser error, a server error and a user report, and they land in the daemon as events |
+| F4b | Events and triggers: the SDK's events, the daemon's own capture (Convex logs, dev telemetry) for apps without the SDK, `report_event` in the MCP, then incident, webhook, task, schedule; dedupe by fingerprint | each starts its flow once, later occurrences join the thread, and an external agent can raise one through the MCP |
 | F5 | Fix pipeline in flows: Fixer → Reviewer → checks → approval or auto → deploy; autonomy per flow; built-in flows ("Error in production", "CI failing", "Task from chat") | a real error goes from event to a reviewed, tested fix waiting for approval on the phone |
 | F6 | Threads on the phone (read, write, approve) | the whole loop can be driven from the phone |
 | F7 | Outcomes per agent and flow (accepted, discarded, reverted, cost) | Settings shows which agents and flows pay off |
@@ -195,10 +240,11 @@ so nothing changes until the developer edits it.
 
 ## 6. Open questions
 
-- Production frontend errors need the small client in the app and an ingest endpoint on Condx Cloud
-  that the public internet can reach: which key model (one public key per project, rotatable) and
-  which limits (events per minute, payload size)?
-- Convex errors while the Mac is off: only Convex log streams (paid plan) can deliver them; is that
-  needed now, or is "the daemon follows the logs while it runs" enough to start?
+- Package names and where they live (`packages/` in the condx repo, published to npm under `@condx/*`?).
+- The ingest key in the browser is public by nature: one per project, rotatable, with rate limits;
+  is that enough, or should reports go through the app's own Convex component only?
+- Screenshots in `<ReportProblem>`: in the browser (an image of the DOM) and only if the user ticks
+  it; how big, and kept how long?
+- React only to start (most Convex frontends), then React Native (Expo) with the same API?
 - Can one flow run several agents in parallel (triage and a log search at once), or keep it one node
   at a time as today?

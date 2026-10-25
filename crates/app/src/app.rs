@@ -72,6 +72,32 @@ impl EnvTab {
     }
 }
 
+/// Pestañas de Configuración, como las de un entorno.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SettingsTab {
+    General,
+    Data,
+    Agents,
+    Connect,
+    Cloud,
+    Notifications,
+}
+
+impl SettingsTab {
+    pub const ALL: [SettingsTab; 6] = [SettingsTab::General, SettingsTab::Data, SettingsTab::Agents, SettingsTab::Connect, SettingsTab::Cloud, SettingsTab::Notifications];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsTab::General => t!("General"),
+            SettingsTab::Data => t!("Data and changes"),
+            SettingsTab::Agents => t!("Agents"),
+            SettingsTab::Connect => t!("Connect an agent"),
+            SettingsTab::Cloud => t!("Condx Cloud"),
+            SettingsTab::Notifications => t!("Notifications"),
+        }
+    }
+}
+
 /// Cómo está el entorno local (sus servicios).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LocalState {
@@ -135,6 +161,7 @@ pub struct DevtoolApp {
     pub promotion: Option<Load>,
     /// Pestaña elegida en el detalle de entorno.
     pub env_tab: EnvTab,
+    pub settings_tab: SettingsTab,
     pub env_deployments: HashMap<String, Load>,
     pub backups: Vec<Value>,
     /// Estado anterior de cada trabajo, para avisar cuando termina.
@@ -350,6 +377,7 @@ impl DevtoolApp {
             form_result: None,
             promotion: None,
             env_tab: EnvTab::Summary,
+            settings_tab: SettingsTab::General,
             env_deployments: HashMap::new(),
             backups: vec![],
             services: vec![],

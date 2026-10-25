@@ -3,10 +3,11 @@
 
 use gpui_kit::component::button::Button;
 use gpui_kit::component::clipboard::Clipboard;
+use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{h_flex, v_flex, Sizable};
 use gpui_kit::*;
 
-use crate::app::DevtoolApp;
+use crate::app::{DevtoolApp, SettingsTab};
 use crate::i18n::Lang;
 use crate::theme::Choice;
 use crate::ui;
@@ -38,29 +39,42 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
             daemon_home = format!("~{rest}");
         }
     }
-    v_flex()
-        .gap_3()
-        .p_4()
-        .max_w(px(720.))
-        .child(super::agent_settings::card(app, window, cx))
-        .child(super::notify_settings::card(app, window, cx))
-        .child(agents(app, cx))
-        .child(super::cloud::card(app, window, cx))
-        .child(data_rules(app, cx))
-        .child(
-            ui::card(cx)
-                .child(ui::section(t!("Language"), cx))
-                .child(langs)
-                .child(ui::muted(t!("Messages that come from the daemon (job steps, recipes, errors) are always in English."), cx).text_xs()),
-        )
-        .child(ui::card(cx).child(ui::section(t!("Theme"), cx)).child(themes))
-        .child(
-            ui::card(cx)
-                .child(ui::section(t!("About"), cx))
-                .child(ui::kv(t!("Version"), ui::mono(env!("CARGO_PKG_VERSION")), cx))
-                .child(ui::kv(t!("Daemon data"), ui::mono(daemon_home).truncate(), cx))
-                .child(ui::kv(t!("Daemon"), ui::mono(app.daemon.as_ref().map(|d| d.base.clone()).unwrap_or_else(|| t!("not connected").to_string())), cx)),
-        )
+    let current = app.settings_tab;
+    let mut tabs = TabBar::new("settings-tabs").underline().small().selected_index(SettingsTab::ALL.iter().position(|t| *t == current).unwrap_or(0));
+    for t in SettingsTab::ALL {
+        tabs = tabs.child(Tab::new().label(t.label()));
+    }
+    let tabs = tabs.on_click(cx.listener(|this, ix: &usize, _, cx| {
+        if let Some(t) = SettingsTab::ALL.get(*ix) {
+            this.settings_tab = *t;
+            cx.notify();
+        }
+    }));
+    let body = match current {
+        SettingsTab::General => v_flex()
+            .gap_3()
+            .child(
+                ui::card(cx)
+                    .child(ui::section(t!("Language"), cx))
+                    .child(langs)
+                    .child(ui::muted(t!("Messages that come from the daemon (job steps, recipes, errors) are always in English."), cx).text_xs()),
+            )
+            .child(ui::card(cx).child(ui::section(t!("Theme"), cx)).child(themes))
+            .child(
+                ui::card(cx)
+                    .child(ui::section(t!("About"), cx))
+                    .child(ui::kv(t!("Version"), ui::mono(env!("CARGO_PKG_VERSION")), cx))
+                    .child(ui::kv(t!("Daemon data"), ui::mono(daemon_home).truncate(), cx))
+                    .child(ui::kv(t!("Daemon"), ui::mono(app.daemon.as_ref().map(|d| d.base.clone()).unwrap_or_else(|| t!("not connected").to_string())), cx)),
+            ),
+        SettingsTab::Data => data_rules(app, cx),
+        SettingsTab::Agents => super::agent_settings::card(app, window, cx),
+        SettingsTab::Connect => agents(app, cx),
+        SettingsTab::Cloud => super::cloud::card(app, window, cx),
+        SettingsTab::Notifications => super::notify_settings::card(app, window, cx),
+    };
+    // Como en un entorno: las pestañas arriba y el contenido debajo (la página se desplaza).
+    v_flex().gap_3().px_4().pt_1().pb_4().child(tabs).child(div().max_w(px(720.)).child(body))
 }
 
 const KINDS: [&str; 4] = ["devbox", "throwaway", "cloud-dev", "cloud-prod"];

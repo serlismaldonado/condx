@@ -372,6 +372,7 @@ fn approval_rows(app: &mut DevtoolApp, recipe: &str, env: &str, function: &str, 
         _ => t!("your npx convex session (save a deploy key in the Keys tab to use it instead)"),
     };
     let settings = Button::new("approval-settings").xsmall().ghost().icon(IconName::Settings).label(t!("Change in Settings")).on_click(cx.listener(|this, _, window, cx| {
+        this.settings_tab = crate::app::SettingsTab::Data;
         this.open_page(crate::app::Page::Settings, window, cx);
     }));
     rows.child(ui::kv(

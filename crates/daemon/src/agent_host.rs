@@ -390,7 +390,7 @@ fn set_incident_agent(state: &Shared, incident_id: &str, run: &Value) {
         let answer = run["answer"].as_str().map(|a| a.chars().take(4_000).collect::<String>());
         // Del arreglo, lo que la tarjeta muestra (el parche entero está en la corrida).
         let fix = run["fix"].is_object().then(|| json!({ "branch": run["branch"], "commit": run["fix"]["commit"], "files": run["fix"]["files"], "stat": run["fix"]["stat"], "changes": run["fix"]["changes"], "discarded": run["fix"]["discarded"], "error": run["fix"]["error"] }));
-        inc["agent"] = json!({ "runId": run["id"], "mode": run["mode"], "status": run["status"], "answer": answer, "at": now_ms(), "model": run["model"], "fix": fix, "template": run["template"]["name"] });
+        inc["agent"] = json!({ "runId": run["id"], "mode": run["mode"], "status": run["status"], "answer": answer, "error": run["error"], "at": now_ms(), "model": run["model"], "fix": fix, "template": run["template"]["name"] });
         let _ = state.store.save_incident(&inc);
     }
 }
@@ -427,10 +427,13 @@ pub async fn poll(state: &Shared) {
             let max_tokens = r["limits"]["maxTokens"].as_u64().unwrap_or(0);
             let max_minutes = r["limits"]["maxMinutes"].as_u64().unwrap_or(0);
             let minutes = (now_ms() - r["startedAt"].as_i64().unwrap_or(0)).max(0) as u64 / 60_000;
-            let why = if usage_today(state) >= settings.daily_token_budget {
-                Some("today's token budget ran out".to_string())
-            } else if max_tokens > 0 && total > max_tokens {
+            // Cada vuelta del modelo reenvía toda la conversación: la siguiente gasta al menos lo
+            // que la última. Se para antes de pasarse, no después.
+            let next = delta;
+            let why = if max_tokens > 0 && total + next > max_tokens {
                 Some(format!("it reached its template's limit of {max_tokens} tokens"))
+            } else if usage_today(state) + next >= settings.daily_token_budget {
+                Some("today's token budget ran out".to_string())
             } else if max_minutes > 0 && minutes >= max_minutes {
                 Some(format!("it reached its template's limit of {max_minutes} minutes"))
             } else {

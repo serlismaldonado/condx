@@ -128,7 +128,7 @@ fn agent_block(app: &mut DevtoolApp, inc: &Value, window: &mut Window, cx: &mut 
         "done" if agent["mode"] == "fix" => (Health::Ok, t!("Fix prepared by {m} · {w}", m = ui::txt(&agent["model"]), w = agent["at"].as_i64().map(ui::ago).unwrap_or_default()).to_string()),
         "done" => (Health::Ok, t!("Diagnosis by {m} · {w}", m = ui::txt(&agent["model"]), w = agent["at"].as_i64().map(ui::ago).unwrap_or_default()).to_string()),
         "aborted" => (Health::Unknown, t!("The agent was stopped").to_string()),
-        "stopped" => (Health::Unknown, t!("The agent stopped: today's token budget ran out").to_string()),
+        "stopped" => (Health::Unknown, t!("The agent stopped: {why}", why = agent["error"].as_str().unwrap_or("it reached a limit")).to_string()),
         _ => (Health::Bad, t!("The agent failed").to_string()),
     };
     let open = app.agent_run_open.as_deref() == Some(run_id.as_str());

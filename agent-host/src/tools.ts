@@ -12,8 +12,9 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
 
 /** Lo que una herramienta devuelve al modelo como mucho. */
-export const MAX_OUTPUT = 40_000;
-const MAX_LINES = 400;
+// Cada resultado se queda en la conversación y se reenvía en cada vuelta: corto.
+export const MAX_OUTPUT = 12_000;
+const MAX_LINES = 200;
 
 /** Archivos que nunca se leen: variables de entorno, llaves, credenciales. */
 const SECRET = [/(^|\/)\.env(\.|$)/i, /\.(pem|key|p12|pfx|keystore|jks)$/i, /(^|\/)id_(rsa|ed25519|ecdsa)/i, /(^|\/)\.(npmrc|netrc|pgpass)$/i, /(^|\/)\.condx(\/|$)/, /(^|\/)\.git\//, /secrets?\.(json|ya?ml|toml)$/i];

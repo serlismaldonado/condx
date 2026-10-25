@@ -726,7 +726,6 @@
   "An agent is diagnosing it ({m})": "Un agente lo está diagnosticando ({m})",
   "Diagnosis by {m} · {w}": "Diagnóstico de {m} · {w}",
   "The agent was stopped": "Se detuvo al agente",
-  "The agent stopped: today's token budget ran out": "El agente se detuvo: se acabó el presupuesto de tokens de hoy",
   "The agent failed": "El agente falló",
   "Hide conversation": "Ocultar conversación",
   "Conversation": "Conversación",
@@ -799,5 +798,6 @@
   "Tell me about": "Avisarme de",
   "Send a test": "Enviar una prueba",
   "General": "General",
-  "Agents": "Agentes"
+  "Agents": "Agentes",
+  "The agent stopped: {why}": "El agente se detuvo: {why}"
 }

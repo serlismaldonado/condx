@@ -169,10 +169,28 @@ fn scan_jobs(state: &Shared, now: i64, scan: &mut Scan) {
             project: project_of_env(state, env),
             env: Some(env.to_string()),
             title: format!("{} failed on {env}", job["title"].as_str().unwrap_or(recipe)),
-            evidence: json!({ "jobId": job["id"], "recipe": recipe, "error": redact(&job["error"]), "commit": job["commit"], "endedAt": job["endedAt"] }),
+            evidence: json!({ "jobId": job["id"], "recipe": recipe, "error": redact(&job["error"]), "commit": job["commit"], "endedAt": job["endedAt"], "log": job["id"].as_str().map(job_log_tail) }),
             occurrence: job["id"].as_str().map(str::to_string),
         });
     }
+}
+
+/// El final del log de un trabajo (ya redactado al escribirse): ahí está el comando, sus
+/// argumentos y el error de verdad; sin esto el agente solo ve «exited with code 1».
+fn job_log_tail(id: &str) -> String {
+    tail_of(&crate::jobs::read_log(id, 0).unwrap_or_default().0)
+}
+
+/// Las últimas 40 líneas, como mucho 4000 bytes.
+fn tail_of(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut tail = lines[lines.len().saturating_sub(40)..].join("\n");
+    if tail.len() > 4_000 {
+        let cut = tail.len() - 4_000;
+        let at = (cut..tail.len()).find(|i| tail.is_char_boundary(*i)).unwrap_or(tail.len());
+        tail = format!("…{}", &tail[at..]);
+    }
+    tail
 }
 
 /// Convex de cada entorno de la nube que no responde.
@@ -523,5 +541,17 @@ mod tests {
         let later = apply(&st, &Scan { signals: vec![convex], observed: vec!["convex:dev".into()] }, &settings, 200_000 + NOTIFY_AGAIN_MS);
         assert_eq!(notify_opened(&st, &later, 200_000 + NOTIFY_AGAIN_MS).len(), 1);
     }
+
+    #[test]
+    fn el_final_del_log_va_en_la_evidencia() {
+        let log = (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n") + "\nArgumentValidationError: Object contains extra field `_id`";
+        let tail = tail_of(&log);
+        assert!(tail.starts_with("line 62") && tail.ends_with("extra field `_id`"), "{tail}");
+        let long = "é".repeat(5_000);
+        let t = tail_of(&long);
+        assert!(t.starts_with('…') && t.len() <= 4_004);
+        assert_eq!(tail_of(""), "");
+    }
+
 }
 

@@ -38,6 +38,10 @@ const APPROVAL_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status"
 const INCIDENT_FIELDS: &[&str] = &[
     "title", "source", "project", "env", "status", "count", "firstSeen", "lastSeen", "error", "log", "commit", "branch", "url", "agent", "workflows", "result", "resultFor",
 ];
+/// Lo que el teléfono ve de un proveedor: sus datos y su clave cifrada para la Mac y los teléfonos de
+/// confianza (`sealed`, age armado). Nunca la clave en claro.
+const KEY_FIELDS: &[&str] = &["kind", "label", "baseUrl", "model", "keyHint", "sealed", "recipients", "updatedAt"];
+
 /// Los resueltos se ven un rato (para que el teléfono vea en qué terminó lo que pidió).
 const RESOLVED_VISIBLE_MS: i64 = 3_600_000;
 
@@ -220,6 +224,7 @@ fn owned(scope: &str) -> &'static [&'static str] {
         Some("env") => ENV_FIELDS,
         Some("jobs") => JOB_FIELDS,
         Some("incidents") => INCIDENT_FIELDS,
+        Some("keys") => KEY_FIELDS,
         _ => APPROVAL_FIELDS,
     }
 }
@@ -283,6 +288,10 @@ pub struct TrustedDevice {
     pub name: String,
     pub public_key: String,
     pub paired_at: i64,
+    /// Su identidad de cifrado (age X25519, `age1…`), confirmada junto con la llave: el daemon le
+    /// cifra las claves de los proveedores (fase A6). Los vinculados antes no la tienen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_key: Option<String>,
 }
 
 fn devices_path() -> PathBuf {
@@ -346,8 +355,9 @@ pub fn pair_confirm(device_id: &str) -> Result<TrustedDevice> {
         bail!("that phone isn't waiting for confirmation anymore");
     }
     let public_key = device["publicKey"].as_str().filter(|k| k.len() == 64).context("the phone's key is missing")?.to_string();
+    let encryption_key = device["encryptionKey"].as_str().filter(|k| k.parse::<age::x25519::Recipient>().is_ok()).map(str::to_string);
     call("mutation", "pairing:confirm", json!({ "deviceId": device_id }))?;
-    let trusted = TrustedDevice { device_id: device_id.to_string(), name: device["name"].as_str().unwrap_or("Phone").to_string(), public_key, paired_at: now_ms() };
+    let trusted = TrustedDevice { device_id: device_id.to_string(), name: device["name"].as_str().unwrap_or("Phone").to_string(), public_key, paired_at: now_ms(), encryption_key };
     let mut list = trusted_devices();
     list.retain(|d| d.device_id != device_id);
     list.push(trusted.clone());
@@ -411,6 +421,46 @@ pub fn verify_decision(daemon_id: &str, job_id: &str, job_created_at: i64, row: 
     let vk = VerifyingKey::from_bytes(&bytes).map_err(|_| "bad key")?;
     vk.verify(decision_message(daemon_id, job_id, decision, at).as_bytes(), &sig).map_err(|_| "signature doesn't match".to_string())?;
     Ok(PhoneDecision { approve: decision == "approve", device: device.clone(), confirm: row.get("confirmText").and_then(Value::as_str).map(str::to_string) })
+}
+
+// ── Claves para los teléfonos (A6) ──────────────────────────────────────
+
+/// Los destinatarios de las claves: la Mac y los teléfonos de confianza con identidad de cifrado.
+pub fn key_recipients(mac: &age::x25519::Recipient, devices: &[TrustedDevice]) -> Vec<age::x25519::Recipient> {
+    let mut out = vec![mac.clone()];
+    out.extend(devices.iter().filter_map(|d| d.encryption_key.as_deref()?.parse().ok()));
+    out
+}
+
+/// Una fila del alcance `keys` por proveedor, cifrando de nuevo solo si cambió el proveedor o
+/// quiénes la reciben. Sin teléfonos que la puedan abrir no sube nada.
+fn key_rows(state: &Shared, devices: &[TrustedDevice], cache: &mut IndexMap<String, (String, String)>) -> IndexMap<String, Values> {
+    let mut rows = IndexMap::new();
+    if !devices.iter().any(|d| d.encryption_key.is_some()) {
+        return rows;
+    }
+    let Ok(mac) = crate::agents::mac_recipient() else { return rows };
+    let recipients = key_recipients(&mac, devices);
+    let names: Vec<String> = recipients.iter().map(|r| r.to_string()).collect();
+    for p in state.store.agent_providers().unwrap_or_default() {
+        let Some(id) = p["id"].as_str().map(str::to_string) else { continue };
+        let print = format!("{}|{}", p["updatedAt"], names.join(","));
+        let sealed = match cache.get(&id) {
+            Some((f, s)) if *f == print => s.clone(),
+            _ => match crate::agents::api_key(state, &id).and_then(|k| crate::agents::seal(&k.unwrap_or_default(), &recipients)) {
+                Ok(s) => {
+                    cache.insert(id.clone(), (print, s.clone()));
+                    s
+                }
+                Err(e) => {
+                    tracing::warn!("cloud: couldn't seal the key of {id}: {e:#}");
+                    continue;
+                }
+            },
+        };
+        rows.insert(id, obj(json!({ "kind": p["kind"], "label": p["label"], "baseUrl": p["baseUrl"], "model": p["model"], "keyHint": p["keyHint"], "sealed": sealed, "recipients": recipients.len(), "updatedAt": p["updatedAt"] })));
+    }
+    rows
 }
 
 // ── Pedidos de los teléfonos sobre incidentes ───────────────────────────
@@ -589,6 +639,9 @@ struct Session {
     incident_results: IndexMap<String, (String, String)>,
     /// El runtime de tokio del daemon (arrancar un agente es asíncrono; este hilo no lo es).
     rt: tokio::runtime::Handle,
+    /// Claves ya cifradas por proveedor: (huella de proveedor y destinatarios, texto cifrado). age
+    /// cifra distinto cada vez: sin esto cada vuelta subiría un cambio.
+    sealed: IndexMap<String, (String, String)>,
 }
 
 fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<Session> {
@@ -600,7 +653,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         format!("{prefix}-{}-{n}", now_ms())
     })
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let scopes: Vec<String> = ["env", "jobs", "approvals", "incidents"].iter().map(|k| format!("{k}:{}", link.daemon_id)).collect();
+    let scopes: Vec<String> = ["env", "jobs", "approvals", "incidents", "keys"].iter().map(|k| format!("{k}:{}", link.daemon_id)).collect();
     for s in &scopes {
         engine.enable_scope(s, None).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
@@ -611,7 +664,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new() })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -656,6 +709,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         }
     }
     want.insert(format!("incidents:{}", s.link.daemon_id), rows);
+    want.insert(format!("keys:{}", s.link.daemon_id), key_rows(state, &trusted_devices(), &mut s.sealed));
     let jobs_status: IndexMap<String, Value> = jobs.iter().filter_map(|j| Some((j["id"].as_str()?.to_string(), j["status"].clone()))).collect();
     let now = now_ms();
     for scope in &s.scopes {
@@ -819,7 +873,7 @@ mod tests {
         use ed25519_dalek::{Signer, SigningKey};
         let key = SigningKey::from_bytes(&[7u8; 32]);
         let pk = key.verifying_key().as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let device = TrustedDevice { device_id: "phone-1".into(), name: "iPhone".into(), public_key: pk.clone(), paired_at: 0 };
+        let device = TrustedDevice { device_id: "phone-1".into(), name: "iPhone".into(), public_key: pk.clone(), paired_at: 0, encryption_key: None };
         let now = 10_000_000;
         let row = |decision: &str, at: i64, job: &str, key_hex: &str| -> Values {
             let sig = key.sign(decision_message("mac-1", job, decision, at).as_bytes());
@@ -846,7 +900,7 @@ mod tests {
         use ed25519_dalek::{Signer, SigningKey};
         let key = SigningKey::from_bytes(&[9u8; 32]);
         let pk = key.verifying_key().as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let device = TrustedDevice { device_id: "phone-1".into(), name: "iPhone".into(), public_key: pk.clone(), paired_at: 0 };
+        let device = TrustedDevice { device_id: "phone-1".into(), name: "iPhone".into(), public_key: pk.clone(), paired_at: 0, encryption_key: None };
         let now = 10_000_000;
         let row = |request: &str, arg: &str, at: i64, incident: &str| -> Values {
             let sig = key.sign(request_message("mac-1", incident, request, "rq0123456789abcd", at, arg).as_bytes());
@@ -882,6 +936,25 @@ mod tests {
         assert_eq!(row["commit"], "0123456789ab");
         assert_eq!(row["agent"]["fix"]["commit"], "fedcba987654");
         assert_eq!(row["workflows"][0]["name"], "Deploy to dev");
+    }
+
+    #[test]
+    fn las_claves_se_cifran_para_la_mac_y_los_telefonos_de_confianza() {
+        let mac = age::x25519::Identity::generate();
+        let phone = age::x25519::Identity::generate();
+        let old_phone = age::x25519::Identity::generate();
+        let device = |id: &str, key: Option<String>| TrustedDevice { device_id: id.into(), name: id.into(), public_key: "0".repeat(64), paired_at: 0, encryption_key: key };
+        let devices = vec![device("phone-1", Some(phone.to_public().to_string())), device("phone-legacy", None), device("phone-old", Some(old_phone.to_public().to_string()))];
+        let recipients = key_recipients(&mac.to_public(), &devices);
+        assert_eq!(recipients.len(), 3, "the Mac and the two phones with an identity");
+        let sealed = crate::agents::seal("sk-test-1234", &recipients).unwrap();
+        assert_eq!(crate::agents::open(&sealed, &phone).unwrap(), "sk-test-1234");
+        assert_eq!(crate::agents::open(&sealed, &mac).unwrap(), "sk-test-1234");
+        // Quitado el teléfono viejo, lo que se cifra después ya no lo abre.
+        let after = key_recipients(&mac.to_public(), &devices[..2]);
+        let resealed = crate::agents::seal("sk-test-1234", &after).unwrap();
+        assert!(crate::agents::open(&resealed, &old_phone).is_err());
+        assert_eq!(crate::agents::open(&resealed, &phone).unwrap(), "sk-test-1234");
     }
 
     #[test]

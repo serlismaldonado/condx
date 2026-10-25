@@ -117,7 +117,7 @@ describe("lo que puede un teléfono", () => {
 
   test("lee entornos, trabajos, aprobaciones e incidentes; nada más", async () => {
     const t = await withApproval();
-    for (const kind of ["env", "jobs", "approvals", "incidents"]) {
+    for (const kind of ["env", "jobs", "approvals", "incidents", "keys"]) {
       expect(await t.query(api.sync.pull, { token: PHONE.token, scope: `${kind}:${A.daemonId}`, cursor: null, protocolVersion: PV })).toMatchObject({ status: "ok" });
     }
     for (const scope of [`runs:${A.daemonId}`, `workflows:${A.daemonId}`, `approvals:${B.daemonId}`, `env:${B.daemonId}`]) {
@@ -196,6 +196,38 @@ describe("pedidos sobre incidentes", () => {
     }
     const pull = await t.query(api.sync.pull, { token: A.token, scope: INCIDENTS, cursor: null, protocolVersion: PV });
     expect(pull.rows!.map((r: { id: string; values: Record<string, unknown> }) => [r.id, r.values.status, r.values.request ?? null])).toEqual([["inc-1", "open", null]]);
+  });
+});
+
+describe("claves cifradas para el teléfono", () => {
+  const AGE = "age1" + "q".repeat(58);
+
+  test("el teléfono manda su identidad de cifrado y la Mac la ve al confirmar", async () => {
+    const t = await setup();
+    const { code } = await t.mutation(api.pairing.open, { token: A.token });
+    const { deviceId } = await t.mutation(api.pairing.claim, { code, ...PHONE, encryptionKey: AGE });
+    const status = await t.query(api.pairing.status, { token: A.token });
+    expect(status!.device).toMatchObject({ deviceId, encryptionKey: AGE });
+    await t.mutation(api.pairing.confirm, { token: A.token, deviceId });
+    expect((await t.query(api.pairing.devices, { token: A.token }))[0]).toMatchObject({ encryptionKey: AGE });
+  });
+
+  test("una identidad que no es de age no se acepta", async () => {
+    const t = await setup();
+    const { code } = await t.mutation(api.pairing.open, { token: A.token });
+    for (const bad of ["age1short", "AGE1" + "q".repeat(58), "age1" + "b".repeat(58), "ssh-ed25519 AAAA"]) {
+      await expect(t.mutation(api.pairing.claim, { code, ...PHONE, encryptionKey: bad }), bad).rejects.toThrow(/encryptionKey/);
+    }
+  });
+
+  test("el teléfono lee las claves cifradas pero no las escribe", async () => {
+    const t = await setup();
+    await pairPhone(t);
+    const KEYS = `keys:${A.daemonId}`;
+    await push(t, group(op({ kind: "create", rowId: "anthropic", set: { kind: "anthropic", sealed: "-----BEGIN AGE ENCRYPTED FILE-----" } }, KEYS)), A.token);
+    const pull = await t.query(api.sync.pull, { token: PHONE.token, scope: KEYS, cursor: null, protocolVersion: PV });
+    expect(pull.rows![0].values).toMatchObject({ kind: "anthropic" });
+    await expect(push(t, group(op({ kind: "patch", rowId: "anthropic", set: { sealed: "x" } }, KEYS)), PHONE.token)).rejects.toThrow(/denied|phone|approvals/i);
   });
 });
 

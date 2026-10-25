@@ -10,11 +10,12 @@ import { ConvexError } from "convex/values";
 import type { QueryCtx } from "./_generated/server";
 import type { Op } from "localfirst/server";
 
-export const SCOPE_KINDS = ["env", "jobs", "approvals", "runs", "workflows", "incidents"] as const;
+export const SCOPE_KINDS = ["env", "jobs", "approvals", "runs", "workflows", "incidents", "keys"] as const;
 export type ScopeKind = (typeof SCOPE_KINDS)[number];
 
 /** Lo que un teléfono puede leer. */
-const DEVICE_READS: readonly ScopeKind[] = ["env", "jobs", "approvals", "incidents"];
+/** `keys`: las claves de los proveedores, cifradas por el daemon para cada teléfono (solo se leen). */
+const DEVICE_READS: readonly ScopeKind[] = ["env", "jobs", "approvals", "incidents", "keys"];
 /** Los únicos campos que un teléfono escribe en `approvals`. */
 export const DECISION_FIELDS = ["decision", "decidedAt", "deviceKey", "signature", "confirmText"] as const;
 /** Los únicos campos que un teléfono escribe en `incidents`: un pedido firmado. */

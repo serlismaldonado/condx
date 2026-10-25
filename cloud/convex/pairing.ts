@@ -57,10 +57,12 @@ async function revokePending(ctx: MutationCtx, deviceId: string) {
 }
 
 export const claim = mutation({
-  args: { code: v.string(), publicKey: v.string(), token: v.string(), name: v.string() },
+  args: { code: v.string(), publicKey: v.string(), token: v.string(), name: v.string(), encryptionKey: v.optional(v.string()) },
   returns: v.object({ deviceId: v.string(), daemonId: v.string() }),
-  handler: async (ctx, { code, publicKey, token, name }) => {
+  handler: async (ctx, { code, publicKey, token, name, encryptionKey }) => {
     if (!/^[0-9a-f]{64}$/.test(publicKey)) invalid("publicKey must be an Ed25519 key in hex");
+    // La identidad de cifrado (age X25519) con la que el daemon le cifra las claves de los proveedores.
+    if (encryptionKey !== undefined && !/^age1[02-9ac-hj-np-z]{58}$/.test(encryptionKey)) invalid("encryptionKey must be an age X25519 recipient");
     if (token.length < 32 || token.length > 128) invalid("token must be 32–128 characters");
     const cleanName = name.trim().slice(0, 40) || "Phone";
     const codeHash = await sha256Hex(normalizeCode(code));
@@ -71,13 +73,13 @@ export const claim = mutation({
     const taken = await ctx.db.query("devices").withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash)).unique();
     if (taken) invalid("Use a new token for each pairing");
     const deviceId = `phone-${[...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-    await ctx.db.insert("devices", { deviceId, daemonId: p.daemonId, name: cleanName, publicKey, tokenHash, status: "pending", createdAt: Date.now() });
+    await ctx.db.insert("devices", { deviceId, daemonId: p.daemonId, name: cleanName, publicKey, encryptionKey, tokenHash, status: "pending", createdAt: Date.now() });
     await ctx.db.patch("pairings", p._id, { status: "claimed", deviceId });
     return { deviceId, daemonId: p.daemonId };
   },
 });
 
-const deviceView = v.object({ deviceId: v.string(), name: v.string(), publicKey: v.string(), status: v.string(), createdAt: v.number() });
+const deviceView = v.object({ deviceId: v.string(), name: v.string(), publicKey: v.string(), encryptionKey: v.optional(v.string()), status: v.string(), createdAt: v.number() });
 
 /** Lo que ve la Mac del código abierto: si ya lo reclamó un teléfono, cuál. */
 export const status = query({
@@ -95,7 +97,7 @@ export const status = query({
     return {
       status: expired ? "expired" : p.status,
       expiresAt: p.expiresAt,
-      device: d ? { deviceId: d.deviceId, name: d.name, publicKey: d.publicKey, status: d.status, createdAt: d.createdAt } : null,
+      device: d ? { deviceId: d.deviceId, name: d.name, publicKey: d.publicKey, encryptionKey: d.encryptionKey, status: d.status, createdAt: d.createdAt } : null,
     };
   },
 });
@@ -136,7 +138,7 @@ export const devices = query({
   handler: async (ctx, { token }) => {
     const daemon = await daemonFromToken(ctx, token);
     const list = await ctx.db.query("devices").withIndex("by_daemonId", (q) => q.eq("daemonId", daemon.daemonId)).take(50);
-    return list.filter((d) => d.status !== "revoked").map((d) => ({ deviceId: d.deviceId, name: d.name, publicKey: d.publicKey, status: d.status, createdAt: d.createdAt }));
+    return list.filter((d) => d.status !== "revoked").map((d) => ({ deviceId: d.deviceId, name: d.name, publicKey: d.publicKey, encryptionKey: d.encryptionKey, status: d.status, createdAt: d.createdAt }));
   },
 });
 

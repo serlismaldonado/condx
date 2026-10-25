@@ -1,6 +1,6 @@
 # Design: agents that respond to incidents
 
-Status: Mac done (A0, A2-A5), A0b on the phone and A1 with ntfy (2026-10-25, local). Next: A6 (keys for devices); push inside Condx and the QR camera when nsh releases its host channel. Builds on Condx Cloud (`cloud.md`, phone approvals).
+Status: all phases done (A0-A6, 2026-10-25, local). Next: push inside Condx and the QR camera when nsh releases its host channel; remote runners that pair like phones. Builds on Condx Cloud (`cloud.md`, phone approvals).
 
 ## 1. Goal
 
@@ -67,7 +67,7 @@ An incident is a signal turned into a record with its evidence:
   sends it (write-only) and sees a hint (`…abcd`).
 - **Running from the phone or elsewhere:** age encrypts to several recipients. A paired phone (or a
   remote runner) gets its own X25519 key; the daemon re-encrypts each provider key to it and the
-  ciphertext travels through Condx Cloud. Condx Cloud never sees a key in plaintext. (Phase A6.)
+  ciphertext travels through Condx Cloud. Condx Cloud never sees a key in plaintext. (Phase A6, §6.6.)
 - The agent host gets the key in its environment when the daemon starts it, never on disk.
 
 ## 6. Autonomy
@@ -166,6 +166,20 @@ always a proposal: it waits for your approval whatever the level.
 - The daemon sends them (not the cloud): it's the one that detects incidents, so when the Mac is
   off there's nothing new to tell.
 
+## 6.6 Keys on paired devices (A6)
+
+- When a phone pairs it creates an age (X25519) identity next to its signing key (Keychain or
+  Keystore) and sends the public `age1…` recipient with the claim. The Mac shows it with the device
+  and trusts it only after the person confirms the pairing (`cloud-devices.json`, like the signing
+  key).
+- The daemon publishes scope `keys:<daemonId>`: one row per provider (name, kind, model, hint and
+  the key armored with age to the Mac plus every confirmed device). It's read-only for devices; the
+  cloud only stores ciphertext. Rows are cached and re-sealed only when providers or devices change.
+- Unpairing a device re-seals every key without it. A copy it already had stays readable to it, so
+  if a phone is lost: unpair it and rotate the provider key.
+- Phones paired before A6 have no recipient: they must pair again to receive keys.
+- A remote runner can pair the same way (its own identity, confirmed on the Mac); not built yet.
+
 ## 7. Phases
 
 | Phase | What | Done when |
@@ -178,4 +192,4 @@ always a proposal: it waits for your approval whatever the level.
 | A4 (Mac) ✅ | Run an enabled workflow with the fix's commit from the incident | done: the workflow asks for its own approvals; suggested workflows start turned off |
 | **A4 (phone)** ✅ | Approve the fix on the phone → deploy workflow; steer from the chat | done with A0b |
 | **A5** ✅ | Agent templates per incident kind ("agent factory"), budgets and limits | done: `templates.rs` with five built-in templates (frontend build, failing tests, Convex deploy, Convex not responding diagnose-only, generic); each sets when it applies, highest mode, provider/model, extra instructions, allowed tools and per-run limits (tokens, minutes). Edited in Settings → Agents → Templates |
-| A6 | Keys re-encrypted for paired devices and remote runners | an agent runs elsewhere without the key in plaintext in the cloud |
+| **A6** ✅ | Keys re-encrypted for paired devices and remote runners | done for phones: age identity at pairing, scope `keys` sealed to the Mac and confirmed devices, re-sealed on unpair; verified with two phones (one revoked) and a scan with no plaintext key in the cloud or daemon databases. Runners pair the same way when they exist |

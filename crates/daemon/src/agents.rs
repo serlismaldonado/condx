@@ -231,6 +231,11 @@ pub fn upsert_provider(state: &Shared, body: ProviderBody, seal_to: &dyn Fn(&str
     Ok(public(&p))
 }
 
+/// El destinatario de la Mac (para cifrar también a los teléfonos, fase A6).
+pub fn mac_recipient() -> Result<age::x25519::Recipient> {
+    Ok(identity()?.to_public())
+}
+
 pub fn seal_for_mac(plain: &str) -> Result<String> {
     seal(plain, &[identity()?.to_public()])
 }

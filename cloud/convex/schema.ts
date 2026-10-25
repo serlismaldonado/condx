@@ -27,6 +27,8 @@ export default defineSchema({
     daemonId: v.string(),
     name: v.string(),
     publicKey: v.string(),
+    /// Identidad de cifrado (age X25519) del teléfono: el daemon le cifra las claves de los proveedores.
+    encryptionKey: v.optional(v.string()),
     tokenHash: v.string(),
     status: v.union(v.literal("pending"), v.literal("active"), v.literal("revoked")),
     createdAt: v.number(),

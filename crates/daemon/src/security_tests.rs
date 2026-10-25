@@ -110,6 +110,23 @@ async fn las_claves_nunca_salen() {
     assert!(!res.to_string().contains('|'));
 }
 
+#[tokio::test]
+async fn rutas_nuevas_piden_token_y_no_filtran() {
+    // El chequeo del primer arranque y el diff de esquemas son de lectura: sin token, nada.
+    for path in ["/api/doctor", "/api/schema-diff?from=a&to=b"] {
+        let (status, _) = call(Method::GET, path, &local(), None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
+    }
+    // Con el token de agentes se lee el chequeo, que no trae secretos (solo versiones y rutas).
+    let (status, res) = call(Method::GET, "/api/doctor", &local(), Some(CLI), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(res["checks"].as_array().is_some_and(|c| c.len() >= 5), "{res}");
+    assert!(!res.to_string().contains('|'), "{res}");
+    // Un entorno que no existe en el diff: 404, sin tocar ningún backend.
+    let (status, _) = call(Method::GET, "/api/schema-diff?from=nope&to=nada", &local(), Some(CLI), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 #[test]
 fn telemetria_solo_de_origenes_permitidos() {
     use crate::http::origin_allowed;

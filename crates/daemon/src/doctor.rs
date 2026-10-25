@@ -39,7 +39,8 @@ pub async fn report(state: &Shared) -> Value {
         cmd::run("docker", &["info", "--format", "{{.ServerVersion}}"], None, &[], QUICK),
     );
     let node_ok = node.ok && node_major(&first_line(&node)).is_some_and(|m| m >= 18);
-    let backend = crate::native::binary(state);
+    // Solo mirar: `native::binary` copia el binario, y un chequeo no debe cambiar nada.
+    let backend = crate::native::find_binary(state);
     let logged = convex_logged_in(&user_home());
     let gh_installed = !gh.stderr.contains("couldn't run");
     let checks = vec![
@@ -59,10 +60,10 @@ pub async fn report(state: &Shared) -> Value {
         ),
         check(
             "backend",
-            backend.is_ok(),
+            backend.is_some(),
             match &backend {
-                Ok(p) => p.display().to_string(),
-                Err(_) => "missing".into(),
+                Some(p) => p.display().to_string(),
+                None => "missing".into(),
             },
             None,
             false,

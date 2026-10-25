@@ -100,6 +100,15 @@ pub fn cli_cached_binary() -> Option<PathBuf> {
     versions.pop()
 }
 
+/// Dónde está el binario, sin copiar nada (para el chequeo del primer arranque): el instalado,
+/// el del repo o el que dejó el CLI de Convex.
+pub fn find_binary(state: &Shared) -> Option<PathBuf> {
+    let installed = home().join("bin").join("convex-local-backend");
+    let triple = if cfg!(target_arch = "aarch64") { "aarch64-apple-darwin" } else { "x86_64-apple-darwin" };
+    let repo = state.config.repo.as_ref().map(|r| r.join(format!("src-tauri/binaries/convex-local-backend-{triple}")));
+    [Some(installed), repo].into_iter().flatten().find(|p| p.is_file()).or_else(cli_cached_binary)
+}
+
 pub fn available(state: &Shared) -> bool {
     binary(state).is_ok()
 }

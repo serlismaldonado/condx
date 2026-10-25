@@ -182,7 +182,10 @@ export class Host {
     const busy = Boolean(live.generation) || Object.keys(live.tools ?? {}).length > 0 || (value.docs["pi.inbox"]?.items?.length ?? 0) > 0;
     const settled = this.#settled.get(runId);
     const status = busy ? "running" : settled?.status === "done" ? "done" : settled ? (settled.reason?.includes("abort") ? "aborted" : "failed") : "running";
-    const answer = [...transcript].reverse().find((t) => t.role === "assistant" && t.text.trim())?.text ?? null;
+    // La respuesta: el último texto del agente (sin sus llamadas a herramientas, que van como «→ …»).
+    const prose = (t: TranscriptItem) => t.text.split("\n").filter((l) => !l.startsWith("→ ")).join("\n").trim();
+    const last = [...transcript].reverse().find((t) => t.role === "assistant" && prose(t));
+    const answer = last ? prose(last) : null;
     return { runId, status, reason: settled?.reason ?? null, answer, transcript, usage: totals(value.docs["pi.usage"]), conversationId: found.record.conversationId };
   }
 

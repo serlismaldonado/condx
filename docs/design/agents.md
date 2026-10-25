@@ -1,6 +1,6 @@
 # Design: agents that respond to incidents
 
-Status: everything on the Mac done (A0, A2-A5; 2026-10-25, local). Next: the phone (A0b, A1, A4 phone, A6). Builds on Condx Cloud (`cloud.md`, phone approvals).
+Status: Mac done (A0, A2-A5) and A0b on the phone (2026-10-25, local). Next: A1 (push), A6 (keys for devices). Builds on Condx Cloud (`cloud.md`, phone approvals).
 
 ## 1. Goal
 
@@ -138,16 +138,32 @@ always a proposal: it waits for your approval whatever the level.
 - Limits per run: the daemon checks every 3 s and stops the run past its tokens or minutes, so a
   run can go a little over. The daily budget still applies on top.
 
+## 6.4 Incidents on the phone (A0b)
+
+- The daemon publishes open and ignored incidents (and those resolved in the last hour) to the
+  `incidents:<daemon>` scope: title, source, environment, counts, the error and the end of the log
+  (redacted, short), the agent's summary (status, mode, template, model, answer up to 3000
+  characters, the fix's branch, files and stat — never the patch) and the project's enabled
+  workflows.
+- A phone can only patch the request fields of a row: `request` (diagnose, fix, ignore, resolve,
+  deploy, discard, message), `requestArg`, `requestId`, `requestedAt`, `deviceKey`, `signature`.
+  It signs `condx-incident:v1|daemon|incident|request|requestId|requestedAt|arg` with its key.
+- The daemon verifies the signature against the phones this Mac confirmed, at most 10 minutes old,
+  and applies the request with the same rules as the app (template, budget, enabled workflows and
+  their approvals). It publishes `result` and `resultFor` (the request id); a request whose id is
+  already in `resultFor` isn't applied again, also after a restart.
+- A panic in a sync pass no longer stops the sync thread: it's reported and the session reopens.
+
 ## 7. Phases
 
 | Phase | What | Done when |
 | --- | --- | --- |
 | A0 | Incidents in the daemon and the Mac app; providers with encrypted keys and autonomy in Settings | a failed job opens one incident that groups repeats and resolves on its own; a key is saved encrypted and never comes back |
-| A0b | Incidents on the phone (Condx Cloud scope), ignore and assign from there (signed) | the phone sees an incident and the daemon applies its decision |
+| **A0b** ✅ | Incidents on the phone (Condx Cloud scope), ignore and assign from there (signed) | done: scope `incidents`; the phone diagnoses, prepares a fix, deploys it with an enabled workflow (slide to confirm), discards it, writes to the agent, ignores and resolves, each a signed request the daemon verifies and applies once (also across restarts, through `resultFor`) |
 | A1 | Push notifications (with the QR camera: needs a native host app around nsh) | the phone rings for a new incident |
 | **A2** ✅ | Agent host with pi durable, diagnose only; the conversation in the Mac app (the phone in A0b) | done: `agent-host/` (Node, pi durable 1.4.0, SQLite), `agent_host.rs`; a failed job opens an incident, the agent starts on its own (autonomy "diagnose"), reads the repo and Condx, and its diagnosis lands in the incident; runs survive a host restart; budget and agents-at-once enforced by the daemon |
 | **A3** ✅ | Fix mode: worktree, checks offline, commit on `condx/fix-…` | done: the daemon makes a worktree from the incident's commit (sharing `node_modules`), the agent edits there and runs the project's checks inside `sandbox-exec` (no network, writes only in the worktree, no reading `~/.condx`, `~/.ssh`… or the Keychain; only the scripts of the base commit), and the daemon commits as "Condx agent" when it ends; the user's checkout never changes. "Discard" removes the branch and the worktree |
 | A4 (Mac) ✅ | Run an enabled workflow with the fix's commit from the incident | done: the workflow asks for its own approvals; suggested workflows start turned off |
-| A4 (phone) | Approve the fix on the phone → deploy workflow; steer from the chat | with A0b |
+| **A4 (phone)** ✅ | Approve the fix on the phone → deploy workflow; steer from the chat | done with A0b |
 | **A5** ✅ | Agent templates per incident kind ("agent factory"), budgets and limits | done: `templates.rs` with five built-in templates (frontend build, failing tests, Convex deploy, Convex not responding diagnose-only, generic); each sets when it applies, highest mode, provider/model, extra instructions, allowed tools and per-run limits (tokens, minutes). Edited in Settings → Agents → Templates |
 | A6 | Keys re-encrypted for paired devices and remote runners | an agent runs elsewhere without the key in plaintext in the cloud |

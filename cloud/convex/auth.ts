@@ -1,21 +1,25 @@
 // Quién llama y qué puede tocar. Dos tipos de llamante, cada uno con su token (como una API key; se
 // compara su SHA-256):
 // - el daemon: lee y escribe los alcances con su id;
-// - un teléfono activo de ese daemon: lee entornos, trabajos y aprobaciones, y solo escribe su
-//   decisión firmada en una aprobación. Nunca aprueba nada por sí mismo: el daemon verifica la
-//   firma con la llave que confirmó en la Mac y decide.
+// - un teléfono activo de ese daemon: lee entornos, trabajos, aprobaciones e incidentes, y solo
+//   escribe su decisión firmada en una aprobación o su pedido firmado en un incidente
+//   (diagnosticar, arreglar, ignorar…). Nunca hace nada por sí mismo: el daemon verifica la firma
+//   con la llave que confirmó en la Mac y decide.
 
 import { ConvexError } from "convex/values";
 import type { QueryCtx } from "./_generated/server";
 import type { Op } from "localfirst/server";
 
-export const SCOPE_KINDS = ["env", "jobs", "approvals", "runs", "workflows"] as const;
+export const SCOPE_KINDS = ["env", "jobs", "approvals", "runs", "workflows", "incidents"] as const;
 export type ScopeKind = (typeof SCOPE_KINDS)[number];
 
 /** Lo que un teléfono puede leer. */
-const DEVICE_READS: readonly ScopeKind[] = ["env", "jobs", "approvals"];
-/** Los únicos campos que un teléfono escribe (en `approvals`). */
+const DEVICE_READS: readonly ScopeKind[] = ["env", "jobs", "approvals", "incidents"];
+/** Los únicos campos que un teléfono escribe en `approvals`. */
 export const DECISION_FIELDS = ["decision", "decidedAt", "deviceKey", "signature", "confirmText"] as const;
+/** Los únicos campos que un teléfono escribe en `incidents`: un pedido firmado. */
+export const REQUEST_FIELDS = ["request", "requestArg", "requestId", "requestedAt", "deviceKey", "signature"] as const;
+export const REQUESTS = ["diagnose", "fix", "ignore", "resolve", "deploy", "discard", "message"] as const;
 
 export type Principal =
   | { kind: "daemon"; daemonId: string; key: string }
@@ -75,6 +79,7 @@ export function writeDenied(principal: Principal, op: Op): string | null {
   const parsed = parseScope(op.scope);
   if (!parsed || parsed.daemonId !== principal.daemonId) return "No access to this scope";
   if (principal.kind === "daemon") return null;
+  if (parsed.kind === "incidents") return requestDenied(principal, op);
   if (parsed.kind !== "approvals" || op.kind !== "patch") return "A phone can only decide on approvals";
   if (op.sets && Object.keys(op.sets).length > 0) return "A phone can only decide on approvals";
   const set = op.set ?? {};
@@ -85,6 +90,22 @@ export function writeDenied(principal: Principal, op: Op): string | null {
   if (set.deviceKey !== principal.publicKey) return "The decision must be signed with this phone's key";
   if (typeof set.signature !== "string" || !/^[0-9a-f]{128}$/.test(set.signature)) return "Missing signature";
   if (typeof set.decidedAt !== "number") return "Missing decidedAt";
+  return null;
+}
+
+/** Un pedido de un teléfono sobre un incidente: solo sus campos, firmado con su llave. */
+function requestDenied(principal: Extract<Principal, { kind: "device" }>, op: Op): string | null {
+  if (op.kind !== "patch" || (op.sets && Object.keys(op.sets).length > 0)) return "A phone can only send requests on incidents";
+  const set = op.set ?? {};
+  for (const key of Object.keys(set)) {
+    if (!(REQUEST_FIELDS as readonly string[]).includes(key)) return `A phone can't write “${key}”`;
+  }
+  if (!(REQUESTS as readonly unknown[]).includes(set.request)) return "unknown request";
+  if (set.requestArg !== undefined && set.requestArg !== null && (typeof set.requestArg !== "string" || set.requestArg.length > 4000)) return "requestArg must be text (at most 4000 characters)";
+  if (typeof set.requestId !== "string" || !/^[0-9a-f]{16,64}$/.test(set.requestId)) return "Missing requestId";
+  if (typeof set.requestedAt !== "number") return "Missing requestedAt";
+  if (set.deviceKey !== principal.publicKey) return "The request must be signed with this phone's key";
+  if (typeof set.signature !== "string" || !/^[0-9a-f]{128}$/.test(set.signature)) return "Missing signature";
   return null;
 }
 

@@ -32,6 +32,14 @@ const JOB_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status", "ap
 /// `phoneResult`: qué hizo el daemon con la decisión de un teléfono (aplicada, rechazada y por qué, o
 /// a la espera de Touch ID en la Mac).
 const APPROVAL_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status", "approval", "requestedBy", "createdAt", "phoneResult"];
+/// Lo que el teléfono ve de un incidente (sin datos de los registros: el error y el final del log
+/// redactados, y del agente su resumen y el arreglo). `result`/`resultFor`: qué hizo el daemon con
+/// el último pedido del teléfono.
+const INCIDENT_FIELDS: &[&str] = &[
+    "title", "source", "project", "env", "status", "count", "firstSeen", "lastSeen", "error", "log", "commit", "branch", "url", "agent", "workflows", "result", "resultFor",
+];
+/// Los resueltos se ven un rato (para que el teléfono vea en qué terminó lo que pidió).
+const RESOLVED_VISIBLE_MS: i64 = 3_600_000;
 
 /// El vínculo con un deployment de Condx Cloud (`cloud.json`). El token va aparte.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -139,6 +147,41 @@ fn short_error(v: &Value) -> Value {
     }
 }
 
+fn short_text(v: &Value, max: usize) -> Value {
+    match v.as_str() {
+        Some(s) => Value::String(devtool_core::redact(s).chars().take(max).collect()),
+        None => Value::Null,
+    }
+}
+
+/// Una fila del alcance `incidents`: `workflows`, los flujos encendidos de su proyecto (para desplegar un arreglo).
+pub fn incident_row(inc: &Value, workflows: &[(String, String)]) -> Values {
+    let ev = &inc["evidence"];
+    let log = ev["log"].as_str().map(|l| {
+        let lines: Vec<&str> = l.lines().collect();
+        lines[lines.len().saturating_sub(8)..].join("\n")
+    });
+    let agent = inc["agent"].as_object().map(|a| {
+        let fix = &a.get("fix").cloned().unwrap_or(Value::Null);
+        json!({
+            "runId": a.get("runId"), "mode": a.get("mode"), "status": a.get("status"), "template": a.get("template"), "model": a.get("model"),
+            "answer": short_text(a.get("answer").unwrap_or(&Value::Null), 3_000),
+            "fix": if fix.is_object() { json!({
+                "branch": fix["branch"], "commit": fix["commit"].as_str().map(|c| c[..c.len().min(12)].to_string()),
+                "files": fix["files"].as_array().map(|f| f.iter().take(10).cloned().collect::<Vec<_>>()),
+                "stat": short_text(&fix["stat"], 600), "changes": fix["changes"], "discarded": fix["discarded"], "error": short_text(&fix["error"], 300),
+            }) } else { Value::Null },
+        })
+    });
+    obj(json!({
+        "title": inc["title"], "source": inc["source"], "project": inc["project"], "env": inc["env"], "status": inc["status"],
+        "count": inc["count"], "firstSeen": inc["firstSeen"], "lastSeen": inc["lastSeen"],
+        "error": short_error(&ev["error"]), "log": log.map(|l| short_text(&json!(l), 1_200)), "commit": ev["commit"].as_str().map(|c| c[..c.len().min(12)].to_string()),
+        "branch": ev["branch"], "url": ev["url"], "agent": agent,
+        "workflows": workflows.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
+    }))
+}
+
 /// Filas por alcance a partir del estado del daemon. Puro dado lo leído: sin red ni reloj.
 pub fn desired(daemon_id: &str, environments: &[devtool_core::Environment], probes: &dyn Fn(&str) -> Option<Value>, jobs: &[Value]) -> Desired {
     let mut out: Desired = IndexMap::new();
@@ -176,6 +219,7 @@ fn owned(scope: &str) -> &'static [&'static str] {
     match scope.split(':').next() {
         Some("env") => ENV_FIELDS,
         Some("jobs") => JOB_FIELDS,
+        Some("incidents") => INCIDENT_FIELDS,
         _ => APPROVAL_FIELDS,
     }
 }
@@ -369,6 +413,110 @@ pub fn verify_decision(daemon_id: &str, job_id: &str, job_created_at: i64, row: 
     Ok(PhoneDecision { approve: decision == "approve", device: device.clone(), confirm: row.get("confirmText").and_then(Value::as_str).map(str::to_string) })
 }
 
+// ── Pedidos de los teléfonos sobre incidentes ───────────────────────────
+
+/// Lo que firma el teléfono para pedir algo sobre un incidente (mismo texto en `condx-mobile`). El
+/// argumento va al final: lo anterior no tiene `|`, así que no hay ambigüedad.
+pub fn request_message(daemon_id: &str, incident_id: &str, request: &str, request_id: &str, at: i64, arg: &str) -> String {
+    format!("condx-incident:v1|{daemon_id}|{incident_id}|{request}|{request_id}|{at}|{arg}")
+}
+
+const REQUESTS: &[&str] = &["diagnose", "fix", "ignore", "resolve", "deploy", "discard", "message"];
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhoneRequest {
+    pub request: String,
+    pub arg: String,
+    pub request_id: String,
+    pub device: TrustedDevice,
+}
+
+/// Verifica el pedido de una fila de incidente: firma de un teléfono de confianza, para este daemon
+/// e incidente, y reciente. Puro (para las pruebas).
+pub fn verify_request(daemon_id: &str, incident_id: &str, row: &Values, devices: &[TrustedDevice], now: i64) -> Result<PhoneRequest, String> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    let request = row.get("request").and_then(Value::as_str).ok_or("no request")?;
+    if !REQUESTS.contains(&request) {
+        return Err("unknown request".into());
+    }
+    let request_id = row.get("requestId").and_then(Value::as_str).ok_or("no request id")?;
+    let at = row.get("requestedAt").and_then(Value::as_i64).ok_or("no time")?;
+    let arg = row.get("requestArg").and_then(Value::as_str).unwrap_or("");
+    let key = row.get("deviceKey").and_then(Value::as_str).ok_or("no key")?;
+    let device = devices.iter().find(|d| d.public_key == key).ok_or("unknown phone (not paired with this Mac)")?;
+    if now - at > DECISION_MAX_AGE_MS || at > now + 60_000 {
+        return Err("stale request".into());
+    }
+    let sig = row.get("signature").and_then(Value::as_str).and_then(unhex).ok_or("no signature")?;
+    let sig = Signature::from_slice(&sig).map_err(|_| "bad signature")?;
+    let bytes: [u8; 32] = unhex(key).and_then(|b| b.try_into().ok()).ok_or("bad key")?;
+    let vk = VerifyingKey::from_bytes(&bytes).map_err(|_| "bad key")?;
+    vk.verify(request_message(daemon_id, incident_id, request, request_id, at, arg).as_bytes(), &sig).map_err(|_| "signature doesn't match".to_string())?;
+    Ok(PhoneRequest { request: request.into(), arg: arg.into(), request_id: request_id.into(), device: device.clone() })
+}
+
+/// Hace lo que pidió el teléfono, con las mismas reglas que la app (la plantilla, el presupuesto,
+/// los flujos encendidos y sus aprobaciones). Devuelve el resultado que ve el teléfono.
+fn apply_request(state: &Shared, rt: &tokio::runtime::Handle, incident_id: &str, r: &PhoneRequest) -> String {
+    let by = format!("phone:{}", r.device.name);
+    let inc = match state.store.incident(incident_id) {
+        Ok(Some(i)) => i,
+        _ => return "rejected: incident not found".into(),
+    };
+    let run_id = inc["agent"]["runId"].as_str().map(str::to_string);
+    let res: anyhow::Result<String> = match r.request.as_str() {
+        "diagnose" | "fix" => rt.block_on(crate::agent_host::start(state, incident_id, &by, &r.request)).map(|run| format!("started {}", run["id"].as_str().unwrap_or("?"))),
+        "ignore" | "resolve" => crate::incidents::act(state, incident_id, &r.request).map(|_| r.request.clone() + "d"),
+        "message" => match &run_id {
+            Some(id) => rt.block_on(crate::agent_host::message(state, id, &r.arg)).map(|_| "sent to the agent".into()),
+            None => Err(anyhow::anyhow!("no agent has worked on this incident")),
+        },
+        "discard" => match &run_id {
+            Some(id) => crate::agent_host::discard(state, id).map(|_| "fix discarded".into()),
+            None => Err(anyhow::anyhow!("there's no fix")),
+        },
+        "deploy" => (|| {
+            let fix = &inc["agent"]["fix"];
+            let commit = fix["commit"].as_str().filter(|_| fix["changes"] == true && fix["discarded"] != true).ok_or_else(|| anyhow::anyhow!("there's no fix ready"))?;
+            let w = crate::workflows::get(state, &r.arg)?;
+            let project = inc["project"].as_str().unwrap_or(crate::projects::DEFAULT);
+            if w.project != project {
+                anyhow::bail!("that workflow belongs to another project");
+            }
+            // Arrancar un flujo usa tokio (este hilo no es del runtime).
+            let _rt = rt.enter();
+            let run = crate::workflows::start(state, &r.arg, commit, &by)?;
+            Ok(format!("workflow “{}” started ({})", w.name, run.id))
+        })(),
+        other => Err(anyhow::anyhow!("unknown request {other}")),
+    };
+    match res {
+        Ok(s) => s,
+        Err(e) => format!("rejected: {e:#}"),
+    }
+}
+
+/// Los pedidos nuevos de los teléfonos sobre incidentes: verificar y hacer (cada uno una vez).
+fn process_requests(state: &Shared, s: &mut Session) {
+    let scope = format!("incidents:{}", s.link.daemon_id);
+    let devices = trusted_devices();
+    for row in s.engine.rows(&scope) {
+        let Some(request_id) = row.row.values.get("requestId").and_then(Value::as_str).map(str::to_string) else { continue };
+        // Ya respondido (también por un proceso anterior: `resultFor` vive en la nube): no se repite.
+        let answered = row.row.values.get("resultFor").and_then(Value::as_str) == Some(request_id.as_str());
+        if row.pending || answered || !s.seen.insert(format!("{}:{request_id}", row.row.id)) {
+            continue;
+        }
+        let id = row.row.id.clone();
+        let result = match verify_request(&s.link.daemon_id, &id, &row.row.values, &devices, now_ms()) {
+            Ok(r) => apply_request(state, &s.rt, &id, &r),
+            Err(e) => format!("rejected: {e}"),
+        };
+        tracing::info!("cloud: phone request on {id}: {result}");
+        s.incident_results.insert(id, (request_id, result));
+    }
+}
+
 /// Las decisiones nuevas de los teléfonos: verificar y, si corresponde, decidir el trabajo.
 fn process_decisions(state: &Shared, s: &mut Session) {
     let scope = format!("approvals:{}", s.link.daemon_id);
@@ -437,9 +585,13 @@ struct Session {
     results: IndexMap<String, String>,
     /// Firmas ya procesadas (una decisión se aplica una vez).
     seen: std::collections::HashSet<String>,
+    /// Resultado del último pedido de teléfono por incidente: (requestId, resultado).
+    incident_results: IndexMap<String, (String, String)>,
+    /// El runtime de tokio del daemon (arrancar un agente es asíncrono; este hilo no lo es).
+    rt: tokio::runtime::Handle,
 }
 
-fn open_session(link: Link, token: &str) -> Result<Session> {
+fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<Session> {
     let (replica, outbox) = sqlite::open(&home().join("cloud.sqlite3")).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut n = 0u64;
     let prefix = random_hex(4)?;
@@ -448,11 +600,18 @@ fn open_session(link: Link, token: &str) -> Result<Session> {
         format!("{prefix}-{}-{n}", now_ms())
     })
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let scopes: Vec<String> = ["env", "jobs", "approvals"].iter().map(|k| format!("{k}:{}", link.daemon_id)).collect();
+    let scopes: Vec<String> = ["env", "jobs", "approvals", "incidents"].iter().map(|k| format!("{k}:{}", link.daemon_id)).collect();
     for s in &scopes {
         engine.enable_scope(s, None).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default() })
+    // Los resultados ya publicados (de un proceso anterior) se conservan: así un pedido respondido
+    // no se borra ni se vuelve a hacer.
+    let incident_results: IndexMap<String, (String, String)> = engine
+        .rows(&format!("incidents:{}", link.daemon_id))
+        .into_iter()
+        .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
+        .collect();
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -475,6 +634,28 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
             }
         }
     }
+    // Incidentes abiertos e ignorados (y los resueltos hace poco), con los flujos de su proyecto.
+    let now_inc = now_ms();
+    let mut flows: std::collections::HashMap<String, Vec<(String, String)>> = Default::default();
+    let mut rows: IndexMap<String, Values> = IndexMap::new();
+    for inc in state.store.incidents(&[], 100).unwrap_or_default() {
+        let recent = inc["status"] != "resolved" || now_inc - inc["resolvedAt"].as_i64().unwrap_or(0) < RESOLVED_VISIBLE_MS;
+        let Some(id) = inc["id"].as_str().filter(|_| recent) else { continue };
+        let project = inc["project"].as_str().unwrap_or(crate::projects::DEFAULT).to_string();
+        let wf = flows.entry(project.clone()).or_insert_with(|| {
+            crate::workflows::list(state, &project).unwrap_or_default().into_iter().filter(|w| w.enabled).map(|w| (w.id, w.name)).take(6).collect()
+        });
+        let mut row = incident_row(&inc, wf);
+        if let Some((rid, result)) = s.incident_results.get(id) {
+            row.insert("result".into(), Value::String(result.clone()));
+            row.insert("resultFor".into(), Value::String(rid.clone()));
+        }
+        rows.insert(id.to_string(), row);
+        if rows.len() >= 40 {
+            break;
+        }
+    }
+    want.insert(format!("incidents:{}", s.link.daemon_id), rows);
     let jobs_status: IndexMap<String, Value> = jobs.iter().filter_map(|j| Some((j["id"].as_str()?.to_string(), j["status"].clone()))).collect();
     let now = now_ms();
     for scope in &s.scopes {
@@ -495,6 +676,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     }
     let report = block_on(sync_once(&mut s.engine, &s.transport, now_ms, 200)).map_err(|e| anyhow::anyhow!("{e}"))?;
     process_decisions(state, s);
+    process_requests(state, s);
     let st = s.engine.sync_status();
     let proposals: Vec<Value> = s.results.iter().filter(|(_, r)| r.as_str() == NEEDS_MAC).map(|(j, _)| json!(j)).collect();
     Ok(json!({
@@ -507,6 +689,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
 
 /// Arranca el hilo. Sin vínculo, solo mira cada tanto si apareció uno.
 pub fn spawn(state: Shared) {
+    let rt = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("condx-cloud".into())
         .spawn(move || {
@@ -517,7 +700,7 @@ pub fn spawn(state: Shared) {
                 match (link, token) {
                     (Some(link), Some(token)) => {
                         if session.as_ref().map(|s| &s.link) != Some(&link) {
-                            session = match open_session(link, &token) {
+                            session = match open_session(link, &token, rt.clone()) {
                                 Ok(s) => Some(s),
                                 Err(e) => {
                                     state.set_probe("cloud", false, Value::Null, Some(format!("{e:#}")));
@@ -526,13 +709,20 @@ pub fn spawn(state: Shared) {
                             };
                         }
                         if let Some(s) = session.as_mut() {
-                            match tick(&state, s) {
-                                Ok(data) => {
+                            // Un pánico en una vuelta no mata la sincronización: se informa y la sesión se abre de nuevo.
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(&state, s))) {
+                                Ok(Ok(data)) => {
                                     let ok = data["error"].is_null();
                                     let err = data["error"].as_str().map(str::to_string);
                                     state.set_probe("cloud", ok, data, err);
                                 }
-                                Err(e) => state.set_probe("cloud", false, Value::Null, Some(devtool_core::redact(&format!("{e:#}")))),
+                                Ok(Err(e)) => state.set_probe("cloud", false, Value::Null, Some(devtool_core::redact(&format!("{e:#}")))),
+                                Err(p) => {
+                                    let why = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "unknown".into());
+                                    tracing::error!("cloud: a sync pass panicked: {why}");
+                                    state.set_probe("cloud", false, Value::Null, Some(format!("internal error in the sync: {why}")));
+                                    session = None;
+                                }
                             }
                         }
                     }
@@ -649,6 +839,49 @@ mod tests {
         let mut tampered = row("reject", now, "j1", &pk);
         tampered.insert("decision".into(), json!("approve"));
         assert_eq!(verify_decision("mac-1", "j1", 0, &tampered, std::slice::from_ref(&device), now), Err("signature doesn't match".into()));
+    }
+
+    #[test]
+    fn pedidos_del_telefono_sobre_incidentes() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let key = SigningKey::from_bytes(&[9u8; 32]);
+        let pk = key.verifying_key().as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let device = TrustedDevice { device_id: "phone-1".into(), name: "iPhone".into(), public_key: pk.clone(), paired_at: 0 };
+        let now = 10_000_000;
+        let row = |request: &str, arg: &str, at: i64, incident: &str| -> Values {
+            let sig = key.sign(request_message("mac-1", incident, request, "rq0123456789abcd", at, arg).as_bytes());
+            obj(json!({ "request": request, "requestArg": arg, "requestId": "rq0123456789abcd", "requestedAt": at, "deviceKey": pk, "signature": sig.to_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>() }))
+        };
+        let devices = std::slice::from_ref(&device);
+        let ok = verify_request("mac-1", "inc-1", &row("message", "look at lib/dates.js | and tests", now, "inc-1"), devices, now).unwrap();
+        assert_eq!((ok.request.as_str(), ok.arg.as_str()), ("message", "look at lib/dates.js | and tests"));
+        // Para otro incidente, viejo, de un teléfono que esta Mac no confirmó o pedido desconocido: no.
+        assert!(verify_request("mac-1", "inc-1", &row("diagnose", "", now, "inc-2"), devices, now).is_err());
+        assert_eq!(verify_request("mac-1", "inc-1", &row("fix", "", now, "inc-1"), devices, now + DECISION_MAX_AGE_MS + 1), Err("stale request".into()));
+        assert!(verify_request("mac-1", "inc-1", &row("fix", "", now, "inc-1"), &[], now).is_err());
+        assert_eq!(verify_request("mac-1", "inc-1", &row("approve", "", now, "inc-1"), devices, now), Err("unknown request".into()));
+        // Cambiar el flujo a desplegar (el argumento firmado): no.
+        let mut tampered = row("deploy", "w-dev", now, "inc-1");
+        tampered.insert("requestArg".into(), json!("w-prod"));
+        assert_eq!(verify_request("mac-1", "inc-1", &tampered, devices, now), Err("signature doesn't match".into()));
+    }
+
+    #[test]
+    fn la_fila_de_un_incidente_va_redactada_y_corta() {
+        let log: String = (0..30).map(|i| format!("line {i}\n")).collect::<String>() + "CONVEX_DEPLOY_KEY=prod:abc123secretvalue failed";
+        let inc = json!({
+            "id": "inc-1", "title": "Deploy failed", "source": "job", "status": "open", "count": 2,
+            "evidence": { "error": "boom with CONVEX_DEPLOY_KEY=prod:abc123secretvalue", "log": log, "commit": "0123456789abcdef0123" },
+            "agent": { "runId": "run-1", "mode": "fix", "status": "done", "answer": "## Cause\nx", "fix": { "branch": "condx/fix-1", "commit": "fedcba9876543210", "files": ["a", "b"], "stat": "a | 2 +-", "changes": true, "patch": "SHOULD NOT GO UP" } },
+        });
+        let row = incident_row(&inc, &[("w1".into(), "Deploy to dev".into())]);
+        let text = serde_json::to_string(&row).unwrap();
+        assert!(!text.contains("abc123secretvalue"), "{text}");
+        assert!(!text.contains("SHOULD NOT GO UP"), "the patch stays on the Mac");
+        assert_eq!(row["log"].as_str().unwrap().lines().count(), 8);
+        assert_eq!(row["commit"], "0123456789ab");
+        assert_eq!(row["agent"]["fix"]["commit"], "fedcba987654");
+        assert_eq!(row["workflows"][0]["name"], "Deploy to dev");
     }
 
     #[test]

@@ -115,9 +115,9 @@ describe("lo que puede un teléfono", () => {
     expect(pull.rows![0].values).toMatchObject({ status: "waiting-approval", decision: "approve", deviceKey: PHONE.publicKey });
   });
 
-  test("lee entornos, trabajos y aprobaciones; nada más", async () => {
+  test("lee entornos, trabajos, aprobaciones e incidentes; nada más", async () => {
     const t = await withApproval();
-    for (const kind of ["env", "jobs", "approvals"]) {
+    for (const kind of ["env", "jobs", "approvals", "incidents"]) {
       expect(await t.query(api.sync.pull, { token: PHONE.token, scope: `${kind}:${A.daemonId}`, cursor: null, protocolVersion: PV })).toMatchObject({ status: "ok" });
     }
     for (const scope of [`runs:${A.daemonId}`, `workflows:${A.daemonId}`, `approvals:${B.daemonId}`, `env:${B.daemonId}`]) {
@@ -157,3 +157,45 @@ describe("lo que puede un teléfono", () => {
     expect(JSON.stringify(devices)).not.toContain(PHONE.token);
   });
 });
+
+describe("pedidos sobre incidentes", () => {
+  const INCIDENTS = `incidents:${A.daemonId}`;
+  const request = (extra: Record<string, unknown> = {}) => ({ request: "diagnose", requestId: "a1b2c3d4e5f60718", requestedAt: Date.now(), deviceKey: PHONE.publicKey, signature: SIG, ...extra });
+
+  async function withIncident() {
+    const t = await setup();
+    await pairPhone(t);
+    await push(t, group(op({ kind: "create", rowId: "inc-1", set: { title: "Unit tests failed on dev", status: "open" } }, INCIDENTS)), A.token);
+    return t;
+  }
+
+  test("un teléfono pide algo firmado sobre un incidente de su daemon", async () => {
+    const t = await withIncident();
+    const r = await push(t, group(op({ kind: "patch", rowId: "inc-1", set: request({ request: "message", requestArg: "Look at lib/dates.js" }) }, INCIDENTS)), PHONE.token);
+    expect(r).toMatchObject({ status: "ok" });
+    const pull = await t.query(api.sync.pull, { token: A.token, scope: INCIDENTS, cursor: null, protocolVersion: PV });
+    expect(pull.rows![0].values).toMatchObject({ status: "open", request: "message", requestArg: "Look at lib/dates.js", deviceKey: PHONE.publicKey });
+  });
+
+  test("no puede cambiar el incidente, pedir algo desconocido ni firmar con otra llave", async () => {
+    const t = await withIncident();
+    const cases: Array<[string, Op]> = [
+      ["status", op({ kind: "patch", rowId: "inc-1", set: { ...request(), status: "resolved" } }, INCIDENTS)],
+      ["agent", op({ kind: "patch", rowId: "inc-1", set: { ...request(), agent: { status: "done" } } }, INCIDENTS)],
+      ["create", op({ kind: "create", rowId: "inc-2", set: request() }, INCIDENTS)],
+      ["delete", op({ kind: "delete", rowId: "inc-1" }, INCIDENTS)],
+      ["unknown request", op({ kind: "patch", rowId: "inc-1", set: request({ request: "approve" }) }, INCIDENTS)],
+      ["other key", op({ kind: "patch", rowId: "inc-1", set: request({ deviceKey: "2".repeat(64) }) }, INCIDENTS)],
+      ["no signature", op({ kind: "patch", rowId: "inc-1", set: request({ signature: "x" }) }, INCIDENTS)],
+      ["no request id", op({ kind: "patch", rowId: "inc-1", set: request({ requestId: "?" }) }, INCIDENTS)],
+      ["long text", op({ kind: "patch", rowId: "inc-1", set: request({ request: "message", requestArg: "x".repeat(5000) }) }, INCIDENTS)],
+      ["other daemon", op({ kind: "patch", rowId: "inc-1", set: request() }, `incidents:${B.daemonId}`)],
+    ];
+    for (const [name, o] of cases) {
+      await expect(push(t, group(o), PHONE.token), name).rejects.toThrow(/denied|phone|signature|request|access|write/i);
+    }
+    const pull = await t.query(api.sync.pull, { token: A.token, scope: INCIDENTS, cursor: null, protocolVersion: PV });
+    expect(pull.rows!.map((r: { id: string; values: Record<string, unknown> }) => [r.id, r.values.status, r.values.request ?? null])).toEqual([["inc-1", "open", null]]);
+  });
+});
+

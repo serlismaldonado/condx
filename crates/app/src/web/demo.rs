@@ -111,7 +111,7 @@ pub fn post(path: &str, body: Value) -> Result<Value> {
     let parts: Vec<&str> = route.trim_start_matches("/api/").split('/').collect();
     Ok(match parts.as_slice() {
         ["jobs"] => request_job(&body),
-        ["cloud", "pair"] => json!({ "code": "K7Q2-M9XD-4HWR", "expiresAt": now() + 300_000, "url": "https://happy-otter-123.convex.cloud", "qr": "{\"condx\":1,\"url\":\"https://happy-otter-123.convex.cloud\",\"code\":\"K7Q2-M9XD-4HWR\"}" }),
+        ["cloud", "pair"] => json!({ "code": "K7Q2-M9XD-4HWR", "expiresAt": now() + 300_000, "url": "https://happy-otter-123.convex.cloud", "qr": "https://happy-otter-123.convex.site/pair#d=https%3A%2F%2Fhappy-otter-123.convex.cloud&c=K7Q2-M9XD-4HWR" }),
         ["projects"] => with(|s| {
             s.registered = true;
             project()

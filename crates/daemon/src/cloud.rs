@@ -329,12 +329,28 @@ fn call(kind: &str, path: &str, mut args: Value) -> Result<Value> {
     bail!("{}", devtool_core::redact(&message))
 }
 
-/// Abre un código de vinculación. Lo que va en el QR: la URL del deployment y el código.
+/// El enlace del QR: la página `/pair` del sitio del deployment, con la URL y el código en el
+/// fragmento (no viaja al servidor). La cámara de cualquier teléfono abre un enlace; la app de
+/// Condx lo lee igual que el texto. Sitio: `.convex.cloud` → `.convex.site`; un dominio propio
+/// sirve las dos cosas (el túnel manda `/pair` al sitio); un backend local, el puerto siguiente.
+pub fn pair_link(url: &str, code: &str) -> String {
+    let site = if let Some(base) = url.strip_suffix(".convex.cloud") {
+        format!("{base}.convex.site")
+    } else if let Some((host, port)) = url.strip_prefix("http://").and_then(|r| r.rsplit_once(':')).filter(|(h, _)| *h == "127.0.0.1" || *h == "localhost") {
+        format!("http://{host}:{}", port.parse::<u16>().map(|p| p + 1).unwrap_or(3211))
+    } else {
+        url.to_string()
+    };
+    let enc = |s: &str| s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
+    format!("{site}/pair#d={}&c={}", enc(url), enc(code))
+}
+
+/// Abre un código de vinculación. Lo que va en el QR: el enlace a la página de vinculación.
 pub fn pair_start() -> Result<Value> {
     let link = load_link().context("not linked to Condx Cloud")?;
     let v = call("mutation", "pairing:open", json!({}))?;
     let code = v["code"].as_str().unwrap_or_default().to_string();
-    let qr = json!({ "condx": 1, "url": link.url, "code": code }).to_string();
+    let qr = pair_link(&link.url, &code);
     Ok(json!({ "code": code, "expiresAt": v["expiresAt"], "qr": qr, "url": link.url }))
 }
 
@@ -866,6 +882,9 @@ mod tests {
     fn vincular_exige_https_o_un_backend_local() {
         assert!(link("http://evil.example", "x".repeat(40).as_str(), "mac").is_err());
         assert!(link("https://ok.convex.cloud", "short", "mac").is_err());
+        assert_eq!(pair_link("https://happy-otter-123.convex.cloud", "K7Q2-M9XD"), "https://happy-otter-123.convex.site/pair#d=https%3A%2F%2Fhappy-otter-123.convex.cloud&c=K7Q2-M9XD");
+        assert_eq!(pair_link("https://condx.example.com", "AB-CD"), "https://condx.example.com/pair#d=https%3A%2F%2Fcondx.example.com&c=AB-CD");
+        assert!(pair_link("http://127.0.0.1:3390", "X").starts_with("http://127.0.0.1:3391/pair#"));
     }
 
     #[test]

@@ -148,6 +148,9 @@ pub struct DevtoolApp {
     pub palette_view: Option<Entity<views::palette::PaletteView>>,
     /// El último diff de esquemas pedido (GET /api/schema-diff).
     pub schema_diff: Option<Load>,
+    /// Condx Cloud: vínculo y estado (GET /api/cloud), y la vinculación en curso.
+    pub cloud: Option<Load>,
+    pub cloud_linking: Option<Load>,
     pub backend_download: Option<Load>,
     pub service_logs: HashMap<String, String>,
     pub log_tab: usize,
@@ -328,6 +331,8 @@ impl DevtoolApp {
             palette_recent: vec![],
             palette_view: None,
             schema_diff: None,
+            cloud: None,
+            cloud_linking: None,
             backend_download: None,
             service_logs: HashMap::new(),
             log_tab: 0,

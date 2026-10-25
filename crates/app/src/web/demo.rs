@@ -55,6 +55,12 @@ pub fn get(path: &str) -> Result<Value> {
         ["projects"] => if with(|s| s.registered) { json!([project()]) } else { json!([]) },
         ["projects", "discover"] => json!({ "root": "~/code", "candidates": [{ "path": "~/code/my-app", "convexProject": "my-app", "frontend": "vite", "project": null }] }),
         ["doctor"] => doctor(),
+        ["cloud"] => json!({
+            "link": { "url": "https://happy-otter-123.convex.cloud", "daemonId": "mac-4f2a9c1e", "name": "My Mac", "linkedAt": now() - 3 * HOUR },
+            "status": { "key": "cloud", "ok": true, "error": null, "at": now() - 2_000, "data": { "pending": 0, "recovery": 0, "scopes": [
+                { "scope": "env:mac-4f2a9c1e", "rows": 4 }, { "scope": "jobs:mac-4f2a9c1e", "rows": 23 }, { "scope": "approvals:mac-4f2a9c1e", "rows": 1 }
+            ] } }
+        }),
         ["probes"] => json!([ci_probe()]),
         ["jobs"] => with(|s| json!(s.jobs)),
         ["jobs", id] => with(|s| s.jobs.iter().find(|j| j["id"] == *id).cloned()).ok_or_else(|| anyhow!("job {id} doesn't exist"))?,

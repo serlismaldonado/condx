@@ -77,6 +77,8 @@ async fn el_token_de_agentes_no_aprueba_ni_toca_reglas_ni_claves() {
         (Method::POST, "/api/environments/prod/keys", json!({ "deployKey": "prod:x|y" })),
         (Method::DELETE, "/api/environments/prod/keys", json!({})),
         (Method::POST, "/api/doctor/backend", json!({})),
+        (Method::POST, "/api/cloud/link", json!({ "url": "https://x.convex.cloud", "key": "k".repeat(40) })),
+        (Method::POST, "/api/cloud/unlink", json!({})),
     ];
     for (method, path, body) in cases {
         let (status, res) = call(method.clone(), path, &host, Some(CLI), Some(body)).await;

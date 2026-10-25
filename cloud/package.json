@@ -1,0 +1,20 @@
+{
+  "name": "condx-cloud",
+  "private": true,
+  "description": "Condx Cloud backend (Convex): sync scopes for a Condx daemon, on the local-first protocol.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p convex"
+  },
+  "devDependencies": {
+    "convex": "^1.46.0",
+    "convex-test": "^0.0.49",
+    "@edge-runtime/vm": "^5.0.0",
+    "typescript": "~5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "localfirst": "github:serlismaldonado/localfirst#6c3fa6a9f59f76521b76dba1f6a1edeb857eb31a"
+  }
+}

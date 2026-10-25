@@ -105,9 +105,11 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 
 ## 5. Linking a daemon
 
-1. Settings → **Cloud** → *Set up*. Condx creates a `condx-cloud` project in the user's Convex team
-   with `npx convex deploy` (an app-only job with approval), from a backend bundled with Condx.
-2. The daemon gets a **daemon token** (random, Keychain) and registers itself with the backend.
+1. The user deploys `cloud/` to a Convex project of theirs (`npx convex deploy`). A guided job that
+   does it from the app is a later step.
+2. Settings → **Condx Cloud** (or `condxd cloud link`): the URL and a deploy key. Condx registers the
+   daemon (`daemons:register`, internal) with a random **daemon token**, kept in `cloud-token`
+   (0600) like the daemon's other tokens; the deploy key is used once and not stored.
 3. The phone opens the cloud's web app, signs in (Convex Auth), and pairs by scanning a QR the Mac
    shows (short-lived code). Pairing is confirmed on the Mac.
 4. *Unlink* removes the token and stops syncing; the cloud keeps nothing the daemon needs.
@@ -128,7 +130,7 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 | **C0** ✅ | Clone the library, this doc, Rust `localfirst-core`: types, `planOp`, sets, view, with the TS tests ported and shared JSON fixtures | done 2026-10-25: 400 shared cases match |
 | **C1** ✅ | Reduced engine in Rust: SQLite outbox and replica, cursors, backoff; a fake transport and the contract tests | done 2026-10-25: sans-IO engine; 6000 seeds × 100 steps converge on memory and SQLite, with calls in flight across steps |
 | **C2** ✅ | Condx Cloud backend (Convex project): tables, doorbell/pull/push for Condx scopes, auth | done 2026-10-25: 15 convex-test tests, differential vs `FakeServer` (300 seeds agree), and the Rust engine against a throwaway local backend |
-| C3 | Daemon publishes `env`, `jobs`, `approvals` (one-way mirror) through the Rust transport | the web view shows the daemon live |
+| **C3** ✅ | Daemon publishes `env`, `jobs`, `approvals` (one-way mirror) through the Rust transport | done 2026-10-25: `cloud.rs` (sync thread, SQLite engine), link/unlink from Settings or `condxd cloud`, tested end to end against a throwaway backend (approval reflected, offline queue flushed on reconnect, no secrets uploaded). The web view comes with C4 |
 | C4 | **Approve from the phone**: requests, the daemon's checks, Touch ID for production, pairing by QR | an approval from the phone runs a job on the Mac; a stale one is refused |
 | C5 | Workflows on/off and runs from the phone; several daemons per user | — |
 

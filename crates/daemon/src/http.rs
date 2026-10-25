@@ -651,6 +651,41 @@ async fn get_discover(AxState(state): AxState<Shared>, Query(q): Query<DiscoverQ
     Json(crate::projects::discover_json(&state, q.root.as_deref()))
 }
 
+/// Condx Cloud: el vínculo (sin el token) y el estado del último sincronizado.
+async fn get_cloud(AxState(state): AxState<Shared>) -> Json<Value> {
+    Json(json!({ "link": crate::cloud::load_link(), "status": state.probe("cloud") }))
+}
+
+#[derive(serde::Deserialize)]
+struct CloudLinkBody {
+    url: String,
+    key: String,
+    name: Option<String>,
+}
+
+/// Vincular o desvincular: solo la app (la key de admin pasa por aquí una vez y no se guarda).
+async fn post_cloud_link(Extension(client): Extension<Client>, Json(body): Json<CloudLinkBody>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let name = body.name.unwrap_or_else(|| "Condx".into());
+    match tokio::task::spawn_blocking(move || crate::cloud::link(&body.url, &body.key, &name)).await {
+        Ok(Ok(link)) => Json(json!({ "link": link })).into_response(),
+        Ok(Err(e)) => fail(StatusCode::BAD_REQUEST, format!("{e:#}")),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+async fn post_cloud_unlink(Extension(client): Extension<Client>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::cloud::unlink() {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+    }
+}
+
 async fn get_doctor(AxState(state): AxState<Shared>) -> Json<Value> {
     Json(crate::doctor::report(&state).await)
 }
@@ -817,6 +852,9 @@ pub fn router(state: Shared) -> Router {
         .route("/api/projects", get(get_projects).post(post_project))
         .route("/api/projects/discover", get(get_discover))
         .route("/api/doctor", get(get_doctor))
+        .route("/api/cloud", get(get_cloud))
+        .route("/api/cloud/link", post(post_cloud_link))
+        .route("/api/cloud/unlink", post(post_cloud_unlink))
         .route("/api/doctor/backend", post(post_doctor_backend))
         .route("/api/projects/{name}", axum::routing::delete(delete_project))
         .route("/api/services", get(get_services))

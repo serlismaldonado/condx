@@ -11,7 +11,7 @@ use crate::i18n::Lang;
 use crate::theme::Choice;
 use crate::ui;
 
-pub fn render(app: &mut DevtoolApp, _: &mut Window, cx: &mut Context<DevtoolApp>) -> impl IntoElement {
+pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolApp>) -> impl IntoElement {
     let current = crate::i18n::lang();
     let mut langs = h_flex().gap_2().flex_wrap();
     for lang in Lang::ALL {
@@ -43,6 +43,7 @@ pub fn render(app: &mut DevtoolApp, _: &mut Window, cx: &mut Context<DevtoolApp>
         .p_4()
         .max_w(px(720.))
         .child(agents(app, cx))
+        .child(super::cloud::card(app, window, cx))
         .child(data_rules(app, cx))
         .child(
             ui::card(cx)

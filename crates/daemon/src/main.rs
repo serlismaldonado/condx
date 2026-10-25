@@ -3,6 +3,7 @@
 // app y MCP de lectura; nada despliega ni escribe datos.
 
 mod auth;
+mod cloud;
 mod cmd;
 mod config;
 mod create;
@@ -60,6 +61,8 @@ Usage:
   condxd secret set prod-deploy-key   stores the production deploy key in the Keychain (reads it from stdin)
   condxd secret set dev-deploy-key    stores the cloud dev deploy key (optional: record counts in Data)
   condxd secret status                which secrets exist (never their values)
+  condxd cloud link --url <URL> [--name N]   links to Condx Cloud (reads an admin or deploy key from stdin, once)
+  condxd cloud status | unlink
 
 Files: ~/.condx/daemon/{config.json,token,devd.sqlite3,devd.log}
 ";
@@ -75,6 +78,7 @@ fn main() -> Result<()> {
         "project" => project_cmd(&args[1..]),
         "install" => launchd(true),
         "secret" => secret_cmd(&args[1..]),
+        "cloud" => cloud_cmd(&args[1..]),
         "uninstall" => launchd(false),
         "-h" | "--help" | "help" => {
             print!("{HELP}");
@@ -132,6 +136,7 @@ fn serve() -> Result<()> {
         tokio::task::spawn_blocking(move || projects::ensure_all_envs(&st));
         procs::adopt_all(&state);
         jobs::spawn_scheduler(&state);
+        cloud::spawn(state.clone());
         let listener = tokio::net::TcpListener::from_std(listener)?;
         match &state.config.repo {
             Some(repo) => tracing::info!("condxd at http://{addr} · heskala-erp at {}", repo.display()),
@@ -468,5 +473,33 @@ fn stop_service(domain: &str, label: &str) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+fn cloud_cmd(args: &[String]) -> Result<()> {
+    match args.first().map(String::as_str) {
+        Some("link") => {
+            let url = flag(args, "--url").context("missing --url (the Condx Cloud deployment URL)")?;
+            let name = flag(args, "--name").unwrap_or_else(|| "Condx".into());
+            // La key llega por stdin (no queda en el historial del shell) y no se guarda.
+            let mut key = String::new();
+            std::io::stdin().read_line(&mut key)?;
+            let link = cloud::link(&url, key.trim(), &name)?;
+            println!("Linked as {} to {}. The daemon syncs within a few seconds.", link.daemon_id, link.url);
+            Ok(())
+        }
+        Some("unlink") => {
+            cloud::unlink()?;
+            println!("Unlinked. Data already in the deployment stays there.");
+            Ok(())
+        }
+        Some("status") | None => {
+            match cloud::load_link() {
+                Some(l) => println!("Linked as {} ({}) to {} since {}", l.daemon_id, l.name, l.url, l.linked_at),
+                None => println!("Not linked."),
+            }
+            Ok(())
+        }
+        Some(other) => bail!("unknown cloud subcommand: {other}"),
     }
 }

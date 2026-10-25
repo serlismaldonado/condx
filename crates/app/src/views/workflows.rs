@@ -38,6 +38,7 @@ fn kind_label(kind: &str) -> &'static str {
         "approval" => t!("Approval"),
         "check" => t!("Check"),
         "notify" => t!("Notice"),
+        "agent" => t!("Agent"),
         _ => t!("Node"),
     }
 }
@@ -166,6 +167,7 @@ impl DevtoolApp {
             "wait" => json!({ "minutes": 5 }),
             "approval" => json!({ "env": "", "level": "simple", "message": "" }),
             "check" => json!({ "check": "env-reachable", "env": "" }),
+            "agent" => json!({ "agent": "", "instructions": "" }),
             _ => json!({ "message": "" }),
         };
         // Aparece cerca del centro de lo que se ve, corrido un poco por cada nodo.
@@ -466,7 +468,8 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
     let p = node["params"].clone();
     let sv = |k: &str| p[k].as_str().map(str::to_string).unwrap_or_else(|| if p[k].is_null() { String::new() } else { p[k].to_string() });
     let title = field(app, format!("wf-{id}-title"), node["title"].as_str().unwrap_or_default().to_string(), window, cx);
-    let message = field(app, format!("wf-{id}-message"), sv("message"), window, cx);
+    // En un nodo agente, el mismo campo son sus instrucciones para este flujo.
+    let message = field(app, format!("wf-{id}-message"), sv(if node["kind"] == "agent" { "instructions" } else { "message" }), window, cx);
     let minutes = field(app, format!("wf-{id}-minutes"), sv("minutes"), window, cx);
     let hours = field(app, format!("wf-{id}-hours"), sv("hours"), window, cx);
     // Los desplegables escriben directo en el borrador.
@@ -578,6 +581,20 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
                     body = body.child(row(t!("Within the last (hours)"), Input::new(&hours).small().into_any_element(), cx));
                 }
             }
+            "agent" => {
+                let roles: Vec<Value> = app_now.agent_roles.as_ref().and_then(|r| r["roles"].as_array().cloned()).unwrap_or_default();
+                let choices: Vec<(String, String)> = roles.iter().filter(|r| r["enabled"] == true).filter_map(|r| Some((r["id"].as_str()?.to_string(), r["name"].as_str()?.to_string()))).collect();
+                body = body.child(row(t!("Agent"), select(format!("wf-ag-{id}"), choices, s("agent"), "agent").into_any_element(), cx));
+                if let Some(role) = roles.iter().find(|r| r["id"] == s("agent").as_str()) {
+                    let out = super::agent_roles::output_text(&role["output"]);
+                    body = body
+                        .child(ui::muted(ui::txt(&role["instructions"]), cx).text_xs())
+                        .child(ui::muted(if out.is_empty() { t!("Its result: free text (in {node.<id>.report}).").to_string() } else { t!("Its result: {f}. Use them as {{node.{id}.<field>}} in later nodes.", f = out, id = id).to_string() }, cx).text_xs());
+                }
+                body = body
+                    .child(row(t!("Instructions for this flow"), Input::new(&message).small().into_any_element(), cx))
+                    .child(ui::muted(t!("It reads the event that started the flow and the results of the nodes connected to it."), cx).text_xs());
+            }
             _ => body = body.child(row(t!("Message"), Input::new(&message).small().into_any_element(), cx)),
         }
         // Conexiones del nodo, con su × para quitarlas.
@@ -642,6 +659,7 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
                                             n["params"]["hours"] = json!(h);
                                         }
                                     }
+                                    "agent" => n["params"]["instructions"] = json!(message),
                                     _ => n["params"]["message"] = json!(message),
                                 }
                             }
@@ -991,6 +1009,7 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
         .child(palette("wf-add-approval", "approval", t!("Approval"), cx))
         .child(palette("wf-add-check", "check", t!("Check"), cx))
         .child(palette("wf-add-notify", "notify", t!("Notice"), cx))
+        .child(palette("wf-add-agent", "agent", t!("Agent"), cx))
         .child(div().flex_1())
         .when(dirty, |d| {
             d.child(Button::new("wf-discard").xsmall().ghost().label(t!("Discard")).on_click(cx.listener(|this, _, _, cx| {
@@ -1162,7 +1181,9 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
         for n in r["nodes"].as_array().cloned().unwrap_or_default() {
             let title = r["snapshot"]["nodes"].as_array().and_then(|l| l.iter().find(|x| x["id"] == n["id"]).map(|x| x["title"].as_str().unwrap_or_default().to_string())).unwrap_or_default();
             let st = n["status"].as_str().unwrap_or_default().to_string();
-            let job = n["job"].as_str().map(str::to_string);
+            let is_agent = r["snapshot"]["nodes"].as_array().and_then(|l| l.iter().find(|x| x["id"] == n["id"])).is_some_and(|x| x["kind"] == "agent");
+            let job = n["job"].as_str().map(str::to_string).filter(|_| !is_agent);
+            let agent_run = n["job"].as_str().map(str::to_string).filter(|_| is_agent);
             detail = detail.child(
                 h_flex()
                     .gap_2()
@@ -1176,8 +1197,25 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
                             this.go(Page::Jobs, cx);
                             this.open_job(job.clone(), cx);
                         })))
+                    })
+                    .when_some(agent_run, |d, ar| {
+                        d.child(Button::new(SharedString::from(format!("wf-agent-{ar}"))).xsmall().ghost().label(t!("Conversation")).on_click(cx.listener(move |this, _, window, cx| {
+                            this.chat_open = Some(ar.clone());
+                            this.chat = None;
+                            this.open_page(Page::Agents, window, cx);
+                        })))
                     }),
             );
+            // El resultado de un agente, campo por campo.
+            if is_agent && st == "succeeded" {
+                let mut chips = h_flex().gap_1().flex_wrap().pl(px(18.));
+                let mut fields: Vec<(String, String)> = n["outputs"].as_object().map(|o| o.iter().filter(|(k, _)| !matches!(k.as_str(), "report" | "result" | "_retried")).map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string())).collect()).unwrap_or_default();
+                fields.sort();
+                for (k, v) in fields {
+                    chips = chips.child(div().px_1p5().py_0p5().bg(t.ground).border_1().border_color(t.card_border).text_size(px(11.)).text_color(t.muted).child(format!("{k}: {}", v.chars().take(90).collect::<String>())));
+                }
+                detail = detail.child(chips);
+            }
         }
         runs = runs.child(detail);
     }

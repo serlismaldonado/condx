@@ -13,6 +13,7 @@ pub mod local;
 pub mod live;
 pub mod overview;
 pub mod palette;
+pub mod agent_roles;
 pub mod agent_settings;
 pub mod agents;
 pub mod frontend;

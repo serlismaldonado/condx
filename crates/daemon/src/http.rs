@@ -104,7 +104,7 @@ async fn get_workflows(AxState(state): AxState<Shared>, Query(q): Query<ProjectQ
         .iter()
         .map(|w| {
             let last = state.store.runs(Some(&w.id), &[], 1).ok().and_then(|r| r.into_iter().next());
-            json!({ "workflow": w, "problems": workflows::problems(w, &names, |r| recipes::get(r).is_some()), "lastRun": last })
+            json!({ "workflow": w, "problems": workflows::problems_for(&state, w, &names), "lastRun": last })
         })
         .collect();
     Json(json!({ "workflows": out, "environments": envs })).into_response()
@@ -191,7 +191,9 @@ async fn post_workflow_run(AxState(state): AxState<Shared>, Extension(client): E
     if let Some(r) = deny(&client, Scope::JobsRequest) {
         return r;
     }
-    match workflows::start(&state, &id, body["commit"].as_str().unwrap_or("dev"), client.name) {
+    // Un evento opcional (para probar un flujo con agentes a mano): `{ "event": { … } }`.
+    let event = body.get("event").filter(|e| e.is_object()).cloned();
+    match workflows::start_with(&state, &id, body["commit"].as_str().unwrap_or("dev"), client.name, event) {
         Ok(run) => Json(json!(run)).into_response(),
         Err(e) => fail(StatusCode::BAD_REQUEST, e),
     }
@@ -474,6 +476,41 @@ async fn post_agent_templates_reset(AxState(state): AxState<Shared>, Extension(c
     }
     match crate::templates::reset(&state) {
         Ok(l) => Json(json!(l)).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn get_agent_roles(AxState(state): AxState<Shared>) -> Response {
+    Json(crate::roles::json(&state)).into_response()
+}
+
+/// El catálogo de agentes (roles.rs): solo la app lo cambia.
+async fn post_agent_role(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::roles::upsert(&state, &body) {
+        Ok(r) => Json(json!(r)).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn post_agent_roles_reset(AxState(state): AxState<Shared>, Extension(client): Extension<Client>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::roles::reset(&state) {
+        Ok(l) => Json(json!(l)).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn delete_agent_role(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Path(id): Path<String>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::roles::delete(&state, &id) {
+        Ok(()) => Json(json!({ "deleted": id })).into_response(),
         Err(e) => fail(StatusCode::BAD_REQUEST, e),
     }
 }
@@ -1130,6 +1167,9 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agents/templates", post(post_agent_template))
         .route("/api/agents/templates/reset", post(post_agent_templates_reset))
         .route("/api/agents/templates/{id}", delete(delete_agent_template))
+        .route("/api/agents/roles", get(get_agent_roles).post(post_agent_role))
+        .route("/api/agents/roles/reset", post(post_agent_roles_reset))
+        .route("/api/agents/roles/{id}", delete(delete_agent_role))
         .route("/api/agent-runs", get(get_agent_runs))
         .route("/api/agent-chats", post(post_agent_chat))
         .route("/api/agent-runs/{id}", get(get_agent_run))

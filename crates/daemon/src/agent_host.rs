@@ -421,6 +421,52 @@ pub async fn start_chat(state: &Shared, text: &str, project: Option<&str>, by: &
     Ok(run)
 }
 
+/// Un agente de un rol para un nodo de un flujo (o un hilo): idempotente por `run_id` (si ya
+/// existe, la devuelve). Error con «already running» si no hay lugar: quien llama espera.
+pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str, text: &str, project: Option<&str>, flow: &str) -> Result<Value> {
+    if let Some(r) = state.store.agent_run(run_id)? {
+        return Ok(r);
+    }
+    if !role.enabled {
+        bail!("the agent “{}” is turned off", role.name);
+    }
+    if role.mode == crate::roles::Mode::Write {
+        bail!("“{}” writes code: write agents run in fix flows (not yet)", role.name);
+    }
+    let settings = crate::agents::settings(state);
+    let provider_id = role.provider.clone().filter(|p| !p.is_empty()).or_else(|| settings.default_provider.clone()).context("choose a default provider in Settings → Agents first")?;
+    let provider = state.store.agent_providers()?.into_iter().find(|p| p["id"] == provider_id.as_str()).with_context(|| format!("there's no provider “{provider_id}”"))?;
+    let model = role
+        .model
+        .clone()
+        .filter(|m| !m.is_empty())
+        .or_else(|| if role.provider.as_deref().is_some_and(|p| !p.is_empty()) { None } else { settings.default_model.clone() })
+        .or_else(|| provider["model"].as_str().map(str::to_string))
+        .filter(|m| !m.is_empty())
+        .context("choose a model for the provider")?;
+    if settings.daily_token_budget == 0 || usage_today(state) >= settings.daily_token_budget {
+        bail!("today's token budget is used up ({} of {})", usage_today(state), settings.daily_token_budget);
+    }
+    let running = state.store.agent_runs(&["running"], None)?;
+    if running.len() as u32 >= settings.max_concurrent {
+        bail!("{} agent(s) already running (the limit is {})", running.len(), settings.max_concurrent);
+    }
+    let repo = crate::projects::get(state, project).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir());
+    let body = json!({ "runId": run_id, "mode": "task", "providerId": provider_id, "model": model, "cwd": repo.display().to_string(), "text": text, "tools": role.tools });
+    let st = state.clone();
+    let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/runs", Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
+    let run = json!({
+        "id": run_id, "kind": "flow", "title": format!("{} · {flow}", role.name), "role": role.id, "incident": null, "project": project, "mode": "task",
+        "provider": provider_id, "model": model, "by": format!("flow “{flow}”"),
+        "status": "running", "startedAt": now_ms(), "endedAt": null, "answer": null, "error": null,
+        "usage": { "total": 0 }, "conversationId": res["conversationId"],
+        "limits": { "maxTokens": role.max_tokens, "maxMinutes": role.max_minutes },
+    });
+    state.store.save_agent_run(&run)?;
+    tracing::info!("agent {run_id} ({}) started for flow {flow}", role.id);
+    Ok(run)
+}
+
 /// Las conversaciones para la lista de la página Agentes: chats y corridas sobre incidentes, la
 /// más reciente primero, sin la transcripción.
 pub fn list(state: &Shared) -> Result<Value> {
@@ -434,7 +480,7 @@ pub fn list(state: &Shared) -> Result<Value> {
             let incident = r["incident"].as_str().filter(|i| !i.is_empty());
             let title = r["title"].as_str().map(str::to_string).or_else(|| incident.and_then(|i| titles.get(i).cloned())).unwrap_or_else(|| r["id"].as_str().unwrap_or("?").to_string());
             json!({
-                "id": r["id"], "kind": if incident.is_some() { "incident" } else { "chat" }, "title": title, "incident": incident, "mode": r["mode"],
+                "id": r["id"], "kind": r["kind"].as_str().unwrap_or(if incident.is_some() { "incident" } else { "chat" }), "title": title, "incident": incident, "mode": r["mode"],
                 "status": r["status"], "model": r["model"], "startedAt": r["startedAt"], "endedAt": r["endedAt"], "usage": r["usage"]["total"], "error": r["error"],
             })
         })

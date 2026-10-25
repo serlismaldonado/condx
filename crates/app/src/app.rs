@@ -311,6 +311,10 @@ pub struct DevtoolApp {
     known_incidents: std::collections::HashSet<String>,
     /// Configuración → Agentes (`/api/agents`) y el tipo de proveedor elegido para agregar.
     pub agents: Option<Value>,
+    /// El catálogo de agentes para flujos (views::agent_roles) y el que se edita.
+    pub agent_roles: Option<Value>,
+    pub role_edit: Option<Value>,
+    pub roles_error: Option<String>,
     pub agents_error: Option<String>,
     pub agent_kind: String,
     /// Lo que trajo «Importar de pi» (o por qué no).
@@ -480,6 +484,9 @@ impl DevtoolApp {
             agent_run_open: None,
             agent_run: None,
             agent_run_at: 0,
+            agent_roles: None,
+            role_edit: None,
+            roles_error: None,
             chats: vec![],
             chats_at: 0,
             chat_open: None,
@@ -774,6 +781,7 @@ impl DevtoolApp {
                 }
             }
             Page::Workflows => {
+                self.load_roles(cx);
                 self.go(Page::Workflows, cx);
                 self.load_workflows(cx);
                 self.poll_workflows(cx);

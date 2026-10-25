@@ -33,6 +33,7 @@ mod secrets;
 mod services;
 mod state;
 mod store;
+mod roles;
 mod templates;
 mod telemetry;
 mod workflows;

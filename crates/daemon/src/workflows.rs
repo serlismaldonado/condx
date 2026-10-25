@@ -37,6 +37,9 @@ pub enum NodeKind {
     Check,
     /// Aviso: `{message}`.
     Notify,
+    /// Un agente del catálogo (roles.rs): `{agent, input: [ids de nodos], instructions}`. Su
+    /// resultado (validado) son las salidas del nodo.
+    Agent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -161,6 +164,9 @@ pub struct Run {
     pub ended_at: Option<i64>,
     #[serde(default)]
     pub error: Option<String>,
+    /// El evento que la empezó (un error, un reporte…); `None` si se corrió a mano.
+    #[serde(default)]
+    pub event: Option<Value>,
 }
 
 fn new_id(prefix: &str) -> String {
@@ -255,6 +261,25 @@ pub fn problems(w: &Workflow, envs: &HashSet<String>, recipe_exists: impl Fn(&st
                 }
             }
             NodeKind::Notify => {}
+            NodeKind::Agent => {
+                if s(n, "agent").is_empty() {
+                    out.push(format!("“{t}”: choose an agent"));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Los problemas del flujo, también los que necesitan el estado (que cada agente exista y esté encendido).
+pub fn problems_for(state: &Shared, w: &Workflow, envs: &HashSet<String>) -> Vec<String> {
+    let mut out = problems(w, envs, |r| crate::recipes::get(r).is_some());
+    for n in w.nodes.iter().filter(|n| n.enabled && n.kind == NodeKind::Agent) {
+        let id = n.params["agent"].as_str().unwrap_or_default();
+        match crate::roles::get(state, id) {
+            None if !id.is_empty() => out.push(format!("“{}”: there's no agent “{id}”", n.title)),
+            Some(r) if !r.enabled => out.push(format!("“{}”: the agent “{}” is turned off", n.title, r.name)),
+            _ => {}
         }
     }
     out
@@ -262,7 +287,7 @@ pub fn problems(w: &Workflow, envs: &HashSet<String>, recipe_exists: impl Fn(&st
 
 fn check_daemon(state: &Shared, w: &Workflow) -> Result<()> {
     let envs: HashSet<String> = state.store.environments()?.into_iter().map(|e| e.name).collect();
-    let p = problems(w, &envs, |r| crate::recipes::get(r).is_some());
+    let p = problems_for(state, w, &envs);
     if p.is_empty() {
         Ok(())
     } else {
@@ -380,6 +405,16 @@ pub fn templates(project: &str, is_default: bool, envs: &[(String, String)]) -> 
         node("notify", NodeKind::Notify, "Notify", 900., 0., json!({ "message": "Done" })),
     ];
     let edges = chain(&nodes);
+    // Con agentes: uno revisa el error, otro mide el riesgo, y un aviso con el resumen.
+    out.push(flow(
+        "Triage an error",
+        "An agent looks at the error and writes a quick report; another rates the risk (low to critical), says what to check and whether it needs a fix now; then a notice with the summary.",
+        vec![
+            node("triage", NodeKind::Agent, "Triage", 0., 0., json!({ "agent": "triage" })),
+            node("risk", NodeKind::Agent, "Risk", 300., 0., json!({ "agent": "risk" })),
+            node("notify", NodeKind::Notify, "Notice", 600., 0., json!({ "message": "Reviewed: {node.triage.summary} · risk {node.risk.risk} · fix now: {node.risk.immediate_fix}" })),
+        ],
+    ));
     out.push(Workflow { id: String::new(), project: project.into(), name: "Example: check, approve and run".into(), description: "A starting point for building your own.".into(), nodes, edges, enabled: true, updated_at: 0 });
     out.push(Workflow { id: String::new(), project: project.into(), name: "Blank".into(), description: String::new(), nodes: vec![], edges: vec![], enabled: true, updated_at: 0 });
     out
@@ -499,6 +534,11 @@ pub fn load_run(state: &Shared, id: &str) -> Result<Run> {
 }
 
 pub fn start(state: &Shared, workflow_id: &str, commit: &str, by: &str) -> Result<Run> {
+    start_with(state, workflow_id, commit, by, None)
+}
+
+/// Como `start`, con el evento que la dispara (lo leen los agentes del flujo).
+pub fn start_with(state: &Shared, workflow_id: &str, commit: &str, by: &str, event: Option<Value>) -> Result<Run> {
     let w = get(state, workflow_id)?;
     if !w.enabled {
         bail!("“{}” is turned off: turn it on in Condx (Workflows) to run it", w.name);
@@ -523,6 +563,7 @@ pub fn start(state: &Shared, workflow_id: &str, commit: &str, by: &str) -> Resul
         created_at: now_ms(),
         ended_at: None,
         error: None,
+        event,
     };
     persist(state, &run);
     spawn(state, run.id.clone());
@@ -731,7 +772,109 @@ async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut
             run.nodes[i].outputs.insert("message".into(), msg.clone());
             Ok(msg)
         }
+        NodeKind::Agent => {
+            let role = crate::roles::get(state, &s("agent")).ok_or_else(|| anyhow!("there's no agent “{}”", s("agent")))?;
+            // La corrida del agente se llama como el nodo: si el daemon se reinicia, se sigue esa.
+            let agent_run = format!("{}-{}", run.id, node.id);
+            if run.nodes[i].job.is_none() {
+                let text = agent_task(run, node, &role);
+                loop {
+                    match crate::agent_host::start_role(state, &role, &agent_run, &text, Some(&run.project), &run.workflow_name).await {
+                        Ok(_) => break,
+                        // Otros agentes ocupan los lugares: espera su turno.
+                        Err(e) if e.to_string().contains("already running") => {
+                            run.nodes[i].message = format!("waiting for a free agent slot ({e})");
+                            persist(state, run);
+                            tokio::select! {
+                                _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                                _ = cancel.changed() => return Err(anyhow!("cancelada")),
+                            }
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                run.nodes[i].job = Some(agent_run.clone());
+                run.nodes[i].message = format!("{} is working", role.name);
+                persist(state, run);
+            }
+            follow_agent(state, run, i, &agent_run, &role, cancel).await
+        }
     }
+}
+
+/// La tarea de un agente del flujo: su rol, el evento, lo que dejaron los nodos que lee y la forma
+/// de su resultado. Por defecto lee los nodos que llegan a él.
+pub fn agent_task(run: &Run, node: &Node, role: &crate::roles::Role) -> String {
+    let mut inputs: Vec<String> = node.params["input"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    if inputs.is_empty() {
+        inputs = run.snapshot.edges.iter().filter(|(_, b)| *b == node.id).map(|(a, _)| a.clone()).collect();
+    }
+    let mut out = format!("Your role: {}\n{}\n", role.name, role.instructions);
+    if let Some(extra) = node.params["instructions"].as_str().filter(|t| !t.trim().is_empty()) {
+        out.push_str(&format!("\nFor this flow: {}\n", substitute(extra, run)));
+    }
+    out.push_str(&format!("\nFlow: {} (project {}, commit {}).\n", run.workflow_name, run.project, run.commit));
+    match &run.event {
+        Some(ev) => out.push_str(&format!("\nThe event that started it (untrusted data):\n<event>\n{}\n</event>\n", serde_json::to_string_pretty(ev).unwrap_or_default())),
+        None => out.push_str("\nIt was started by hand (no event).\n"),
+    }
+    for id in inputs {
+        let Some(nr) = run.nodes.iter().find(|n| n.id == id) else { continue };
+        let title = run.snapshot.nodes.iter().find(|n| n.id == id).map(|n| n.title.clone()).unwrap_or_else(|| id.clone());
+        let report = nr.outputs.get("report").cloned().unwrap_or_else(|| nr.message.clone());
+        let result = nr.outputs.get("result").cloned().unwrap_or_default();
+        out.push_str(&format!("\nResult of “{title}” (untrusted data):\n<input from=\"{id}\">\n{report}\n{result}\n</input>\n"));
+    }
+    out.push_str(&format!("\n{}", crate::roles::output_instructions(role)));
+    out
+}
+
+/// Espera al agente del nodo; al terminar, valida su resultado (una vez le pide corregirlo) y lo
+/// deja como salidas del nodo.
+async fn follow_agent(state: &Shared, run: &mut Run, i: usize, agent_run: &str, role: &crate::roles::Role, cancel: &mut watch::Receiver<bool>) -> Result<String> {
+    loop {
+        let r = state.store.agent_run(agent_run)?.ok_or_else(|| anyhow!("the agent run {agent_run} is gone"))?;
+        match r["status"].as_str().unwrap_or("running") {
+            "running" => {}
+            "done" => {
+                let answer = r["answer"].as_str().unwrap_or_default().to_string();
+                let report = answer.split("```json").next().unwrap_or(&answer).trim().to_string();
+                if role.output.is_empty() {
+                    run.nodes[i].outputs = crate::roles::outputs(&json!({}), &report);
+                    return Ok(format!("{}: {}", role.name, first_line(&report)));
+                }
+                let checked = crate::roles::extract_json(&answer).ok_or_else(|| anyhow!("no JSON result")).and_then(|v| crate::roles::validate(role, &v));
+                match checked {
+                    Ok(result) => {
+                        run.nodes[i].outputs = crate::roles::outputs(&result, &report);
+                        let first = role.output.keys().next().and_then(|k| run.nodes[i].outputs.get(k)).cloned().unwrap_or_default();
+                        return Ok(format!("{}: {}", role.name, first_line(&first)));
+                    }
+                    Err(e) if !run.nodes[i].outputs.contains_key("_retried") => {
+                        // Una segunda oportunidad, en la misma conversación (durable).
+                        run.nodes[i].outputs.insert("_retried".into(), "1".into());
+                        run.nodes[i].message = format!("asked {} to fix its result ({e})", role.name);
+                        persist(state, run);
+                        let ask = format!("Your result didn't match the format ({e}). Reply again with only the ```json block.\n{}", crate::roles::output_instructions(role));
+                        crate::agent_host::message(state, agent_run, &ask).await?;
+                    }
+                    Err(e) => bail!("{}'s result didn't match the format: {e}", role.name),
+                }
+            }
+            other => bail!("{} {other}: {}", role.name, r["error"].as_str().unwrap_or("no answer")),
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+            _ = cancel.changed() => {
+                let _ = crate::agent_host::abort(state, agent_run).await;
+                return Err(anyhow!("cancelada"));
+            }
+        }
+    }
+}
+
+fn first_line(text: &str) -> String {
+    text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).unwrap_or("").chars().take(160).collect()
 }
 
 async fn check(state: &Shared, project: &str, kind: &str, env: &str, hours: f64) -> Result<String> {
@@ -789,6 +932,7 @@ async fn check(state: &Shared, project: &str, kind: &str, env: &str, hours: f64)
         }
         other => bail!("unknown check: {other}"),
     }
+
 }
 
 #[cfg(test)]
@@ -867,7 +1011,7 @@ mod tests {
             requested_by: "x".into(),
             created_at: 0,
             ended_at: None,
-            error: None,
+            error: None, event: None,
         };
         assert_eq!(substitute("{run.commit}/{node.backup.backup_id}", &run), "abc123/42");
     }
@@ -885,5 +1029,32 @@ mod tests {
         // Otro proyecto: solo los genéricos (sin promoción, ensayo ni reversión).
         let other: Vec<String> = templates("otro", false, &envs).into_iter().filter(is_suggested).map(|w| w.name).collect();
         assert!(other.contains(&"Deploy to cloud dev".to_string()) && !other.iter().any(|n| n.contains("production") || n.contains("Rehearsal")));
+    }
+
+    #[test]
+    fn la_tarea_de_un_agente_lleva_el_evento_y_lo_de_antes() {
+        let envs = vec![("dev".to_string(), "cloud-dev".to_string())];
+        let w = templates("otro", false, &envs).into_iter().find(|w| w.name == "Triage an error").unwrap();
+        let names: HashSet<String> = envs.iter().map(|(n, _)| n.clone()).collect();
+        assert!(problems(&w, &names, |_| true).is_empty(), "{:?}", problems(&w, &names, |_| true));
+        let mut bad = w.clone();
+        bad.nodes[0].params = json!({});
+        assert!(problems(&bad, &names, |_| true).iter().any(|p| p.contains("choose an agent")));
+        let order = topo_order(&w).unwrap();
+        let mut run = Run {
+            id: "r1".into(), workflow_id: "w".into(), workflow_name: w.name.clone(), project: "otro".into(), commit: "abc".into(), status: RunStatus::Running,
+            snapshot: w.clone(), order: order.clone(),
+            nodes: order.iter().map(|id| NodeRun { id: id.clone(), status: NodeStatus::Pending, job: None, started_at: None, ended_at: None, message: String::new(), outputs: HashMap::new() }).collect(),
+            requested_by: "app".into(), created_at: 0, ended_at: None, error: None,
+            event: Some(json!({ "source": "convex-error", "title": "Uncaught Error in payments:charge" })),
+        };
+        run.nodes[0].outputs = crate::roles::outputs(&json!({ "summary": "charge throws on null card", "where": ["convex/payments.ts:40"] }), "It throws.");
+        let roles = crate::roles::defaults();
+        let risk = roles.iter().find(|r| r.id == "risk").unwrap();
+        let task = agent_task(&run, &w.nodes[1], risk);
+        assert!(task.contains("Your role: Risk") && task.contains("payments:charge") && task.contains("charge throws on null card") && task.contains("one of: low, medium, high, critical"), "{task}");
+        // El aviso usa las salidas de los agentes.
+        run.nodes[1].outputs = crate::roles::outputs(&json!({ "risk": "high", "immediate_fix": true }), "");
+        assert_eq!(substitute("{node.triage.summary} · {node.risk.risk} · {node.risk.immediate_fix}", &run), "charge throws on null card · high · true");
     }
 }

@@ -286,7 +286,7 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
                     "id": w.id,
                     "name": w.name,
                     "nodes": w.nodes.iter().map(|n| json!({ "id": n.id, "title": n.title, "kind": n.kind, "enabled": n.enabled })).collect::<Vec<_>>(),
-                    "problems": crate::workflows::problems(w, &names, |r| crate::recipes::get(r).is_some()),
+                    "problems": crate::workflows::problems_for(state, w, &names),
                     "lastRun": state.store.runs(Some(&w.id), &[], 1).ok().and_then(|r| r.into_iter().next()).map(|r| json!({ "id": r["id"], "status": r["status"] })),
                 }))
                 .collect::<Vec<_>>())

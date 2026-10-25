@@ -2,6 +2,7 @@
 // (docs/diseno-devtool-escritorio.md). F0: entornos, sondas, telemetría de la
 // app y MCP de lectura; nada despliega ni escribe datos.
 
+mod agent_host;
 mod agents;
 mod auth;
 mod cloud;
@@ -130,6 +131,7 @@ fn serve() -> Result<()> {
     runtime.block_on(async move {
         probes::spawn_all(&state);
         incidents::spawn(&state);
+        agent_host::spawn_poller(&state);
         jobs::recover(&state);
         workflows::recover(&state);
         if let Err(e) = projects::ensure_default(&state) {

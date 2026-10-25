@@ -177,6 +177,9 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
         if client.can(scope) { Ok(()) } else { Err(anyhow!("The token doesn't have scope {scope:?}")) }
     };
     let hub = &state.hub;
+    if client.name == crate::auth::AGENT.name && !crate::auth::AGENT_TOOLS.contains(&name) {
+        return Err(anyhow!("{name} isn't available to agents"));
+    }
     Ok(match name {
         "get_overview" => overview::build_for(state, args["project"].as_str()).await,
         "list_environments" => {

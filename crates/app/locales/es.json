@@ -723,5 +723,21 @@
   "Tokens per day": "Tokens por día",
   "Agents at once": "Agentes a la vez",
   "Incidents": "Incidentes",
-  "Incident": "Incidente"
+  "Incident": "Incidente",
+  "An agent is diagnosing it ({m})": "Un agente lo está diagnosticando ({m})",
+  "Diagnosis by {m} · {w}": "Diagnóstico de {m} · {w}",
+  "The agent was stopped": "Se detuvo al agente",
+  "The agent stopped: today's token budget ran out": "El agente se detuvo: se acabó el presupuesto de tokens de hoy",
+  "The agent failed": "El agente falló",
+  "Hide conversation": "Ocultar conversación",
+  "Conversation": "Conversación",
+  "Ask or redirect the agent…": "Pregúntale o corrige al agente…",
+  "Send": "Enviar",
+  "{n} tokens · it only reads; it can't change files, deploy or approve": "{n} tokens · solo lee; no puede cambiar archivos, desplegar ni aprobar",
+  "Diagnose again": "Diagnosticar de nuevo",
+  "Used today: {u} of {b} tokens": "Usado hoy: {u} de {b} tokens",
+  "The agent host isn't installed (agent-host/ with its node_modules, and Node)": "El host de agentes no está instalado (agent-host/ con sus node_modules, y Node)",
+  "The agent host didn't start: {e}": "El host de agentes no arrancó: {e}",
+  "Agent host running": "Host de agentes corriendo",
+  "The agent host starts with the first agent": "El host de agentes arranca con el primer agente"
 }

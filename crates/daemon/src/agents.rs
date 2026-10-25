@@ -235,7 +235,6 @@ pub fn seal_for_mac(plain: &str) -> Result<String> {
 }
 
 /// La API key de un proveedor, descifrada (para arrancar un agente; nunca va a la app).
-#[allow(dead_code)] // la usa el host de agentes (fase A2)
 pub fn api_key(state: &Shared, id: &str) -> Result<Option<String>> {
     let p = state.store.agent_providers()?.into_iter().find(|p| p["id"] == id).with_context(|| format!("there's no provider “{id}”"))?;
     match p["sealedKey"].as_str() {
@@ -265,6 +264,8 @@ pub fn json(state: &Shared) -> Value {
         "providers": providers,
         "kinds": KINDS.iter().map(|k| json!({ "id": k.id, "label": k.label, "needsBaseUrl": k.needs_base_url, "model": k.model })).collect::<Vec<_>>(),
         "sources": SOURCES,
+        "host": state.agent_host.status(),
+        "usageToday": crate::agent_host::usage_today(state),
     })
 }
 

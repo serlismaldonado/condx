@@ -262,6 +262,10 @@ pub struct DevtoolApp {
     pub incidents: Vec<Value>,
     pub incidents_resolved: Option<Load>,
     pub incidents_tab_resolved: bool,
+    /// La conversación de agente abierta en Incidentes (`/api/agent-runs/{id}`) y cuándo se pidió.
+    pub agent_run_open: Option<String>,
+    pub agent_run: Option<Load>,
+    pub agent_run_at: i64,
     known_incidents: std::collections::HashSet<String>,
     /// Configuración → Agentes (`/api/agents`) y el tipo de proveedor elegido para agregar.
     pub agents: Option<Value>,
@@ -423,6 +427,9 @@ impl DevtoolApp {
             incidents: vec![],
             incidents_resolved: None,
             incidents_tab_resolved: false,
+            agent_run_open: None,
+            agent_run: None,
+            agent_run_at: 0,
             known_incidents: Default::default(),
             agents: None,
             agents_error: None,

@@ -89,6 +89,10 @@ async fn el_token_de_agentes_no_aprueba_ni_toca_reglas_ni_claves() {
         (Method::POST, "/api/agents/settings", json!({ "autonomy": { "job": "fix" } })),
         (Method::POST, "/api/agents/providers", json!({ "kind": "anthropic", "apiKey": "sk-x" })),
         (Method::DELETE, "/api/agents/providers/anthropic", json!({})),
+        // Arrancar un agente, escribirle o detenerlo cuesta tokens: solo la app.
+        (Method::POST, "/api/incidents/inc-x/diagnose", json!({})),
+        (Method::POST, "/api/agent-runs/run-x/message", json!({ "text": "hi" })),
+        (Method::POST, "/api/agent-runs/run-x/abort", json!({})),
     ];
     for (method, path, body) in cases {
         let (status, res) = call(method.clone(), path, &host, Some(CLI), Some(body)).await;
@@ -160,3 +164,26 @@ fn secretos_redactados_en_logs() {
         assert!(!out.contains(leaked), "{out}");
     }
 }
+
+#[tokio::test]
+async fn el_token_de_los_agentes_solo_lee_por_el_mcp_y_solo_lo_operativo() {
+    let host = format!("127.0.0.1:{PORT}");
+    let agent = "agent-token-for-tests";
+    // Ninguna ruta de la API, ni siquiera las de lectura.
+    for path in ["/api/overview", "/api/environments/dev/documents?table=users", "/api/agents", "/api/incidents"] {
+        let (status, res) = call(Method::GET, path, &host, Some(agent), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {res}");
+    }
+    let mcp = |name: &str| json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": name, "arguments": {} } });
+    // Lo operativo sí.
+    let (status, res) = call(Method::POST, "/mcp", &host, Some(agent), Some(mcp("list_incidents"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(res["result"]["isError"], true, "{res}");
+    // Pedir trabajos, cancelarlos o leer telemetría, no.
+    for name in ["request_job", "cancel_job", "get_snapshot", "list_approvals"] {
+        let (_, res) = call(Method::POST, "/mcp", &host, Some(agent), Some(mcp(name))).await;
+        assert_eq!(res["result"]["isError"], true, "{name}: {res}");
+        assert!(res["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("isn't available to agents"), "{name}: {res}");
+    }
+}
+

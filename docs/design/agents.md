@@ -1,6 +1,6 @@
 # Design: agents that respond to incidents
 
-Status: A0 in progress (2026-10-25). Builds on Condx Cloud (`cloud.md`, phone approvals).
+Status: A0 and A2 done (2026-10-25, local). Builds on Condx Cloud (`cloud.md`, phone approvals).
 
 ## 1. Goal
 
@@ -84,6 +84,27 @@ Per source (`job`, `vercel`, `ci`, `convex`), set in the app:
 Plus: default provider and model, daily token budget, and how many agents can run at once. A fix is
 always a proposal: it waits for your approval whatever the level.
 
+## 6.1 The agent host (A2)
+
+- `agent-host/` is a small Node program (TypeScript run with `--experimental-strip-types`, no build):
+  a pi durable `Harness` on `~/.condx/daemon/agents.sqlite`, one conversation per run, the run id as
+  the `requestId`. The daemon starts it when an agent is first needed and sends its config on stdin
+  (the decrypted API keys travel there, never in the environment or on disk); it answers on
+  127.0.0.1 with a token only the daemon knows. If the daemon goes away, its stdin closes and the
+  host exits.
+- Diagnose tools, all read-only and confined to the incident's repo: `read_file`, `list_files`,
+  `search_code` (git grep), `git_log`, `git_show`; secret files (`.env*`, keys, `.git/`) are never
+  read. `condx` reads from the daemon through the MCP with the **agent token**: a third token, kept
+  in memory, `Read` scope, only accepted on `/mcp`, and only for operational tools (state, jobs,
+  logs, deploys; never database rows or tab telemetry).
+- The prompt says the evidence is untrusted data and asks for a fixed answer: Cause, Evidence, Fix,
+  Confidence.
+- The daemon follows each run every 3 s, adds its tokens to today's usage, stops it past the daily
+  budget, and stores the answer in the incident (`agent`). Writing to the agent steers it while it
+  works or continues the conversation.
+- One provider per built-in kind (pi-ai registers providers by kind); OpenAI-compatible ones can be
+  several.
+
 ## 7. Phases
 
 | Phase | What | Done when |
@@ -91,7 +112,7 @@ always a proposal: it waits for your approval whatever the level.
 | A0 | Incidents in the daemon and the Mac app; providers with encrypted keys and autonomy in Settings | a failed job opens one incident that groups repeats and resolves on its own; a key is saved encrypted and never comes back |
 | A0b | Incidents on the phone (Condx Cloud scope), ignore and assign from there (signed) | the phone sees an incident and the daemon applies its decision |
 | A1 | Push notifications (with the QR camera: needs a native host app around nsh) | the phone rings for a new incident |
-| A2 | Agent host with pi durable, diagnose only; the conversation in the Mac app and on the phone | an incident gets a diagnosis that survives restarting the daemon |
+| **A2** ✅ | Agent host with pi durable, diagnose only; the conversation in the Mac app (the phone in A0b) | done: `agent-host/` (Node, pi durable 1.4.0, SQLite), `agent_host.rs`; a failed job opens an incident, the agent starts on its own (autonomy "diagnose"), reads the repo and Condx, and its diagnosis lands in the incident; runs survive a host restart; budget and agents-at-once enforced by the daemon |
 | A3 | Fix mode: worktree, tests on a throwaway environment, commit on `condx/fix-…` | "fix ready" with the diff summary and the test result |
 | A4 | Approve the fix on the phone → deploy workflow (dev; production with Touch ID); steer from the chat | a fix approved from the phone reaches cloud dev |
 | A5 | Agent templates per incident kind ("agent factory"), budgets and limits | each kind has its tools and limits |

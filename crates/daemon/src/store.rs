@@ -111,6 +111,14 @@ CREATE TABLE IF NOT EXISTS agent_providers (
   id TEXT PRIMARY KEY,
   data TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id TEXT PRIMARY KEY,
+  incident TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_runs_by_incident ON agent_runs (incident, started_at);
 ";
 
 impl Store {
@@ -330,6 +338,42 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT data FROM agent_providers ORDER BY id")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.filter_map(|r| r.ok()).filter_map(|d| serde_json::from_str(&d).ok()).collect();
+        Ok(rows)
+    }
+
+    /// Corridas de agentes (agent_host.rs).
+    pub fn save_agent_run(&self, run: &Value) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO agent_runs (id, incident, status, started_at, data) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET status = ?3, data = ?5",
+            params![
+                run["id"].as_str().unwrap_or_default(),
+                run["incident"].as_str().unwrap_or_default(),
+                run["status"].as_str().unwrap_or_default(),
+                run["startedAt"].as_i64().unwrap_or(0),
+                run.to_string()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn agent_run(&self, id: &str) -> Result<Option<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let data: Option<String> = conn.query_row("SELECT data FROM agent_runs WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        Ok(data.and_then(|d| serde_json::from_str(&d).ok()))
+    }
+
+    /// Corridas con alguno de esos estados (todas si está vacío), la más reciente primero.
+    pub fn agent_runs(&self, statuses: &[&str], incident: Option<&str>) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT status, incident, data FROM agent_runs ORDER BY started_at DESC LIMIT 500")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+            .filter_map(|r| r.ok())
+            .filter(|(s, i, _)| (statuses.is_empty() || statuses.contains(&s.as_str())) && incident.is_none_or(|x| x == i))
+            .filter_map(|(_, _, d)| serde_json::from_str(&d).ok())
+            .collect();
         Ok(rows)
     }
 

@@ -66,6 +66,10 @@ async fn guard(AxState(state): AxState<Shared>, mut req: Request, next: Next) ->
     let Some(client) = token.and_then(|t| state.tokens.resolve(t)) else {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Missing token (~/.condx/daemon/token)" }))).into_response();
     };
+    // El token de los agentes solo habla por el MCP (que además limita sus herramientas).
+    if client.name == crate::auth::AGENT.name && req.uri().path() != "/mcp" {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "agents only use the MCP" }))).into_response();
+    }
     req.extensions_mut().insert(client);
     next.run(req).await
 }
@@ -393,6 +397,13 @@ async fn post_incident_action(AxState(state): AxState<Shared>, Extension(client)
     if let Some(r) = deny(&client, Scope::JobsApprove) {
         return r;
     }
+    // Diagnosticar arranca un agente (cuesta tokens): también solo la app.
+    if action == "diagnose" {
+        return match crate::agent_host::start(&state, &id, "app").await {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => fail(StatusCode::BAD_REQUEST, e),
+        };
+    }
     match crate::incidents::act(&state, &id, &action) {
         Ok(v) => Json(v).into_response(),
         Err(e) => fail(StatusCode::BAD_REQUEST, e),
@@ -421,7 +432,10 @@ async fn post_agent_provider(AxState(state): AxState<Shared>, Extension(client):
     }
     let st = state.clone();
     match tokio::task::spawn_blocking(move || crate::agents::upsert_provider(&st, body, &crate::agents::seal_for_mac)).await {
-        Ok(Ok(p)) => Json(p).into_response(),
+        Ok(Ok(p)) => {
+            crate::agent_host::push_providers(&state).await;
+            Json(p).into_response()
+        }
         Ok(Err(e)) => fail(StatusCode::BAD_REQUEST, e),
         Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, anyhow::anyhow!(e.to_string())),
     }
@@ -432,8 +446,38 @@ async fn delete_agent_provider(AxState(state): AxState<Shared>, Extension(client
         return r;
     }
     match crate::agents::delete_provider(&state, &id) {
-        Ok(()) => Json(json!({ "deleted": id })).into_response(),
+        Ok(()) => {
+            crate::agent_host::push_providers(&state).await;
+            Json(json!({ "deleted": id })).into_response()
+        }
         Err(e) => fail(StatusCode::NOT_FOUND, e),
+    }
+}
+
+/// Una corrida de agente con su transcripción (si el host la tiene).
+async fn get_agent_run(AxState(state): AxState<Shared>, Path(id): Path<String>) -> Response {
+    match crate::agent_host::get(&state, &id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::NOT_FOUND, e),
+    }
+}
+
+/// Escribirle al agente o detenerlo: solo la app.
+async fn post_agent_run_action(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Path((id, action)): Path<(String, String)>, body: Option<Json<Value>>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let res = match action.as_str() {
+        "message" => {
+            let text = body.as_ref().and_then(|b| b["text"].as_str()).unwrap_or_default().chars().take(4_000).collect::<String>();
+            crate::agent_host::message(&state, &id, &text).await
+        }
+        "abort" => crate::agent_host::abort(&state, &id).await,
+        other => Err(anyhow::anyhow!("unknown action “{other}”: message or abort")),
+    };
+    match res {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
     }
 }
 
@@ -976,6 +1020,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agents/settings", post(post_agent_settings))
         .route("/api/agents/providers", post(post_agent_provider))
         .route("/api/agents/providers/{id}", delete(delete_agent_provider))
+        .route("/api/agent-runs/{id}", get(get_agent_run))
+        .route("/api/agent-runs/{id}/{action}", post(post_agent_run_action))
         .route("/api/projects", get(get_projects).post(post_project))
         .route("/api/projects/discover", get(get_discover))
         .route("/api/doctor", get(get_doctor))

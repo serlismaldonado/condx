@@ -321,7 +321,8 @@ pub fn spawn(state: &Shared) {
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             every.tick().await;
-            tick(&state).await;
+            let opened = tick(&state).await;
+            crate::agent_host::auto_start(&state, &opened).await;
         }
     });
 }

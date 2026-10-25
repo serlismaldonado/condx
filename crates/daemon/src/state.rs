@@ -24,6 +24,7 @@ pub struct State {
     pub runner: Runner,
     pub services: Services,
     pub procs: Procs,
+    pub agent_host: crate::agent_host::AgentHost,
 }
 
 pub type Shared = Arc<State>;
@@ -41,6 +42,7 @@ impl State {
             runner: Runner::default(),
             services: Services::default(),
             procs: Procs::default(),
+            agent_host: Default::default(),
         }
     }
 

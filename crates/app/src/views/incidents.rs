@@ -4,10 +4,11 @@
 // (un agente por el MCP solo los lee).
 
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{h_flex, v_flex, IconName, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::app::{DevtoolApp, Load};
 use crate::ui::{self, Health};
@@ -16,6 +17,52 @@ impl DevtoolApp {
     pub fn load_resolved_incidents(&mut self, cx: &mut Context<Self>) {
         self.incidents_resolved = Some(Load::Loading);
         self.get("/api/incidents?status=resolved&limit=50".into(), |app, res| app.incidents_resolved = Some(res), cx);
+    }
+
+    /// Arranca un agente de diagnóstico (lo decide y limita el daemon).
+    fn diagnose(&mut self, id: String, cx: &mut Context<Self>) {
+        self.post(format!("/api/incidents/{id}/diagnose"), Value::Null, |app, res, cx| match res {
+            Load::Ready(run) => {
+                app.agent_run_open = run["id"].as_str().map(str::to_string);
+                app.load_agent_run(cx);
+            }
+            other => app.action = Some(other),
+        }, cx);
+    }
+
+    pub fn load_agent_run(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.agent_run_open.clone() else { return };
+        self.agent_run_at = ui::now_ms();
+        if self.agent_run.is_none() {
+            self.agent_run = Some(Load::Loading);
+        }
+        self.get(format!("/api/agent-runs/{id}"), move |app, res| {
+            if app.agent_run_open.as_deref() == Some(id.as_str()) {
+                app.agent_run = Some(res);
+            }
+        }, cx);
+    }
+
+    fn send_to_agent(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(input) = self.inputs.get("agent-message").cloned() else { return };
+        let text = input.read(cx).value().trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        self.post(format!("/api/agent-runs/{id}/message"), json!({ "text": text }), |app, res, cx| match res {
+            Load::Ready(_) => {
+                app.inputs.remove("agent-message");
+                app.load_agent_run(cx);
+            }
+            other => app.action = Some(other),
+        }, cx);
+    }
+
+    fn stop_agent(&mut self, id: String, cx: &mut Context<Self>) {
+        self.post(format!("/api/agent-runs/{id}/abort"), Value::Null, |app, res, cx| match res {
+            Load::Ready(_) => app.load_agent_run(cx),
+            other => app.action = Some(other),
+        }, cx);
     }
 
     fn incident_action(&mut self, id: String, action: &'static str, cx: &mut Context<Self>) {
@@ -47,7 +94,104 @@ fn source_label(source: &str) -> &'static str {
     }
 }
 
-fn card(inc: &Value, cx: &mut Context<DevtoolApp>) -> Div {
+/// El agente de un incidente: su estado, la respuesta y, abierta, la conversación.
+fn agent_block(app: &mut DevtoolApp, inc: &Value, window: &mut Window, cx: &mut Context<DevtoolApp>) -> Option<Div> {
+    let t = crate::theme::Tokens::current(cx);
+    let agent = &inc["agent"];
+    let run_id = agent["runId"].as_str()?.to_string();
+    let status = agent["status"].as_str().unwrap_or("running");
+    let (health, label) = match status {
+        "running" => (Health::Warn, t!("An agent is diagnosing it ({m})", m = ui::txt(&agent["model"])).to_string()),
+        "done" => (Health::Ok, t!("Diagnosis by {m} · {w}", m = ui::txt(&agent["model"]), w = agent["at"].as_i64().map(ui::ago).unwrap_or_default()).to_string()),
+        "aborted" => (Health::Unknown, t!("The agent was stopped").to_string()),
+        "stopped" => (Health::Unknown, t!("The agent stopped: today's token budget ran out").to_string()),
+        _ => (Health::Bad, t!("The agent failed").to_string()),
+    };
+    let open = app.agent_run_open.as_deref() == Some(run_id.as_str());
+    let toggle_id = run_id.clone();
+    let mut block = v_flex().gap_1p5().pt_1().border_t_1().border_color(t.card_border).child(
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(ui::status_tag(health, label))
+            .child(div().flex_1())
+            .child(Button::new(SharedString::from(format!("agent-open-{run_id}"))).xsmall().ghost().label(if open { t!("Hide conversation") } else { t!("Conversation") }).on_click(cx.listener(move |this, _, _, cx| {
+                if this.agent_run_open.as_deref() == Some(toggle_id.as_str()) {
+                    this.agent_run_open = None;
+                } else {
+                    this.agent_run_open = Some(toggle_id.clone());
+                    this.agent_run = None;
+                    this.load_agent_run(cx);
+                }
+                cx.notify();
+            }))),
+    );
+    // La respuesta, con sus secciones (## Cause, ## Fix…) como títulos pequeños.
+    if let Some(answer) = agent["answer"].as_str().filter(|a| !a.trim().is_empty()).filter(|_| !open) {
+        block = block.child(answer_view(answer, cx));
+    }
+    if !open {
+        return Some(block);
+    }
+    // Mientras corre, se vuelve a pedir cada 2 s.
+    let running = matches!(&app.agent_run, Some(Load::Ready(r)) if r["status"] == "running") || status == "running";
+    if running && ui::now_ms() - app.agent_run_at > 2_000 {
+        app.load_agent_run(cx);
+    }
+    let run = match &app.agent_run {
+        Some(Load::Ready(r)) => r.clone(),
+        Some(Load::Failed(e)) => return Some(block.child(ui::muted(e.clone(), cx))),
+        _ => return Some(block.child(ui::muted(t!("Loading…"), cx))),
+    };
+    let mut convo = v_flex().gap_1().p_2().bg(t.ground).border_1().border_color(t.card_border);
+    for item in run["transcript"].as_array().cloned().unwrap_or_default().iter().skip(1) {
+        let text = item["text"].as_str().unwrap_or_default();
+        convo = convo.child(match item["role"].as_str() {
+            Some("user") => div().text_size(px(12.)).text_color(t.fg).child(format!("› {text}")),
+            Some("tool") => {
+                let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(140).collect::<String>();
+                let color = if item["isError"] == true { rgb(0xe5756e).into() } else { t.subtle };
+                ui::mono(format!("  {} → {first}", ui::txt(&item["tool"]))).text_size(px(11.)).text_color(color).truncate()
+            }
+            _ if text.starts_with('→') => ui::mono(text.to_string()).text_size(px(11.)).text_color(t.muted).truncate(),
+            _ => answer_view(text, cx),
+        });
+    }
+    let usage = run["usage"]["total"].as_u64().unwrap_or(0);
+    let input = app.inputs.entry("agent-message".into()).or_insert_with(|| cx.new(|cx| InputState::new(window, cx).placeholder(t!("Ask or redirect the agent…")))).clone();
+    let (send_id, stop_id) = (run_id.clone(), run_id.clone());
+    let controls = h_flex()
+        .gap_2()
+        .items_center()
+        .child(div().flex_1().child(Input::new(&input).small()))
+        .child(Button::new(SharedString::from(format!("agent-send-{run_id}"))).xsmall().outline().label(t!("Send")).on_click(cx.listener(move |this, _, _, cx| this.send_to_agent(send_id.clone(), cx))))
+        .when(run["status"] == "running", |d| {
+            d.child(Button::new(SharedString::from(format!("agent-stop-{run_id}"))).xsmall().danger().outline().label(t!("Stop")).on_click(cx.listener(move |this, _, _, cx| this.stop_agent(stop_id.clone(), cx))))
+        });
+    Some(
+        block
+            .child(div().id(SharedString::from(format!("agent-convo-{run_id}"))).max_h(px(420.)).overflow_y_scroll().child(convo))
+            .child(controls)
+            .child(ui::muted(t!("{n} tokens · it only reads; it can't change files, deploy or approve", n = usage), cx).text_xs())
+            .when_some(run["error"].as_str(), |b, e| b.child(ui::status_tag(Health::Bad, e.to_string()))),
+    )
+}
+
+/// Texto del agente: las líneas `## …` como etiquetas de sección, el resto tal cual.
+fn answer_view(text: &str, cx: &App) -> Div {
+    let t = crate::theme::Tokens::current(cx);
+    let mut col = v_flex().gap_0p5();
+    for line in text.lines() {
+        if let Some(h) = line.strip_prefix("## ") {
+            col = col.child(div().pt_1().child(ui::section(h.to_string(), cx)));
+        } else if !line.trim().is_empty() {
+            col = col.child(div().text_size(px(12.5)).text_color(t.fg).child(line.to_string()));
+        }
+    }
+    col
+}
+
+fn card(app: &mut DevtoolApp, inc: &Value, window: &mut Window, cx: &mut Context<DevtoolApp>) -> Div {
     let t = crate::theme::Tokens::current(cx);
     let id = inc["id"].as_str().unwrap_or_default().to_string();
     let status = inc["status"].as_str().unwrap_or("open");
@@ -110,15 +254,27 @@ fn card(inc: &Value, cx: &mut Context<DevtoolApp>) -> Div {
     let action = |label: &'static str, verb: &'static str, id: String, cx: &mut Context<DevtoolApp>| {
         Button::new(SharedString::from(format!("inc-{verb}-{id}"))).xsmall().outline().label(label).on_click(cx.listener(move |this, _, _, cx| this.incident_action(id.clone(), verb, cx)))
     };
+    let agent_running = inc["agent"]["status"] == "running";
+    let has_provider = app.agents.as_ref().is_some_and(|a| a["providers"].as_array().is_some_and(|l| !l.is_empty()));
+    if status != "resolved" && !agent_running && has_provider {
+        let did = id.clone();
+        let label = if inc["agent"].is_object() { t!("Diagnose again") } else { t!("Diagnose") };
+        actions = actions.child(ui::brand(Button::new(SharedString::from(format!("inc-diagnose-{id}"))).xsmall().label(label), cx).on_click(cx.listener(move |this, _, _, cx| this.diagnose(did.clone(), cx))));
+    }
     actions = match status {
         "open" => actions.child(action(t!("Ignore"), "ignore", id.clone(), cx)).child(action(t!("Mark resolved"), "resolve", id.clone(), cx)),
         "ignored" => actions.child(action(t!("Reopen"), "reopen", id.clone(), cx)).child(action(t!("Mark resolved"), "resolve", id.clone(), cx)),
         _ => actions.child(action(t!("Reopen"), "reopen", id.clone(), cx)),
     };
-    c.child(actions)
+    let agent = agent_block(app, inc, window, cx);
+    c.child(actions).children(agent)
 }
 
-pub fn render(app: &mut DevtoolApp, _: &mut Window, cx: &mut Context<DevtoolApp>) -> impl IntoElement {
+pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolApp>) -> impl IntoElement {
+    // Para saber si hay proveedores (el botón Diagnosticar).
+    if app.agents.is_none() && app.agents_error.is_none() {
+        app.load_agents(cx);
+    }
     let resolved_tab = app.incidents_tab_resolved;
     let mut tabs = h_flex().gap_1();
     for (resolved, label) in [(false, t!("Open")), (true, t!("Resolved"))] {
@@ -151,7 +307,7 @@ pub fn render(app: &mut DevtoolApp, _: &mut Window, cx: &mut Context<DevtoolApp>
         return col.child(ui::card(cx).child(ui::status_tag(if resolved_tab { Health::Unknown } else { Health::Ok }, text))).into_any_element();
     }
     for inc in &list {
-        col = col.child(card(inc, cx));
+        col = col.child(card(app, inc, window, cx));
     }
     col.into_any_element()
 }

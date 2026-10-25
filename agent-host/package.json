@@ -1,0 +1,25 @@
+{
+  "name": "condx-agent-host",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Condx agent host: durable agent conversations (pi durable) started and limited by the Condx daemon.",
+  "license": "MIT",
+  "dependencies": {
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.1",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "check": "tsc -p .",
+    "test": "node --experimental-strip-types --no-warnings --test test/*.test.ts",
+    "start": "node --experimental-strip-types --no-warnings src/main.ts"
+  },
+  "engines": {
+    "node": ">=22.6"
+  }
+}

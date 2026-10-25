@@ -209,5 +209,19 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         .child(ui::section(t!("Limits"), cx))
         .child(h_flex().gap_3().items_center().child(ui::muted(t!("Tokens per day"), cx).text_xs().w(px(150.))).child(budget_buttons))
         .child(h_flex().gap_3().items_center().child(ui::muted(t!("Agents at once"), cx).text_xs().w(px(150.))).child(max_buttons))
+        .child(ui::muted(t!("Used today: {u} of {b} tokens", u = data["usageToday"].as_u64().unwrap_or(0), b = budget), cx).text_xs())
+        .child({
+            let host = &data["host"];
+            let (h, text) = if host["available"] != true {
+                (Health::Bad, t!("The agent host isn't installed (agent-host/ with its node_modules, and Node)").to_string())
+            } else if let Some(e) = host["error"].as_str() {
+                (Health::Bad, t!("The agent host didn't start: {e}", e = e).to_string())
+            } else if host["running"] == true {
+                (Health::Ok, t!("Agent host running").to_string())
+            } else {
+                (Health::Unknown, t!("The agent host starts with the first agent").to_string())
+            };
+            ui::status_tag(h, text)
+        })
         .when_some(app.agents_error.clone(), |c, e| c.child(ui::status_tag(Health::Bad, e)))
 }

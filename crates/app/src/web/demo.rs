@@ -90,6 +90,7 @@ pub fn get(path: &str) -> Result<Value> {
             json!(s.incidents.iter().filter(|i| (i["status"] == "resolved") == resolved).cloned().collect::<Vec<_>>())
         }),
         ["agents"] => with(|s| s.agents.clone()),
+        ["agent-runs", _] => demo_run(),
         ["deployments"] => deployments(&q("env").unwrap_or_default()),
         ["approval"] => approval(&q("recipe").unwrap_or_default(), &q("env").unwrap_or_default(), q("function").as_deref()),
         ["promotion"] => json!({ "ok": true, "checks": [] }),
@@ -143,6 +144,13 @@ pub fn post(path: &str, body: Value) -> Result<Value> {
         ["workflows", "suggested"] => json!({ "created": [] }),
         ["workflows", id, "run"] => run_workflow(id, body["commit"].as_str().unwrap_or("main")),
         ["environments", _, "keys"] => json!({ "ok": true, "deployment": "happy-otter-123" }),
+        ["incidents", id, "diagnose"] => with(|s| {
+            if let Some(i) = s.incidents.iter_mut().find(|i| i["id"] == *id) {
+                i["agent"] = json!({ "runId": "run-demo-1", "status": "done", "answer": demo_answer(), "at": now(), "model": "claude-sonnet-5-5" });
+            }
+            json!({ "id": "run-demo-1", "status": "done" })
+        }),
+        ["agent-runs", _, _] => demo_run(),
         ["incidents", id, action] => with(|s| {
             let Some(i) = s.incidents.iter_mut().find(|i| i["id"] == *id) else { return json!({ "ok": false }) };
             match *action {
@@ -191,10 +199,31 @@ pub fn delete(path: &str) -> Result<Value> {
     Ok(json!({ "ok": true }))
 }
 
+fn demo_answer() -> &'static str {
+    "## Cause\nDatePicker.tsx imports formatISO from date-fns, which the date-fns v4 upgrade in 51d0aa2 moved to date-fns/formatISO.\n\n## Evidence\nsrc/components/DatePicker.tsx:41 and package.json (date-fns ^4.1.0, was ^2.30.0).\n\n## Fix\nImport it as `import { formatISO } from \"date-fns/formatISO\"` (or pin date-fns to v2).\n\n## Confidence\nhigh: the build error names the same export."
+}
+
+fn demo_run() -> Value {
+    json!({
+        "id": "run-demo-1", "incident": "inc-1", "status": "done", "model": "claude-sonnet-5-5", "usage": { "total": 18_420 }, "error": null,
+        "transcript": [
+            { "role": "user", "text": "Diagnose this incident…" },
+            { "role": "assistant", "text": "→ condx({\"tool\":\"get_frontend\",\"args\":{}})" },
+            { "role": "tool", "tool": "condx", "text": "{ \"lastFailed\": { \"branch\": \"fix/date-picker\", … } }" },
+            { "role": "assistant", "text": "→ search_code({\"pattern\":\"formatISO\"})" },
+            { "role": "tool", "tool": "search_code", "text": "src/components/DatePicker.tsx:41:import { formatISO } from \"date-fns\";" },
+            { "role": "assistant", "text": "→ git_show({\"commit\":\"51d0aa2\",\"stat_only\":true})" },
+            { "role": "tool", "tool": "git_show", "text": "fix: date picker in Safari\n package.json | 2 +-" },
+            { "role": "assistant", "text": demo_answer() },
+        ],
+    })
+}
+
 fn default_incidents() -> Vec<Value> {
     let t = now();
     vec![
         json!({ "id": "inc-1", "fingerprint": "vercel:fix/date-picker", "source": "vercel", "project": PROJECT, "env": null, "title": "Vercel deploy of fix/date-picker failed", "status": "open", "count": 2, "firstSeen": t - 90 * MIN, "lastSeen": t - 50 * MIN,
+                "agent": { "runId": "run-demo-1", "status": "done", "answer": demo_answer(), "at": t - 45 * MIN, "model": "claude-sonnet-5-5" },
                 "evidence": { "url": "https://my-app-m3z7-ada.vercel.app", "branch": "fix/date-picker", "commit": "51d0aa2c3e11", "log": "src/components/DatePicker.tsx (41:18): \"formatISO\" is not exported by \"node_modules/date-fns/index.js\"\nerror during build:\nError: Command \"vite build\" exited with 1" } }),
         json!({ "id": "inc-2", "fingerprint": "job:seed:my-app-dev:uncaught error", "source": "job", "project": PROJECT, "env": DEV, "title": "Seed data failed on my-app-dev", "status": "open", "count": 1, "firstSeen": t - 3 * HOUR, "lastSeen": t - 3 * HOUR,
                 "evidence": { "jobId": "j-demo-5", "recipe": "seed", "error": "Uncaught Error: seed:demoData only runs on an empty database", "commit": null } }),
@@ -216,6 +245,8 @@ fn default_agents() -> Value {
             kind("mistral", "Mistral", false, "mistral-large-latest"), kind("openai-compatible", "OpenAI-compatible (Ollama, vLLM…)", true, ""),
         ],
         "sources": ["job", "vercel", "ci", "convex"],
+        "host": { "available": true, "running": true, "error": null },
+        "usageToday": 18_420,
     })
 }
 

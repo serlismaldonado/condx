@@ -241,6 +241,10 @@ mod tests {
 
     #[test]
     fn produccion_lee_con_la_sesion_y_escribe_con_la_deploy_key() {
+        // Usa el Llavero de macOS: en los runners de CI puede estar bloqueado y colgar la prueba.
+        if std::env::var_os("CI").is_some() {
+            return;
+        }
         // Llavero propio de la prueba; se borra al final.
         std::env::set_var("CONDX_KEYCHAIN", "condx-unit-test");
         let account = Credential::Keychain { account: "prod-key-test".into() };

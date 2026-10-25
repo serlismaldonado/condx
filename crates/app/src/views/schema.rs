@@ -634,7 +634,7 @@ pub fn render(app: &mut DevtoolApp, env: &str, window: &mut Window, cx: &mut Con
     let empty = vec![];
     let tables: &Vec<Value> = data["tables"].as_array().unwrap_or(&empty);
     let by_name: HashMap<&str, &Value> = tables.iter().filter_map(|t| t["name"].as_str().map(|n| (n, t))).collect();
-    let folder_of = folders(&tables);
+    let folder_of = folders(tables);
     let selected = app.schema_table.get(env).cloned().unwrap_or_default();
     let sel_folder = folder_of.get(&selected).cloned().unwrap_or_default();
     let folder = app.schema_folder.get(env).cloned().unwrap_or_else(|| sel_folder.clone());
@@ -666,7 +666,7 @@ pub fn render(app: &mut DevtoolApp, env: &str, window: &mut Window, cx: &mut Con
         _ => {
             let mut laid = match mode {
                 Mode::Focus => {
-                    let (names, places) = focus_layout(&tables, &selected, gap);
+                    let (names, places) = focus_layout(tables, &selected, gap);
                     Laid { names, places, groups: vec![], heads: HashSet::new(), links: vec![] }
                 }
                 Mode::Folder if by_rel => {
@@ -715,11 +715,11 @@ pub fn render(app: &mut DevtoolApp, env: &str, window: &mut Window, cx: &mut Con
                 app.schema_routes = (sig, HashMap::new());
             }
             let t0 = web_time::Instant::now();
-            let scene = Rc::new(scene(&tables, &laid, &selected, wire, &mut app.schema_routes.1));
+            let scene = Rc::new(scene(tables, &laid, &selected, wire, &mut app.schema_routes.1));
             if std::env::var_os("DEVTOOL_TRACE").is_some() {
                 eprintln!("esquema: {} cajas, {} líneas en {:?}", scene.boxes.len(), scene.edges.len(), t0.elapsed());
             }
-            let (tree, tree_count) = folder_tree(&tables, &folder_of, &query);
+            let (tree, tree_count) = folder_tree(tables, &folder_of, &query);
             let open = if query.is_empty() {
                 let mut o = ancestors(&sel_folder);
                 o.extend(ancestors(&folder));

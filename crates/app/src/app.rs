@@ -95,6 +95,11 @@ impl From<anyhow::Result<Value>> for Load {
     }
 }
 
+/// Una línea del diagrama del esquema: tabla de origen, campo y tabla de destino.
+pub type RouteKey = (String, usize, String);
+/// Los puntos de esa línea, ya calculados.
+pub type Route = std::rc::Rc<Vec<(f32, f32)>>;
+
 pub struct DevtoolApp {
     pub daemon: Option<Daemon>,
     pub page: Page,
@@ -212,7 +217,7 @@ pub struct DevtoolApp {
     /// Scroll de las listas de Git (cambios, ramas), para pasar la rueda a la página en el borde.
     pub repo_scroll: (ScrollHandle, ScrollHandle),
     /// Rutas de las líneas del diagrama, por firma de las posiciones de las cajas.
-    pub schema_routes: (u64, HashMap<(String, usize, String), std::rc::Rc<Vec<(f32, f32)>>>),
+    pub schema_routes: (u64, HashMap<RouteKey, Route>),
     /// El esquema ya leído, compartido entre cuadros (entorno, revisión).
     pub schema_data: Option<(String, u64, std::rc::Rc<serde_json::Value>)>,
     /// Carpeta elegida en el árbol (modo Carpeta), por entorno.

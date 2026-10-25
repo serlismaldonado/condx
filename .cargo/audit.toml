@@ -1,0 +1,9 @@
+# Excepciones de `cargo audit`, cada una con su motivo. Revisarlas cuando salga una versión que
+# las resuelva.
+[advisories]
+ignore = [
+  # crypto-bigint 0.5 (timing en operaciones que deberían ser de tiempo constante). Llega por
+  # age 0.12.1 → p256/hpke, que age trae siempre (es su última versión). Condx solo cifra
+  # respaldos con identidades x25519 de age: nunca usa claves P-256, así que no le aplica.
+  "RUSTSEC-2026-0387",
+]

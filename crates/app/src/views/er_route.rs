@@ -108,7 +108,9 @@ pub fn route(rects: &[Rect], owners: [usize; 2], a: (f32, f32), da: f32, b: (f32
     let start_heading = if da > 0. { 0 } else { 2 };
     let end_heading = if db > 0. { 2 } else { 0 };
     let goal = idx(tx, ty);
-    let mut best: HashMap<(usize, u8), (f32, Option<(usize, u8)>)> = HashMap::new();
+    // Por celda y rumbo: el menor costo y de dónde se llegó.
+    type Step = (usize, u8);
+    let mut best: HashMap<Step, (f32, Option<Step>)> = HashMap::new();
     let mut heap = BinaryHeap::new();
     let h = |c: usize| {
         let (x, y) = (xs[c / ny], ys[c % ny]);

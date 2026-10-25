@@ -759,7 +759,7 @@ mod tests {
         let schema = json!({ "tables": [{ "name": "posts", "fields": [{ "name": "_id", "refs": [] }, { "name": "author", "refs": ["users"] }, { "name": "title", "refs": [] }] }] });
         let refs = super::refs_of(&schema);
         assert_eq!(refs["posts"].get("author").map(String::as_str), Some("users"));
-        assert!(refs["posts"].get("title").is_none());
+        assert!(!refs["posts"].contains_key("title"));
     }
 
     #[test]

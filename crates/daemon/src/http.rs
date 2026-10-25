@@ -455,7 +455,7 @@ async fn get_approval(AxState(state): AxState<Shared>, Query(q): Query<ApprovalQ
     if let (Some(f), Some(a)) = (&q.function, recipe.args.iter().find(|a| a.kind == crate::recipes::ArgType::Function)) {
         args[a.name.as_str()] = json!(f);
     }
-    let (approval, why) = crate::jobs::approval_for(&state, &recipe, &env, &args).await;
+    let (approval, why) = crate::jobs::approval_for(&state, recipe, &env, &args).await;
     let credential = crate::probes::convex::credential_kind(&env, recipe.deploy_key);
     Json(json!({ "approval": approval, "why": why, "credential": credential })).into_response()
 }

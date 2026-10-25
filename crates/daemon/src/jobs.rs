@@ -248,7 +248,7 @@ pub async fn request(state: &Shared, recipe_name: &str, env_name: &str, args: &V
     } else {
         let env = state.store.environment(env_name)?.ok_or_else(|| anyhow!("Environment “{env_name}” doesn't exist"))?;
         let kind = env.kind.as_str().to_string();
-        (kind, approval_for(state, &recipe, &env, args).await.0)
+        (kind, approval_for(state, recipe, &env, args).await.0)
     };
     let policy = crate::policy::load(state);
     if approval == Approval::Forbidden && policy.is_blocked(&env_kind) && recipe.writes && recipe.approval_for(&env_kind) != Approval::Forbidden {

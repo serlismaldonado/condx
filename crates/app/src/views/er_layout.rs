@@ -192,7 +192,7 @@ fn crossings(layers: &[Vec<usize>], nb: &[BTreeSet<usize>], pos: &mut [Option<us
                 let mut at = rank + 1;
                 while at < tree.len() {
                     tree[at] += 1;
-                    at += at & at.wrapping_neg();
+                    at += at.isolate_lowest_one();
                 }
             }
         }

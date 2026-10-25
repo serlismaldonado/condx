@@ -29,11 +29,11 @@ impl Viewport {
         Self { x, y, zoom: zoom.clamp(Self::ZOOMS.0, Self::ZOOMS.1) }
     }
 
-    pub fn to_view(&self, (x, y): (f32, f32)) -> (f32, f32) {
+    pub fn to_view(self, (x, y): (f32, f32)) -> (f32, f32) {
         ((x - self.x) * self.zoom, (y - self.y) * self.zoom)
     }
 
-    pub fn to_canvas(&self, (x, y): (f32, f32)) -> (f32, f32) {
+    pub fn to_canvas(self, (x, y): (f32, f32)) -> (f32, f32) {
         (x / self.zoom + self.x, y / self.zoom + self.y)
     }
 
@@ -132,7 +132,10 @@ fn polyline(pts: &[(f32, f32)], radius: f32, o: Point<Pixels>, width: f32) -> Op
 
 /// Minimapa: abajo a la derecha. Devuelve su rectángulo (en la vista), la esquina del contenido
 /// y la escala, o nada si todo cabe en la vista.
-fn minimap(scene: &Scene, view: Viewport, (vw, vh): (f32, f32)) -> Option<((f32, f32, f32, f32), (f32, f32), f32)> {
+/// El minimapa: su rectángulo en la vista, la esquina del contenido y la escala.
+type Minimap = ((f32, f32, f32, f32), (f32, f32), f32);
+
+fn minimap(scene: &Scene, view: Viewport, (vw, vh): (f32, f32)) -> Option<Minimap> {
     if scene.boxes.is_empty() || vw < 320. || vh < 220. {
         return None;
     }
@@ -277,6 +280,7 @@ fn box_text(s: &str, fs: f32, color: Hsla, weight: FontWeight, mono: bool, (x, r
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint(scene: &Scene, view: Viewport, selected: Option<usize>, grab: &Option<Grab>, bounds: Bounds<Pixels>, t: &Tokens, window: &mut Window, cx: &mut App) {
     let o = bounds.origin;
     let (vw, vh) = (f32::from(bounds.size.width), f32::from(bounds.size.height));

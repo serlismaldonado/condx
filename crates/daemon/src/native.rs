@@ -473,6 +473,14 @@ pub async fn create_throwaway(state: &Shared, job_id: &str, name: &str, port: u1
     Ok(format!("http://127.0.0.1:{port}"))
 }
 
+
+
+pub async fn destroy_throwaway(state: &Shared, name: &str) -> Result<()> {
+    procs::stop(state, &format!("throwaway-{name}")).await?;
+    let _ = std::fs::remove_dir_all(native_dir(&format!("throwaway-{name}")));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -481,10 +489,4 @@ mod tests {
         assert_eq!(super::relative(Path::new("/a/b/c"), Path::new("/a/x/convex")), "../../x/convex");
         assert_eq!(super::relative(Path::new("/Users/u/.heskala/devd/native/deployer-root"), Path::new("/Users/u/Documents/repo/convex")), "../../../../Documents/repo/convex");
     }
-}
-
-pub async fn destroy_throwaway(state: &Shared, name: &str) -> Result<()> {
-    procs::stop(state, &format!("throwaway-{name}")).await?;
-    let _ = std::fs::remove_dir_all(native_dir(&format!("throwaway-{name}")));
-    Ok(())
 }

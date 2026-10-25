@@ -1186,22 +1186,7 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
     h_flex().size_full().items_stretch().child(side).child(main).into_any_element()
 }
 
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
 
-    #[test]
-    fn agarra_nodo_y_punto_de_salida() {
-        let nodes = vec![json!({ "id": "a", "x": 0., "y": 0. }), json!({ "id": "b", "x": 300., "y": 0. })];
-        assert_eq!(super::hit(&nodes, (10., 10.)).as_deref(), Some("a"));
-        assert_eq!(super::hit(&nodes, (310., 50.)).as_deref(), Some("b"));
-        assert_eq!(super::hit(&nodes, (250., 10.)), None);
-        // El punto de salida de «a» está en su borde derecho, a media altura.
-        let port = (super::NODE_W, super::NODE_H / 2.);
-        assert_eq!(super::hit_port(&nodes, port, 1.).as_deref(), Some("a"));
-        assert_eq!(super::hit_port(&nodes, (port.0, port.1 + 30.), 1.), None);
-    }
-}
 
 
 /// La pestaña Flujos de un entorno: los flujos del proyecto que lo tocan (algún nodo con ese
@@ -1305,4 +1290,21 @@ fn env_card(e: &Value, cx: &mut Context<DevtoolApp>) -> Div {
         .child(steps)
         .children((!problems.is_empty()).then(|| ui::muted(t!("Can't run: {a}", a = problems.join(" · ")), cx)))
         .children(last["error"].as_str().map(|err| ui::muted(err.to_string(), cx)))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn agarra_nodo_y_punto_de_salida() {
+        let nodes = vec![json!({ "id": "a", "x": 0., "y": 0. }), json!({ "id": "b", "x": 300., "y": 0. })];
+        assert_eq!(super::hit(&nodes, (10., 10.)).as_deref(), Some("a"));
+        assert_eq!(super::hit(&nodes, (310., 50.)).as_deref(), Some("b"));
+        assert_eq!(super::hit(&nodes, (250., 10.)), None);
+        // El punto de salida de «a» está en su borde derecho, a media altura.
+        let port = (super::NODE_W, super::NODE_H / 2.);
+        assert_eq!(super::hit_port(&nodes, port, 1.).as_deref(), Some("a"));
+        assert_eq!(super::hit_port(&nodes, (port.0, port.1 + 30.), 1.), None);
+    }
 }

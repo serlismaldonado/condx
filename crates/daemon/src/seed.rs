@@ -119,6 +119,7 @@ async fn raw(project: &Project, cwd: &Path, sub: &[&str], extra: &[String], vars
 }
 
 /// Corre la CLI con la salida al log del trabajo (redactada).
+#[allow(clippy::too_many_arguments)]
 async fn logged(job_id: &str, project: &Project, cwd: &Path, sub: &[&str], extra: Vec<String>, vars: Vec<(String, String)>, timeout: Duration, cancel: &mut tokio::sync::watch::Receiver<bool>) -> Result<()> {
     let (bin, prefix) = cli(project);
     let mut argv = vec![bin];

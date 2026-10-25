@@ -85,10 +85,9 @@ pub fn parse_page(key: &str) -> Option<Page> {
         _ => {
             if let Some(name) = key.strip_prefix("env:") {
                 Page::Env(name.to_string())
-            } else if let Some(ch) = key.strip_prefix("guide:") {
-                Page::Guide(ch.parse().ok()?)
             } else {
-                return None;
+                let ch = key.strip_prefix("guide:")?;
+                Page::Guide(ch.parse().ok()?)
             }
         }
     })

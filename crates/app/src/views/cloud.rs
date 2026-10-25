@@ -248,13 +248,14 @@ fn pairing_panel(app: &mut DevtoolApp, open: &Value, cx: &mut Context<DevtoolApp
         .child(cancel)
 }
 
-/// Un QR dibujado con divs (módulos de 4 px y margen blanco): lo lee cualquier cámara.
+/// Un QR dibujado con divs (módulos de 6 px y margen blanco): grande para que una foto de la
+/// pantalla lo lea aunque salga movida o con moiré.
 fn qr(text: &str) -> Div {
     let Ok(code) = qrcode::QrCode::new(text.as_bytes()) else { return div() };
     let width = code.width();
     let colors = code.to_colors();
-    let module = px(4.);
-    let mut rows = v_flex().p(px(16.)).bg(rgb(0xffffff));
+    let module = px(6.);
+    let mut rows = v_flex().p(px(24.)).bg(rgb(0xffffff));
     for y in 0..width {
         let mut row = h_flex();
         for x in 0..width {

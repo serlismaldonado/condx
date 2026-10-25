@@ -632,6 +632,21 @@ async fn get_discover(AxState(state): AxState<Shared>, Query(q): Query<DiscoverQ
     Json(crate::projects::discover_json(&state, q.root.as_deref()))
 }
 
+async fn get_doctor(AxState(state): AxState<Shared>) -> Json<Value> {
+    Json(crate::doctor::report(&state).await)
+}
+
+/// Baja un ejecutable a esta Mac: solo la app (como aprobar), nunca un agente por el MCP.
+async fn post_doctor_backend(Extension(client): Extension<Client>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::doctor::download_backend().await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
 async fn get_secrets() -> Json<Value> {
     Json(json!({
         "prodDeployKey": crate::secrets::exists(crate::secrets::PROD_DEPLOY_KEY),
@@ -781,6 +796,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/git", get(get_git))
         .route("/api/projects", get(get_projects).post(post_project))
         .route("/api/projects/discover", get(get_discover))
+        .route("/api/doctor", get(get_doctor))
+        .route("/api/doctor/backend", post(post_doctor_backend))
         .route("/api/projects/{name}", axum::routing::delete(delete_project))
         .route("/api/services", get(get_services))
         .route("/api/services/{name}/logs", get(get_service_logs))

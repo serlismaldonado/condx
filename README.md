@@ -68,6 +68,11 @@ projects. To update, pull, build and run `install` again.
 
 ## First steps
 
+Open the app with no projects and it walks you through it: it checks this Mac (Node, the Convex
+CLI session, git, gh, Docker), downloads the local Convex backend from Convex's GitHub releases if
+it's missing (or reuses the one `npx convex dev --local` already fetched), and lists the Convex
+repos it finds so you can add one with a click. The same from the terminal:
+
 ```bash
 # Add a Convex project (a folder with convex/ and package.json)
 ~/.condx/daemon/bin/condxd project add ~/code/my-app
@@ -107,6 +112,7 @@ Any stdio MCP client runs `condxd mcp`. Over HTTP: `POST http://127.0.0.1:4790/m
 
 The landing page lives in [`site/`](site). Its live demo is Condx itself compiled to WebAssembly
 (GPUI's web platform) with a sample daemon (`crates/app/src/web/`): no real backend is touched.
+Open `/demo/?welcome` to see the first-launch guide.
 
 ```bash
 rustup target add wasm32-unknown-unknown

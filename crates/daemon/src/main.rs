@@ -7,6 +7,7 @@ mod cmd;
 mod config;
 mod create;
 mod data;
+mod doctor;
 mod http;
 mod mcp;
 mod jobs;

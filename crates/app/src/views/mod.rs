@@ -14,6 +14,7 @@ pub mod repo;
 pub mod schema;
 pub mod settings;
 pub mod terminal;
+pub mod welcome;
 pub mod workflows;
 
 use gpui_kit::component::v_flex;

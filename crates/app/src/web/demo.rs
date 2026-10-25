@@ -27,6 +27,13 @@ struct State {
     workflows: Vec<Value>,
     runs: Vec<Value>,
     next: u64,
+    /// Con `?welcome` en la URL la demo arranca sin proyectos: la guía del primer arranque.
+    registered: bool,
+    backend: bool,
+}
+
+fn welcome_mode() -> bool {
+    web_sys::window().and_then(|w| w.location().search().ok()).is_some_and(|s| s.contains("welcome"))
 }
 
 thread_local! {
@@ -45,7 +52,9 @@ pub fn get(path: &str) -> Result<Value> {
     let parts: Vec<&str> = route.trim_start_matches("/api/").split('/').collect();
     Ok(match parts.as_slice() {
         ["overview"] => overview(),
-        ["projects"] => json!([project()]),
+        ["projects"] => if with(|s| s.registered) { json!([project()]) } else { json!([]) },
+        ["projects", "discover"] => json!({ "root": "~/code", "candidates": [{ "path": "~/code/my-app", "convexProject": "my-app", "frontend": "vite", "project": null }] }),
+        ["doctor"] => doctor(),
         ["probes"] => json!([]),
         ["jobs"] => with(|s| json!(s.jobs)),
         ["jobs", id] => with(|s| s.jobs.iter().find(|j| j["id"] == *id).cloned()).ok_or_else(|| anyhow!("job {id} doesn't exist"))?,
@@ -83,6 +92,14 @@ pub fn post(path: &str, body: Value) -> Result<Value> {
     let parts: Vec<&str> = route.trim_start_matches("/api/").split('/').collect();
     Ok(match parts.as_slice() {
         ["jobs"] => request_job(&body),
+        ["projects"] => with(|s| {
+            s.registered = true;
+            project()
+        }),
+        ["doctor", "backend"] => with(|s| {
+            s.backend = true;
+            json!({ "version": "precompiled-2026-10-24", "path": "~/.condx/daemon/bin/convex-local-backend" })
+        }),
         ["jobs", id, "cancel"] => set_status(id, "cancelled", None),
         ["jobs", id, "retry"] => set_status(id, "succeeded", None),
         ["approvals", id] => {
@@ -125,6 +142,22 @@ pub fn tool(name: &str, _: Value) -> Result<Value> {
 }
 
 // ---------- Proyecto y entornos ----------
+
+fn doctor() -> Value {
+    let backend = with(|s| s.backend);
+    let check = |id: &str, ok: bool, detail: &str, fix: Option<&str>, optional: bool| json!({ "id": id, "ok": ok, "detail": detail, "fix": fix, "optional": optional });
+    json!({
+        "ready": backend,
+        "checks": [
+            check("node", true, "v22.11.0", None, false),
+            check("convex-login", true, "~/.convex/config.json", None, false),
+            check("backend", backend, if backend { "~/.condx/daemon/bin/convex-local-backend" } else { "missing" }, None, false),
+            check("git", true, "git version 2.50.1", None, false),
+            check("gh", false, "not logged in", Some("gh auth login"), true),
+            check("docker", false, "not running (native mode doesn't need it)", None, true),
+        ]
+    })
+}
 
 fn is_local(env: &str) -> bool {
     env == "local" || env == "rehearsal"
@@ -281,7 +314,7 @@ impl State {
             job("j-demo-5", "run-function", "Run a function", "local", "failed", "claude-code", 5 * HOUR, json!({ "function": "seed:demoData", "payload": "{}" }), "none"),
             job("j-demo-6", "deploy-cloud", "Deploy to cloud dev", DEV, "succeeded", "workflow “Deploy to cloud dev”", 20 * HOUR, json!({ "commit": &PREV[..8] }), "simple"),
         ];
-        Self { jobs, policy: default_policy(), workflows: default_workflows(), runs: default_runs(), next: 7 }
+        Self { jobs, policy: default_policy(), workflows: default_workflows(), runs: default_runs(), next: 7, registered: !welcome_mode(), backend: false }
     }
 }
 

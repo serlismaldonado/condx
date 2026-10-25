@@ -66,7 +66,15 @@ pub fn local_env_file() -> PathBuf {
 pub fn binary(state: &Shared) -> Result<PathBuf> {
     let installed = home().join("bin").join("convex-local-backend");
     let triple = if cfg!(target_arch = "aarch64") { "aarch64-apple-darwin" } else { "x86_64-apple-darwin" };
-    let source = state.config.repo.as_ref().map(|r| r.join(format!("src-tauri/binaries/convex-local-backend-{triple}"))).unwrap_or_default();
+    // El del repo de heskala-erp si está; si no, el que ya bajó el CLI de Convex (`convex dev --local`).
+    let source = state
+        .config
+        .repo
+        .as_ref()
+        .map(|r| r.join(format!("src-tauri/binaries/convex-local-backend-{triple}")))
+        .filter(|p| p.is_file())
+        .or_else(cli_cached_binary)
+        .unwrap_or_default();
     let source_len = std::fs::metadata(&source).ok().filter(|m| m.is_file()).map(|m| m.len());
     let installed_len = std::fs::metadata(&installed).map(|m| m.len()).ok();
     match (source_len, installed_len) {
@@ -78,9 +86,18 @@ pub fn binary(state: &Shared) -> Result<PathBuf> {
             std::fs::rename(&tmp, &installed)?;
         }
         (None, Some(_)) => {}
-        (None, None) => bail!("the backend binary is missing: run `bun scripts/fetch-backend-binaries.ts` in the repo"),
+        (None, None) => bail!("the local backend binary is missing: download it in Condx (Welcome or Settings) or run `npx convex dev --local` once"),
     }
     Ok(installed)
+}
+
+/// El binario más nuevo que dejó el CLI de Convex en ~/.cache/convex/binaries/<versión>/.
+pub fn cli_cached_binary() -> Option<PathBuf> {
+    let dir = crate::config::user_home().join(".cache/convex/binaries");
+    let mut versions: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path().join("convex-local-backend")).filter(|p| p.is_file()).collect();
+    // Los nombres son `precompiled-AAAA-MM-DD-hash`: el orden de texto es el de fecha.
+    versions.sort();
+    versions.pop()
 }
 
 pub fn available(state: &Shared) -> bool {

@@ -264,7 +264,7 @@ fn render_titlebar(app: &DevtoolApp, cx: &mut Context<DevtoolApp>) -> impl IntoE
             .text_color(t.fg)
             .when(open, |d| d.bg(t.active))
             .hover(move |s| s.bg(t.hover))
-            .child(app.project.clone())
+            .child(if app.needs_welcome() { SharedString::from(t!("No project yet")) } else { SharedString::from(app.project.clone()) })
             .child(Icon::new(IconName::ChevronDown).size(IconSize::Xs).color(t.subtle))
             .tooltip(Tooltip::text(tip))
             .on_click(cx.listener(|this, _, _, cx| {

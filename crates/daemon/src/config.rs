@@ -30,7 +30,7 @@ pub fn home() -> PathBuf {
     }
 }
 
-fn user_home() -> PathBuf {
+pub(crate) fn user_home() -> PathBuf {
     dirs::home_dir().expect("no HOME")
 }
 

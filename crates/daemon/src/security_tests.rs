@@ -1,7 +1,7 @@
 // Pruebas de seguridad del daemon contra el router HTTP real (sin abrir puertos): quién puede
 // hablarle, qué puede hacer cada token y qué nunca sale en claro. El modelo de amenaza está en
 // auth.rs: un agente por el MCP (token `cli`) puede mirar y pedir trabajos, pero no aprobar, ni
-// cambiar las reglas de datos, ni guardar o borrar deploy keys.
+// cambiar las reglas de datos, ni guardar o borrar deploy keys, ni bajar ejecutables.
 
 use std::sync::Arc;
 
@@ -76,6 +76,7 @@ async fn el_token_de_agentes_no_aprueba_ni_toca_reglas_ni_claves() {
         (Method::POST, "/api/policy", json!({ "read": { "cloud-prod": true }, "write": {} })),
         (Method::POST, "/api/environments/prod/keys", json!({ "deployKey": "prod:x|y" })),
         (Method::DELETE, "/api/environments/prod/keys", json!({})),
+        (Method::POST, "/api/doctor/backend", json!({})),
     ];
     for (method, path, body) in cases {
         let (status, res) = call(method.clone(), path, &host, Some(CLI), Some(body)).await;

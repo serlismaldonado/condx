@@ -140,6 +140,9 @@ pub struct DevtoolApp {
     pub project: String,
     /// Repos candidatos para agregar (GET /api/projects/discover).
     pub discover: Option<Load>,
+    /// Chequeo del primer arranque (GET /api/doctor) y la descarga del backend local.
+    pub doctor: Option<Load>,
+    pub backend_download: Option<Load>,
     pub service_logs: HashMap<String, String>,
     pub log_tab: usize,
     pub log_follow: bool,
@@ -314,6 +317,8 @@ impl DevtoolApp {
             projects: vec![],
             project,
             discover: None,
+            doctor: None,
+            backend_download: None,
             service_logs: HashMap::new(),
             log_tab: 0,
             log_follow: true,
@@ -926,6 +931,10 @@ impl DevtoolApp {
         self.services.get(self.log_tab).or(self.services.first()).and_then(|s| s["name"].as_str()).unwrap_or("backend").to_string()
     }
 
+    pub fn needs_welcome(&self) -> bool {
+        !self.first_poll && self.error.is_none() && self.projects.is_empty()
+    }
+
     /// Proyecto elegido (su JSON de /api/projects).
     pub fn current_project(&self) -> Option<&Value> {
         self.projects.iter().find(|p| p["name"] == self.project.as_str())
@@ -1186,6 +1195,8 @@ impl Render for DevtoolApp {
         }
         self.save_view();
         let content: AnyElement = match self.page.clone() {
+            // Sin proyectos todavía (y con el daemon respondiendo): la guía del primer arranque.
+            Page::Overview if self.needs_welcome() => views::welcome::render(self, window, cx).into_any_element(),
             Page::Overview => views::overview::render(self, window, cx).into_any_element(),
             Page::Local => views::local::render(self, window, cx).into_any_element(),
             Page::Terminal => views::terminal::render(self, window, cx).into_any_element(),

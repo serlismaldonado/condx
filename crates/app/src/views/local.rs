@@ -243,7 +243,7 @@ fn unlink(app: &mut DevtoolApp, name: String, cx: &mut Context<DevtoolApp>) {
     }, cx);
 }
 
-fn register(app: &mut DevtoolApp, path: String, cx: &mut Context<DevtoolApp>) {
+pub fn register(app: &mut DevtoolApp, path: String, cx: &mut Context<DevtoolApp>) {
     app.post("/api/projects".into(), json!({ "path": path }), |app, res, cx| match res {
         Load::Ready(p) => {
             app.discover = None;

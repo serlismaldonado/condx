@@ -44,7 +44,7 @@ fn item(page: Page, label: impl Into<String>, icon: IconName) -> NavItem {
 
 fn logo() -> Arc<Image> {
     static LOGO: OnceLock<Arc<Image>> = OnceLock::new();
-    LOGO.get_or_init(|| Arc::new(Image::from_bytes(ImageFormat::Png, include_bytes!("../assets/heskala-logo.png").to_vec()))).clone()
+    LOGO.get_or_init(|| Arc::new(Image::from_bytes(ImageFormat::Png, include_bytes!("../assets/condx-mark.png").to_vec()))).clone()
 }
 
 /// El sidebar parte de los entornos: cada uno abre su vista con todo lo suyo en pestañas

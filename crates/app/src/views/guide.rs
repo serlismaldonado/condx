@@ -1,5 +1,5 @@
-// Guía de uso dentro de la app: capítulos en markdown
-// (tools/devtool/docs/guia/*.md), compilados en el binario.
+// Guía de uso dentro de la app: capítulos en markdown compilados en el binario, en inglés
+// (docs/guide/*.md) y en español (docs/guia/*.md); se ve la del idioma de Configuración.
 
 use gpui_kit::component::button::Button;
 use gpui_kit::component::text::TextView;
@@ -10,27 +10,28 @@ use gpui_kit::*;
 use crate::app::{DevtoolApp, Page};
 use crate::ui;
 
-pub const CHAPTERS: &[(&str, &str)] = &[
-    ("Pieces and environments", include_str!("../../../../docs/guia/01-piezas.md")),
-    ("Checking status", include_str!("../../../../docs/guia/02-estado.md")),
-    ("Local environment and terminal", include_str!("../../../../docs/guia/10-local-terminal.md")),
-    ("Other Convex projects", include_str!("../../../../docs/guia/11-proyectos.md")),
-    ("Requesting a job", include_str!("../../../../docs/guia/03-trabajos.md")),
-    ("Approve", include_str!("../../../../docs/guia/04-aprobar.md")),
-    ("Day to day", include_str!("../../../../docs/guia/05-dia-a-dia.md")),
-    ("Promotion to production", include_str!("../../../../docs/guia/06-promocion.md")),
-    ("Deploy workflows", include_str!("../../../../docs/guia/12-flujos.md")),
-    ("Data", include_str!("../../../../docs/guia/13-datos.md")),
-    ("When something goes wrong", include_str!("../../../../docs/guia/07-problemas.md")),
-    ("AI agents", include_str!("../../../../docs/guia/08-agentes.md")),
-    ("Maintenance", include_str!("../../../../docs/guia/09-mantenimiento.md")),
+/// Título (en inglés, se traduce con `tr`), texto en inglés y texto en español.
+pub const CHAPTERS: &[(&str, &str, &str)] = &[
+    ("Pieces and environments", include_str!("../../../../docs/guide/01-pieces.md"), include_str!("../../../../docs/guia/01-piezas.md")),
+    ("Checking status", include_str!("../../../../docs/guide/02-status.md"), include_str!("../../../../docs/guia/02-estado.md")),
+    ("Local environment and terminal", include_str!("../../../../docs/guide/10-local-terminal.md"), include_str!("../../../../docs/guia/10-local-terminal.md")),
+    ("Other Convex projects", include_str!("../../../../docs/guide/11-projects.md"), include_str!("../../../../docs/guia/11-proyectos.md")),
+    ("Requesting a job", include_str!("../../../../docs/guide/03-jobs.md"), include_str!("../../../../docs/guia/03-trabajos.md")),
+    ("Approve", include_str!("../../../../docs/guide/04-approve.md"), include_str!("../../../../docs/guia/04-aprobar.md")),
+    ("Day to day", include_str!("../../../../docs/guide/05-day-to-day.md"), include_str!("../../../../docs/guia/05-dia-a-dia.md")),
+    ("Promotion to production", include_str!("../../../../docs/guide/06-promotion.md"), include_str!("../../../../docs/guia/06-promocion.md")),
+    ("Deploy workflows", include_str!("../../../../docs/guide/12-workflows.md"), include_str!("../../../../docs/guia/12-flujos.md")),
+    ("Data", include_str!("../../../../docs/guide/13-data.md"), include_str!("../../../../docs/guia/13-datos.md")),
+    ("When something goes wrong", include_str!("../../../../docs/guide/07-troubleshooting.md"), include_str!("../../../../docs/guia/07-problemas.md")),
+    ("AI agents", include_str!("../../../../docs/guide/08-agents.md"), include_str!("../../../../docs/guia/08-agentes.md")),
+    ("Maintenance", include_str!("../../../../docs/guide/09-maintenance.md"), include_str!("../../../../docs/guia/09-mantenimiento.md")),
 ];
 
 
 pub fn render(_: &mut DevtoolApp, chapter: usize, _: &mut Window, cx: &mut Context<DevtoolApp>) -> impl IntoElement {
     let chapter = chapter.min(CHAPTERS.len() - 1);
     let mut index = v_flex().gap_0p5().w(px(230.)).flex_none().child(ui::section(t!("Guide"), cx).px_2().pb_1());
-    for (i, (title, _)) in CHAPTERS.iter().enumerate() {
+    for (i, (title, _, _)) in CHAPTERS.iter().enumerate() {
         let title = crate::i18n::tr(title);
         index = index.child(
             div()
@@ -80,7 +81,16 @@ pub fn render(_: &mut DevtoolApp, chapter: usize, _: &mut Window, cx: &mut Conte
                 
                 .border_1()
                 .border_color(cx.theme().border)
-                .child(TextView::markdown(("guide", chapter), CHAPTERS[chapter].1).selectable(true))
+                .child(TextView::markdown((SharedString::from(format!("guide-{}", crate::i18n::lang().code())), chapter), chapter_text(chapter)).selectable(true))
                 .child(nav),
         )
+}
+
+/// El texto del capítulo en el idioma de la app.
+fn chapter_text(chapter: usize) -> &'static str {
+    let (_, en, es) = CHAPTERS[chapter];
+    match crate::i18n::lang() {
+        crate::i18n::Lang::Es => es,
+        _ => en,
+    }
 }

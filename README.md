@@ -116,7 +116,7 @@ scripts/build-web-demo.sh                          # writes site/demo/pkg
 
 ## Documentation
 
-The in-app guide (also in [`docs/guia`](docs/guia)) is in Spanish for now; English is coming.
+The in-app guide follows the app's language: English in [`docs/guide`](docs/guide), Spanish in [`docs/guia`](docs/guia).
 
 ## Acknowledgements
 

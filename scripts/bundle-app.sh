@@ -10,7 +10,8 @@ APP="$HOME/Applications/Condx.app"
 # La del nombre viejo, si quedó.
 rm -rf "$HOME/Applications/Heskala Devtool.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp assets/brand/Condx.icns "$APP/Contents/Resources/Condx.icns"
 cp "target/$PROFILE/condx" "$APP/Contents/MacOS/condx"
 VERSION="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -22,6 +23,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Condx</string>
   <key>CFBundleDisplayName</key><string>Condx</string>
   <key>CFBundleExecutable</key><string>condx</string>
+  <key>CFBundleIconFile</key><string>Condx</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>

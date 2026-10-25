@@ -41,6 +41,12 @@ pub fn tools() -> Vec<Value> {
             json!({ "name": env_arg() }),
             &["name"],
         ),
+        tool(
+            "get_schema_diff",
+            "What deploying one environment's schema to another would change, read from both deployments (cloud with its saved deploy key): tables, fields and indexes added, removed or changed, and risks that would make the deploy fail. Usually from = the project's local environment, to = cloud dev or prod. Read-only.",
+            json!({ "from": env_arg(), "to": env_arg() }),
+            &["from", "to"],
+        ),
         tool("get_env_var_names", "Names of the Convex deployment's environment variables. Never returns values.", json!({ "name": env_arg() }), &["name"]),
         tool(
             "get_function_logs",
@@ -48,7 +54,12 @@ pub fn tools() -> Vec<Value> {
             json!({ "name": env_arg(), "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 }, "errorsOnly": { "type": "boolean", "default": false } }),
             &["name"],
         ),
-        tool("get_ci", "Latest GitHub Actions runs of the ERP and its submodules.", json!({}), &[]),
+        tool(
+            "get_ci",
+            "Latest GitHub Actions runs of a project's GitHub origin (gh run list); without project, the default project and its submodules.",
+            json!({ "project": { "type": "string", "description": "Project name (see list_projects); optional" } }),
+            &[],
+        ),
         tool("get_git", "ERP git: branch, ahead/behind, changes, dev/main and submodules versus their remote.", json!({}), &[]),
         tool("get_deployer", "Devbox deployer: phase (idle, syncing, error), image and latest log lines.", json!({}), &[]),
         tool("get_containers", "Docker containers (name, image, state, compose service).", json!({}), &[]),
@@ -191,7 +202,13 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
             let errors_only = args["errorsOnly"].as_bool().unwrap_or(false);
             json!({ "environment": env.name, "logs": function_logs(state, &env, limit, errors_only).await? })
         }
-        "get_ci" => probe(state, "ci"),
+        "get_ci" => probe(state, &crate::probes::ci::probe_key(args["project"].as_str().unwrap_or_default())),
+        "get_schema_diff" => {
+            let name = |key: &str| args[key].as_str().map(str::to_string).ok_or_else(|| anyhow!("missing {key}"));
+            let env = |n: String| state.store.environment(&n)?.ok_or_else(|| anyhow!("environment {n} doesn't exist"));
+            let (from, to) = (env(name("from")?)?, env(name("to")?)?);
+            crate::schema::diff_envs(&from, &to).await?
+        }
         "get_git" => probe(state, "git"),
         "get_deployer" => probe(state, "deployer"),
         "get_containers" => probe(state, "docker"),

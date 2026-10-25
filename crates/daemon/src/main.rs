@@ -28,6 +28,8 @@ mod state;
 mod store;
 mod telemetry;
 mod workflows;
+#[cfg(test)]
+mod security_tests;
 
 use std::io::{BufRead, Write};
 use std::sync::Arc;

@@ -39,28 +39,45 @@ impl Client {
 pub const CLI: Client = Client { name: "cli", scopes: &[Scope::Read, Scope::JobsRequest] };
 pub const APP: Client = Client { name: "app", scopes: &[Scope::Read, Scope::JobsRequest, Scope::JobsApprove] };
 
-/// Lee o crea un token aleatorio en `file` (0600).
+/// Lee o crea un token aleatorio en `file`, que queda en 0600: se crea así desde el principio
+/// (sin un instante legible por otros) y, si ya existía con permisos más abiertos, se corrigen.
 pub fn token_file(file: &Path) -> Result<String> {
     if let Ok(t) = std::fs::read_to_string(file) {
         let t = t.trim().to_string();
         if !t.is_empty() {
+            restrict(file)?;
             return Ok(t);
         }
     }
     let mut bytes = [0u8; 32];
-    use std::io::Read;
+    use std::io::{Read, Write};
     std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     let t: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(file, &t)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(file)?.write_all(t.as_bytes())?;
+    restrict(file)?;
+    Ok(t)
+}
+
+/// Deja el archivo solo para su dueño.
+fn restrict(file: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))?;
+        if std::fs::metadata(file)?.permissions().mode() & 0o077 != 0 {
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))?;
+        }
     }
-    Ok(t)
+    Ok(())
 }
 
 pub struct Tokens {
@@ -102,5 +119,20 @@ mod tests {
         assert!(tokens.resolve("bbbb").unwrap().can(Scope::JobsApprove));
         assert!(tokens.resolve("aaab").is_none());
         assert!(tokens.resolve("").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tokens_solo_para_el_dueno() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        let t = token_file(&file).unwrap();
+        assert_eq!(t.len(), 64);
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        // Uno viejo con permisos abiertos se corrige al leerlo, sin cambiar su valor.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(token_file(&file).unwrap(), t);
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
     }
 }

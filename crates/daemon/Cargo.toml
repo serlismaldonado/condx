@@ -30,3 +30,5 @@ age = "0.12"
 
 [dev-dependencies]
 tempfile = "3"
+# Pruebas de seguridad del router HTTP (security_tests.rs): peticiones sin abrir puertos.
+tower = { version = "0.5", features = ["util"] }

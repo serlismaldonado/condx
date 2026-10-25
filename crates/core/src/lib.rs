@@ -103,7 +103,7 @@ pub fn redact(text: &str) -> String {
             (r"\b(sk|pk|rk)_(live|test)_[A-Za-z0-9]{10,}", "[clave redactada]"),
             (r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})", "[token redactado]"),
             (
-                r"(?i)\b([A-Z0-9_]*(SECRET|TOKEN|PASSWORD|PRIVATE_KEY|ADMIN_KEY|API_KEY)[A-Z0-9_]*)\s*[=:]\s*\S+",
+                r"(?i)\b([A-Z0-9_]*(SECRET|TOKEN|PASSWORD|PRIVATE_KEY|ADMIN_KEY|DEPLOY_KEY|API_KEY)[A-Z0-9_]*)\s*[=:]\s*\S+",
                 "$1=[redactado]",
             ),
         ]

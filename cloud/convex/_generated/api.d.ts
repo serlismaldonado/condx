@@ -10,6 +10,7 @@
 
 import type * as auth from "../auth.js";
 import type * as daemons from "../daemons.js";
+import type * as pairing from "../pairing.js";
 import type * as sync from "../sync.js";
 
 import type {
@@ -21,6 +22,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   daemons: typeof daemons;
+  pairing: typeof pairing;
   sync: typeof sync;
 }>;
 

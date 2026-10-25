@@ -28,8 +28,10 @@ const TICK: Duration = Duration::from_secs(3);
 const RECENT_JOBS: usize = 50;
 /// Campos que el daemon escribe en cada alcance (los demás son de otros: el teléfono).
 const ENV_FIELDS: &[&str] = &["name", "kind", "project", "deployment", "reachable", "checkedAt"];
-const JOB_FIELDS: &[&str] = &["recipe", "title", "env", "status", "approval", "requestedBy", "createdAt", "endedAt", "error", "commit"];
-const APPROVAL_FIELDS: &[&str] = &["recipe", "title", "env", "status", "approval", "requestedBy", "createdAt"];
+const JOB_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status", "approval", "requestedBy", "createdAt", "endedAt", "error", "commit"];
+/// `phoneResult`: qué hizo el daemon con la decisión de un teléfono (aplicada, rechazada y por qué, o
+/// a la espera de Touch ID en la Mac).
+const APPROVAL_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status", "approval", "requestedBy", "createdAt", "phoneResult"];
 
 /// El vínculo con un deployment de Condx Cloud (`cloud.json`). El token va aparte.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -156,7 +158,7 @@ pub fn desired(daemon_id: &str, environments: &[devtool_core::Environment], prob
         let Some(id) = job["id"].as_str() else { continue };
         // Sin argumentos (pueden traer datos de funciones): solo el commit, que no es secreto.
         let row = obj(json!({
-            "recipe": job["recipe"], "title": job["title"], "env": job["env"], "status": job["status"],
+            "recipe": job["recipe"], "title": job["title"], "env": job["env"], "envKind": job["envKind"], "status": job["status"],
             "approval": job["approval"]["level"].as_str().or(job["approval"].as_str()), "requestedBy": job["requestedBy"],
             "createdAt": job["createdAt"], "endedAt": job["endedAt"], "error": short_error(&job["error"]), "commit": job["commit"],
         }));
@@ -220,6 +222,197 @@ pub fn diff(scope: &str, current: &IndexMap<String, Values>, want: &IndexMap<Str
     drafts
 }
 
+// ── Teléfonos: vincular y decisiones firmadas ───────────────────────────
+
+/// Una decisión de producción (o de aprobación reforzada) desde el teléfono: no se aplica; espera
+/// a que la Mac confirme con Touch ID.
+pub const NEEDS_MAC: &str = "needs-mac";
+/// Una decisión vale 10 minutos: una aprobación hecha sin conexión que llega tarde no se aplica.
+pub const DECISION_MAX_AGE_MS: i64 = 10 * 60 * 1000;
+
+/// Un teléfono que la persona confirmó en esta Mac. La lista vive aquí (`cloud-devices.json`), no en
+/// el backend: lo que el daemon acepta no depende de lo que diga la nube.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustedDevice {
+    pub device_id: String,
+    pub name: String,
+    pub public_key: String,
+    pub paired_at: i64,
+}
+
+fn devices_path() -> PathBuf {
+    home().join("cloud-devices.json")
+}
+
+pub fn trusted_devices() -> Vec<TrustedDevice> {
+    std::fs::read_to_string(devices_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn save_devices(list: &[TrustedDevice]) -> Result<()> {
+    write_private(&devices_path(), &serde_json::to_string_pretty(list)?)
+}
+
+/// Huella corta de una llave para comparar a ojo en la Mac y en el teléfono.
+pub fn fingerprint(public_key_hex: &str) -> String {
+    public_key_hex.chars().take(12).collect::<Vec<_>>().chunks(4).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join(" ")
+}
+
+/// Llama a una función de Condx Cloud con el token del daemon.
+fn call(kind: &str, path: &str, mut args: Value) -> Result<Value> {
+    let link = load_link().context("not linked to Condx Cloud")?;
+    let token = load_token().context("not linked to Condx Cloud")?;
+    args["token"] = json!(token);
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
+    let reply: Value = match agent.post(&format!("{}/api/{kind}", link.url)).send_json(json!({ "path": path, "args": args, "format": "json" })) {
+        Ok(r) => r.into_json()?,
+        Err(ureq::Error::Status(_, r)) => r.into_json().unwrap_or(Value::Null),
+        Err(e) => bail!("couldn't reach Condx Cloud: {}", devtool_core::redact(&e.to_string())),
+    };
+    if reply["status"] == "success" {
+        return Ok(localfirst_core::sets::js_normalize(&reply["value"]));
+    }
+    let message = reply["errorData"]["message"].as_str().map(str::to_string).unwrap_or_else(|| reply["errorMessage"].as_str().unwrap_or("error").lines().next().unwrap_or("error").to_string());
+    bail!("{}", devtool_core::redact(&message))
+}
+
+/// Abre un código de vinculación. Lo que va en el QR: la URL del deployment y el código.
+pub fn pair_start() -> Result<Value> {
+    let link = load_link().context("not linked to Condx Cloud")?;
+    let v = call("mutation", "pairing:open", json!({}))?;
+    let code = v["code"].as_str().unwrap_or_default().to_string();
+    let qr = json!({ "condx": 1, "url": link.url, "code": code }).to_string();
+    Ok(json!({ "code": code, "expiresAt": v["expiresAt"], "qr": qr, "url": link.url }))
+}
+
+/// Cómo va el código abierto; con el teléfono que lo reclamó y su huella, si ya hay uno.
+pub fn pair_status() -> Result<Value> {
+    let mut v = call("query", "pairing:status", json!({}))?;
+    if let Some(key) = v["device"]["publicKey"].as_str().map(str::to_string) {
+        v["device"]["fingerprint"] = json!(fingerprint(&key));
+    }
+    Ok(v)
+}
+
+/// La persona confirmó en la Mac: el teléfono queda activo y su llave, entre las de confianza.
+pub fn pair_confirm(device_id: &str) -> Result<TrustedDevice> {
+    let status = call("query", "pairing:status", json!({}))?;
+    let device = &status["device"];
+    if status["status"] != "claimed" || device["deviceId"] != device_id {
+        bail!("that phone isn't waiting for confirmation anymore");
+    }
+    let public_key = device["publicKey"].as_str().filter(|k| k.len() == 64).context("the phone's key is missing")?.to_string();
+    call("mutation", "pairing:confirm", json!({ "deviceId": device_id }))?;
+    let trusted = TrustedDevice { device_id: device_id.to_string(), name: device["name"].as_str().unwrap_or("Phone").to_string(), public_key, paired_at: now_ms() };
+    let mut list = trusted_devices();
+    list.retain(|d| d.device_id != device_id);
+    list.push(trusted.clone());
+    save_devices(&list)?;
+    Ok(trusted)
+}
+
+pub fn pair_cancel() -> Result<()> {
+    call("mutation", "pairing:cancel", json!({})).map(|_| ())
+}
+
+/// Desvincula un teléfono: deja de valer aquí (de inmediato) y en el backend.
+pub fn revoke_device(device_id: &str) -> Result<()> {
+    let mut list = trusted_devices();
+    list.retain(|d| d.device_id != device_id);
+    save_devices(&list)?;
+    // Si la nube no responde, igual quedó fuera de lo que el daemon acepta.
+    if let Err(e) = call("mutation", "pairing:revoke", json!({ "deviceId": device_id })) {
+        tracing::warn!("cloud: couldn't revoke {device_id} in Condx Cloud: {e:#}");
+    }
+    Ok(())
+}
+
+/// Lo que firma el teléfono (mismo texto en `condx-mobile`).
+pub fn decision_message(daemon_id: &str, job_id: &str, decision: &str, decided_at: i64) -> String {
+    format!("condx-approval:v1|{daemon_id}|{job_id}|{decision}|{decided_at}")
+}
+
+/// Una decisión válida de un teléfono de confianza: la decisión y el teléfono.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhoneDecision {
+    pub approve: bool,
+    pub device: TrustedDevice,
+    pub confirm: Option<String>,
+}
+
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
+}
+
+/// Verifica una fila de aprobación: firma de un teléfono de confianza, para este daemon y trabajo,
+/// y reciente. Puro (para las pruebas).
+pub fn verify_decision(daemon_id: &str, job_id: &str, job_created_at: i64, row: &Values, devices: &[TrustedDevice], now: i64) -> Result<PhoneDecision, String> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    let decision = row.get("decision").and_then(Value::as_str).ok_or("no decision")?;
+    if decision != "approve" && decision != "reject" {
+        return Err("unknown decision".into());
+    }
+    let at = row.get("decidedAt").and_then(Value::as_i64).ok_or("no time")?;
+    let key = row.get("deviceKey").and_then(Value::as_str).ok_or("no key")?;
+    let device = devices.iter().find(|d| d.public_key == key).ok_or("unknown phone (not paired with this Mac)")?;
+    if now - at > DECISION_MAX_AGE_MS || at > now + 60_000 || at < job_created_at {
+        return Err("stale decision".into());
+    }
+    let sig = row.get("signature").and_then(Value::as_str).and_then(unhex).ok_or("no signature")?;
+    let sig = Signature::from_slice(&sig).map_err(|_| "bad signature")?;
+    let bytes: [u8; 32] = unhex(key).and_then(|b| b.try_into().ok()).ok_or("bad key")?;
+    let vk = VerifyingKey::from_bytes(&bytes).map_err(|_| "bad key")?;
+    vk.verify(decision_message(daemon_id, job_id, decision, at).as_bytes(), &sig).map_err(|_| "signature doesn't match".to_string())?;
+    Ok(PhoneDecision { approve: decision == "approve", device: device.clone(), confirm: row.get("confirmText").and_then(Value::as_str).map(str::to_string) })
+}
+
+/// Las decisiones nuevas de los teléfonos: verificar y, si corresponde, decidir el trabajo.
+fn process_decisions(state: &Shared, s: &mut Session) {
+    let scope = format!("approvals:{}", s.link.daemon_id);
+    let devices = trusted_devices();
+    for row in s.engine.rows(&scope) {
+        let Some(sig) = row.row.values.get("signature").and_then(Value::as_str) else { continue };
+        if row.pending || !s.seen.insert(format!("{}:{sig}", row.row.id)) {
+            continue;
+        }
+        let job_id = row.row.id.clone();
+        let result = match state.store.job(&job_id) {
+            Ok(Some(job)) => decide_from_phone(state, &s.link.daemon_id, &job_id, &job, &row.row.values, &devices),
+            _ => "rejected: job not found".to_string(),
+        };
+        tracing::info!("cloud: phone decision on {job_id}: {result}");
+        s.results.insert(job_id, result);
+    }
+}
+
+fn decide_from_phone(state: &Shared, daemon_id: &str, job_id: &str, job: &Value, row: &Values, devices: &[TrustedDevice]) -> String {
+    let created = job["createdAt"].as_i64().unwrap_or(0);
+    let d = match verify_decision(daemon_id, job_id, created, row, devices, now_ms()) {
+        Ok(d) => d,
+        Err(e) => return format!("rejected: {e}"),
+    };
+    let by = format!("phone:{}", d.device.name);
+    if !d.approve {
+        return match crate::jobs::decide(state, job_id, false, None, false, &by) {
+            Ok(_) => "rejected the job".into(),
+            Err(e) => format!("rejected: {e}"),
+        };
+    }
+    // Producción o aprobación reforzada: el teléfono solo propone; confirma la Mac con Touch ID.
+    let level = job["approval"].as_str().unwrap_or_default();
+    if level == "reinforced" || job["envKind"] == "cloud-prod" {
+        crate::jobs::log_line(job_id, &format!("Approval proposed from {} (confirm in the app with Touch ID)", d.device.name));
+        return NEEDS_MAC.into();
+    }
+    match crate::jobs::decide(state, job_id, true, d.confirm.as_deref(), false, &by) {
+        Ok(_) => "approved".into(),
+        Err(e) => format!("rejected: {e}"),
+    }
+}
+
 // ── El hilo de sincronización ───────────────────────────────────────────
 
 type CloudEngine = Engine<sqlite::SqliteReplicaStore, sqlite::SqliteOutboxStore>;
@@ -240,6 +433,10 @@ struct Session {
     engine: CloudEngine,
     transport: ConvexHttpTransport,
     scopes: Vec<String>,
+    /// Resultado de cada decisión de teléfono, por trabajo (sube como `phoneResult`).
+    results: IndexMap<String, String>,
+    /// Firmas ya procesadas (una decisión se aplica una vez).
+    seen: std::collections::HashSet<String>,
 }
 
 fn open_session(link: Link, token: &str) -> Result<Session> {
@@ -255,14 +452,29 @@ fn open_session(link: Link, token: &str) -> Result<Session> {
     for s in &scopes {
         engine.enable_scope(s, None).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default() })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
 fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let environments = state.store.environments().unwrap_or_default();
     let jobs = state.store.jobs(&[], RECENT_JOBS * 2).unwrap_or_default();
-    let want = desired(&s.link.daemon_id, &environments, &|k| state.probe(k), &jobs);
+    let mut want = desired(&s.link.daemon_id, &environments, &|k| state.probe(k), &jobs);
+    // Las decisiones de teléfono con su resultado: la fila sigue (con el estado real del trabajo)
+    // aunque ya no espere aprobación, para que el teléfono vea qué pasó.
+    let recent = want.get(&format!("jobs:{}", s.link.daemon_id)).cloned().unwrap_or_default();
+    if let Some(rows) = want.get_mut(&format!("approvals:{}", s.link.daemon_id)) {
+        for (job, result) in &s.results {
+            if !rows.contains_key(job) {
+                if let Some(r) = recent.get(job) {
+                    rows.insert(job.clone(), APPROVAL_FIELDS.iter().filter_map(|f| r.get(*f).map(|v| (f.to_string(), v.clone()))).collect());
+                }
+            }
+            if let Some(row) = rows.get_mut(job) {
+                row.insert("phoneResult".into(), Value::String(result.clone()));
+            }
+        }
+    }
     let jobs_status: IndexMap<String, Value> = jobs.iter().filter_map(|j| Some((j["id"].as_str()?.to_string(), j["status"].clone()))).collect();
     let now = now_ms();
     for scope in &s.scopes {
@@ -282,11 +494,13 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         Err(e) => error = Some(e.to_string()),
     }
     let report = block_on(sync_once(&mut s.engine, &s.transport, now_ms, 200)).map_err(|e| anyhow::anyhow!("{e}"))?;
+    process_decisions(state, s);
     let st = s.engine.sync_status();
+    let proposals: Vec<Value> = s.results.iter().filter(|(_, r)| r.as_str() == NEEDS_MAC).map(|(j, _)| json!(j)).collect();
     Ok(json!({
         "url": s.link.url, "daemonId": s.link.daemon_id, "name": s.link.name,
         "pending": st.pending, "recovery": st.recovery, "paused": st.paused,
-        "pushes": report.pushes, "pulls": report.pulls, "error": error,
+        "pushes": report.pushes, "pulls": report.pulls, "error": error, "phoneProposals": proposals,
         "scopes": s.scopes.iter().map(|sc| json!({ "scope": sc, "rows": s.engine.rows(sc).len(), "cursor": s.engine.scope_state(sc).and_then(|x| x.cursor) })).collect::<Vec<_>>(),
     }))
 }
@@ -408,5 +622,37 @@ mod tests {
     fn vincular_exige_https_o_un_backend_local() {
         assert!(link("http://evil.example", "x".repeat(40).as_str(), "mac").is_err());
         assert!(link("https://ok.convex.cloud", "short", "mac").is_err());
+    }
+
+    #[test]
+    fn decisiones_del_telefono() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let pk = key.verifying_key().as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let device = TrustedDevice { device_id: "phone-1".into(), name: "iPhone".into(), public_key: pk.clone(), paired_at: 0 };
+        let now = 10_000_000;
+        let row = |decision: &str, at: i64, job: &str, key_hex: &str| -> Values {
+            let sig = key.sign(decision_message("mac-1", job, decision, at).as_bytes());
+            obj(json!({ "decision": decision, "decidedAt": at, "deviceKey": key_hex, "signature": sig.to_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>() }))
+        };
+        let ok = verify_decision("mac-1", "j1", 0, &row("approve", now, "j1", &pk), std::slice::from_ref(&device), now + 5_000).unwrap();
+        assert!(ok.approve && ok.device.device_id == "phone-1");
+        // Firmada para otro trabajo, otro daemon, o vieja: no.
+        assert!(verify_decision("mac-1", "j1", 0, &row("approve", now, "j2", &pk), std::slice::from_ref(&device), now).is_err());
+        assert!(verify_decision("mac-2", "j1", 0, &row("approve", now, "j1", &pk), std::slice::from_ref(&device), now).is_err());
+        assert_eq!(verify_decision("mac-1", "j1", 0, &row("approve", now, "j1", &pk), std::slice::from_ref(&device), now + DECISION_MAX_AGE_MS + 1), Err("stale decision".into()));
+        // Anterior al trabajo (una firma vieja reusada): no.
+        assert!(verify_decision("mac-1", "j1", now + 1, &row("approve", now, "j1", &pk), std::slice::from_ref(&device), now + 2).is_err());
+        // Un teléfono que esta Mac no confirmó, aunque el backend lo tenga: no.
+        assert_eq!(verify_decision("mac-1", "j1", 0, &row("approve", now, "j1", &pk), &[], now), Err("unknown phone (not paired with this Mac)".into()));
+        // Cambiar la decisión firmada: no.
+        let mut tampered = row("reject", now, "j1", &pk);
+        tampered.insert("decision".into(), json!("approve"));
+        assert_eq!(verify_decision("mac-1", "j1", 0, &tampered, std::slice::from_ref(&device), now), Err("signature doesn't match".into()));
+    }
+
+    #[test]
+    fn huella_corta() {
+        assert_eq!(fingerprint("abcdef0123456789"), "abcd ef01 2345");
     }
 }

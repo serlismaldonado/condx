@@ -10,7 +10,7 @@ import { ConvexError, v } from "convex/values";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { applySetDelta, planOp, PROTOCOL_VERSION, type Op, type OpResult, type Row } from "localfirst/server";
-import { canAccess, daemonFromToken, reviewFields } from "./auth";
+import { canAccess, principalFromToken, reviewFields, writeDenied } from "./auth";
 
 /** Versión mínima del protocolo que se acepta (§5.3 bis). */
 export const MIN_PROTOCOL_VERSION = PROTOCOL_VERSION;
@@ -69,7 +69,7 @@ export const doorbell = query({
   returns: v.union(v.object({ status: v.literal("upgradeRequired") }), v.object({ status: v.literal("ok"), versions: v.record(v.string(), v.union(v.number(), v.literal("denied"))) })),
   handler: async (ctx, { token, scopes, protocolVersion }) => {
     if (protocolVersion < MIN_PROTOCOL_VERSION) return { status: "upgradeRequired" as const };
-    const principal = await daemonFromToken(ctx, token);
+    const principal = await principalFromToken(ctx, token);
     const versions: Record<string, number | "denied"> = {};
     for (const scope of scopes.slice(0, 32)) {
       versions[scope] = canAccess(principal, scope) ? ((await scopeDoc(ctx, scope))?.version ?? 0) : "denied";
@@ -85,7 +85,7 @@ export const pull = query({
   returns: v.any(),
   handler: async (ctx, { token, scope, cursor, bootstrap, protocolVersion }) => {
     if (protocolVersion < MIN_PROTOCOL_VERSION) return { status: "upgradeRequired" };
-    const principal = await daemonFromToken(ctx, token);
+    const principal = await principalFromToken(ctx, token);
     if (!canAccess(principal, scope)) return { status: "denied" };
     const s = await scopeDoc(ctx, scope);
     const version = s?.version ?? 0;
@@ -142,7 +142,7 @@ export const push = mutation({
   returns: v.any(),
   handler: async (ctx, { token, group, protocolVersion }) => {
     if (protocolVersion < MIN_PROTOCOL_VERSION) return { status: "upgradeRequired" };
-    const principal = await daemonFromToken(ctx, token);
+    const principal = await principalFromToken(ctx, token);
     if (group.ops.length === 0 || group.ops.length > MAX_OPS_PER_GROUP) reject("invalid", `a group has 1–${MAX_OPS_PER_GROUP} operations`);
     const results: OpResult[] = [];
     for (const op of group.ops as Op[]) {
@@ -151,7 +151,8 @@ export const push = mutation({
         results.push(done.result as OpResult);
         continue;
       }
-      if (!canAccess(principal, op.scope)) reject("denied", "No access to this scope");
+      const denied = writeDenied(principal, op);
+      if (denied) reject("denied", denied);
       results.push(await applyOp(ctx, principal.key, op));
     }
     return { status: "ok", results };

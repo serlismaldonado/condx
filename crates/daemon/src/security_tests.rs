@@ -79,6 +79,10 @@ async fn el_token_de_agentes_no_aprueba_ni_toca_reglas_ni_claves() {
         (Method::POST, "/api/doctor/backend", json!({})),
         (Method::POST, "/api/cloud/link", json!({ "url": "https://x.convex.cloud", "key": "k".repeat(40) })),
         (Method::POST, "/api/cloud/unlink", json!({})),
+        (Method::POST, "/api/cloud/pair", json!({})),
+        (Method::POST, "/api/cloud/pair/confirm", json!({ "deviceId": "phone-x" })),
+        (Method::POST, "/api/cloud/pair/cancel", json!({})),
+        (Method::DELETE, "/api/cloud/devices/phone-x", json!({})),
     ];
     for (method, path, body) in cases {
         let (status, res) = call(method.clone(), path, &host, Some(CLI), Some(body)).await;

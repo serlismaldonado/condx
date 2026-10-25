@@ -22,6 +22,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Condx Cloud: el motor local-first (SQLite + transporte HTTP de Convex).
 localfirst-core = { git = "https://github.com/serlismaldonado/localfirst", rev = "6c3fa6a9f59f76521b76dba1f6a1edeb857eb31a" }
 indexmap = "2"
+# Verificar las decisiones firmadas por los teléfonos vinculados (Condx Cloud).
+ed25519-dalek = "2"
 ureq = "2"
 dirs = "5"
 tracing = "0.1"

@@ -151,6 +151,10 @@ pub struct DevtoolApp {
     /// Condx Cloud: vínculo y estado (GET /api/cloud), y la vinculación en curso.
     pub cloud: Option<Load>,
     pub cloud_linking: Option<Load>,
+    /// Vincular un teléfono: el código abierto (con su QR), su estado y los teléfonos de confianza.
+    pub cloud_pair: Option<Value>,
+    pub cloud_pair_status: Option<Load>,
+    pub cloud_devices: Option<Load>,
     pub backend_download: Option<Load>,
     pub service_logs: HashMap<String, String>,
     pub log_tab: usize,
@@ -333,6 +337,9 @@ impl DevtoolApp {
             schema_diff: None,
             cloud: None,
             cloud_linking: None,
+            cloud_pair: None,
+            cloud_pair_status: None,
+            cloud_devices: None,
             backend_download: None,
             service_logs: HashMap::new(),
             log_tab: 0,

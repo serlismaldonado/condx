@@ -17,6 +17,35 @@ export default defineSchema({
     .index("by_daemonId", ["daemonId"])
     .index("by_tokenHash", ["tokenHash"]),
 
+  /**
+   * Un teléfono vinculado a un daemon. Lo crea el teléfono al reclamar un código (pendiente) y lo
+   * activa la Mac al confirmar. `publicKey`: su llave Ed25519 (hex), con la que firma decisiones;
+   * `tokenHash`: SHA-256 de su token (el token y la llave privada viven en su Keychain/Keystore).
+   */
+  devices: defineTable({
+    deviceId: v.string(),
+    daemonId: v.string(),
+    name: v.string(),
+    publicKey: v.string(),
+    tokenHash: v.string(),
+    status: v.union(v.literal("pending"), v.literal("active"), v.literal("revoked")),
+    createdAt: v.number(),
+  })
+    .index("by_tokenHash", ["tokenHash"])
+    .index("by_deviceId", ["deviceId"])
+    .index("by_daemonId", ["daemonId"]),
+
+  /** Un código de vinculación que muestra la Mac (en el QR): vence a los 5 minutos y sirve una vez. */
+  pairings: defineTable({
+    codeHash: v.string(),
+    daemonId: v.string(),
+    expiresAt: v.number(),
+    status: v.union(v.literal("open"), v.literal("claimed"), v.literal("confirmed"), v.literal("cancelled")),
+    deviceId: v.optional(v.string()),
+  })
+    .index("by_codeHash", ["codeHash"])
+    .index("by_daemonId", ["daemonId"]),
+
   /** Versión monotónica de cada alcance (sube con cada cambio). `minVersion`: lo más viejo retenido. */
   lf_scopes: defineTable({
     scope: v.string(),

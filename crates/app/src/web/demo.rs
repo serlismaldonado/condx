@@ -55,6 +55,8 @@ pub fn get(path: &str) -> Result<Value> {
         ["projects"] => if with(|s| s.registered) { json!([project()]) } else { json!([]) },
         ["projects", "discover"] => json!({ "root": "~/code", "candidates": [{ "path": "~/code/my-app", "convexProject": "my-app", "frontend": "vite", "project": null }] }),
         ["doctor"] => doctor(),
+        ["cloud", "pair"] => json!({ "status": "open", "expiresAt": now() + 240_000, "device": null }),
+        ["cloud", "devices"] => json!([{ "deviceId": "phone-1", "name": "iPhone de Ana", "fingerprint": "b77f e707 9341", "pairedAt": now() - 2 * HOUR }]),
         ["cloud"] => json!({
             "link": { "url": "https://happy-otter-123.convex.cloud", "daemonId": "mac-4f2a9c1e", "name": "My Mac", "linkedAt": now() - 3 * HOUR },
             "status": { "key": "cloud", "ok": true, "error": null, "at": now() - 2_000, "data": { "pending": 0, "recovery": 0, "scopes": [
@@ -99,6 +101,7 @@ pub fn post(path: &str, body: Value) -> Result<Value> {
     let parts: Vec<&str> = route.trim_start_matches("/api/").split('/').collect();
     Ok(match parts.as_slice() {
         ["jobs"] => request_job(&body),
+        ["cloud", "pair"] => json!({ "code": "K7Q2-M9XD-4HWR", "expiresAt": now() + 300_000, "url": "https://happy-otter-123.convex.cloud", "qr": "{\"condx\":1,\"url\":\"https://happy-otter-123.convex.cloud\",\"code\":\"K7Q2-M9XD-4HWR\"}" }),
         ["projects"] => with(|s| {
             s.registered = true;
             project()

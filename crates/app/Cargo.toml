@@ -21,6 +21,8 @@ devtool-core = { path = "../core" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# El QR para vincular un teléfono (Condx Cloud).
+qrcode = { version = "0.14", default-features = false }
 # Componentes Ely sobre el mismo gpui-pre que GPUI Kit (ver su guía «GPUI Kit»).
 ely-core = { git = "https://github.com/ELY-Open-Source/Ely-GPUI-Components", rev = "1018af449569f629f25485b3dace216b57b31ce4" }
 ely-editor = { git = "https://github.com/ELY-Open-Source/Ely-GPUI-Components", rev = "1018af449569f629f25485b3dace216b57b31ce4" }

@@ -66,7 +66,10 @@ pub fn render_for(app: &mut DevtoolApp, only: Option<&str>, window: &mut Window,
         }
 
         let (approve_id, reject_id, confirm_state) = (id.clone(), id.clone(), confirm.clone());
-        let reinforced = level == "reinforced";
+        // Aprobada desde un teléfono vinculado (Condx Cloud): en producción el teléfono solo propone,
+        // y aquí se confirma siempre con Touch ID.
+        let from_phone = app.probes.get("cloud").and_then(|p| p["data"]["phoneProposals"].as_array().cloned()).is_some_and(|a| a.iter().any(|v| v == id.as_str()));
+        let reinforced = level == "reinforced" || from_phone;
         let title = job["title"].as_str().unwrap_or_default().to_string();
         let summary = [
             Some(t!("requested by {a} {b}", a = ui::txt(&job["requestedBy"]), b = job["createdAt"].as_i64().map(ui::ago).unwrap_or_default())),
@@ -89,6 +92,7 @@ pub fn render_for(app: &mut DevtoolApp, only: Option<&str>, window: &mut Window,
                     .child(ui::muted(t!("expires in {left} min", left = left), cx)),
             )
             .child(ui::muted(summary, cx))
+            .when(from_phone, |c| c.child(ui::status_tag(ui::Health::Warn, t!("Approved from your phone · confirm here with Touch ID"))))
             .child(args)
             .when(has_pre, |c| {
                 c.child(

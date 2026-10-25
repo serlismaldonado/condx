@@ -110,8 +110,13 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 2. Settings → **Condx Cloud** (or `condxd cloud link`): the URL and a deploy key. Condx registers the
    daemon (`daemons:register`, internal) with a random **daemon token**, kept in `cloud-token`
    (0600) like the daemon's other tokens; the deploy key is used once and not stored.
-3. The phone opens the cloud's web app, signs in (Convex Auth), and pairs by scanning a QR the Mac
-   shows (short-lived code). Pairing is confirmed on the Mac.
+3. Settings → Condx Cloud → **Pair a phone**: the Mac opens a code (`pairing:open`; 12 characters,
+   ~59 bits, 5 minutes, one use) and shows it with a QR (`{"condx":1,"url","code"}`). The phone app
+   (`condx-mobile`, Native Shell) makes its own Ed25519 key and token, keeps them in the Keychain
+   (iOS) or the Keystore (Android), and claims the code (`pairing:claim`): it stays **pending**. The
+   Mac shows the phone's name and key fingerprint; the person compares it with the phone's screen
+   and confirms. The daemon then keeps the confirmed key in `cloud-devices.json`: it only trusts
+   keys it confirmed itself, not whatever the backend lists.
 4. *Unlink* removes the token and stops syncing; the cloud keeps nothing the daemon needs.
 
 ## 6. Security
@@ -119,7 +124,17 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 - Threat: someone with access to the cloud backend. They can see state and propose approvals; they
   can't run anything the daemon rejects, and production needs Touch ID on the Mac.
 - All text going up passes through `devtool_core::redact` (logs, errors).
-- The daemon token can only write the daemon's own scopes; phone users only write requests.
+- The daemon token can only write the daemon's own scopes. A phone reads its daemon's `env`,
+  `jobs` and `approvals`, and can only patch the decision fields of an approval (`decision`,
+  `decidedAt`, `deviceKey`, `signature`, `confirmText`), with `deviceKey` equal to its own key.
+- Each decision is signed: `condx-approval:v1|{daemonId}|{jobId}|{decision}|{decidedAt}`. The daemon
+  verifies it against the keys in `cloud-devices.json`, and refuses it if it's older than 10
+  minutes or older than the job. A backend that inserts its own device, or a phone the Mac never
+  confirmed, gets "unknown phone".
+- Production (`cloud-prod`) or a `reinforced` approval: the phone only proposes (`needs-mac`); the
+  Mac's approvals panel marks it "from your phone" and asks for Touch ID. Rejecting from the phone
+  always works. `typed` approvals need the environment's name typed on the phone.
+- Removing a phone on the Mac revokes it in the backend and drops its key locally.
 - Each push is idempotent (`opId`), so retries never approve twice.
 - Stale requests (older than the window, or for an old attempt) are ignored and reported.
 
@@ -131,7 +146,7 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 | **C1** ✅ | Reduced engine in Rust: SQLite outbox and replica, cursors, backoff; a fake transport and the contract tests | done 2026-10-25: sans-IO engine; 6000 seeds × 100 steps converge on memory and SQLite, with calls in flight across steps |
 | **C2** ✅ | Condx Cloud backend (Convex project): tables, doorbell/pull/push for Condx scopes, auth | done 2026-10-25: 15 convex-test tests, differential vs `FakeServer` (300 seeds agree), and the Rust engine against a throwaway local backend |
 | **C3** ✅ | Daemon publishes `env`, `jobs`, `approvals` (one-way mirror) through the Rust transport | done 2026-10-25: `cloud.rs` (sync thread, SQLite engine), link/unlink from Settings or `condxd cloud`, tested end to end against a throwaway backend (approval reflected, offline queue flushed on reconnect, no secrets uploaded). The web view comes with C4 |
-| C4 | **Approve from the phone**: requests, the daemon's checks, Touch ID for production, pairing by QR | an approval from the phone runs a job on the Mac; a stale one is refused |
+| **C4** ✅ | **Approve from the phone**: requests, the daemon's checks, Touch ID for production, pairing by QR | done 2026-10-25 (local, not deployed): `pairing.ts` + 10 tests, daemon verification and `cloud-devices.json`, pairing card with QR in the app, `condx-mobile` (Native Shell) with the identity in the Keychain/Keystore. Tested on the iOS simulator and an Android emulator, and with 2 headless end-to-end tests (simple, typed, production → Touch ID, reject, revoke, unknown phone) |
 | C5 | Workflows on/off and runs from the phone; several daemons per user | — |
 
 ### 7.1 Notes from C2
@@ -142,6 +157,20 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 - A permanent rejection is a `ConvexError` with `{ code, message, status }`; Convex rolls back the
   whole group. Numbers come back as float64 (`1.0`); the Rust transport normalizes them.
 - Registering a daemon is internal (admin or deploy key only): no public function creates daemons.
+
+### 7.2 Notes from C4 (Native Shell 0.2)
+
+- **No camera**: nsh doesn't scan QR codes yet (native components need nsh embedded in your own
+  host app). The phone accepts the QR's text pasted, or the code plus the URL typed.
+- **Entitlements**: `nsh package` doesn't add any, and the Keychain needs `keychain-access-groups`.
+  On the simulator, `scripts/ios-sim-install.sh` links them into the binary (sections
+  `__entitlements`/`__ents_der`, as Xcode does); re-signing the `.app` doesn't launch. On a device
+  they come from the provisioning profile.
+- **Android**: `libnsh.so` isn't 16 KB aligned, so Android 15+ shows a compatibility dialog. The
+  Keystore is reached through JNI (an AES-GCM key `condx-identity` wraps the identity file).
+- **Accessibility**: a VoiceOver/AX press doesn't fire `on_press` yet.
+- The approvals row belongs to the daemon, so another phone's decision can be on it: the phone only
+  shows decisions signed with its own key.
 
 ## 8. Open questions
 

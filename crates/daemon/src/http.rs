@@ -686,6 +686,49 @@ async fn post_cloud_unlink(Extension(client): Extension<Client>) -> Response {
     }
 }
 
+/// Vincular teléfonos: solo la app (un agente nunca abre ni confirma una vinculación).
+async fn cloud_app_only<T: serde::Serialize + Send + 'static>(client: &Client, f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> Response {
+    if let Some(r) = deny(client, Scope::JobsApprove) {
+        return r;
+    }
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(v)) => Json(json!(v)).into_response(),
+        Ok(Err(e)) => fail(StatusCode::BAD_REQUEST, format!("{e:#}")),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+async fn post_cloud_pair(Extension(client): Extension<Client>) -> Response {
+    cloud_app_only(&client, crate::cloud::pair_start).await
+}
+
+async fn get_cloud_pair(Extension(client): Extension<Client>) -> Response {
+    cloud_app_only(&client, crate::cloud::pair_status).await
+}
+
+#[derive(serde::Deserialize)]
+struct PairConfirm {
+    #[serde(rename = "deviceId")]
+    device_id: String,
+}
+
+async fn post_cloud_pair_confirm(Extension(client): Extension<Client>, Json(body): Json<PairConfirm>) -> Response {
+    cloud_app_only(&client, move || crate::cloud::pair_confirm(&body.device_id)).await
+}
+
+async fn post_cloud_pair_cancel(Extension(client): Extension<Client>) -> Response {
+    cloud_app_only(&client, || crate::cloud::pair_cancel().map(|_| json!({ "ok": true }))).await
+}
+
+/// Los teléfonos de confianza de esta Mac (nombre y huella; la llave es pública).
+async fn get_cloud_devices() -> Json<Value> {
+    Json(json!(crate::cloud::trusted_devices().into_iter().map(|d| json!({ "deviceId": d.device_id, "name": d.name, "fingerprint": crate::cloud::fingerprint(&d.public_key), "pairedAt": d.paired_at })).collect::<Vec<_>>()))
+}
+
+async fn delete_cloud_device(Extension(client): Extension<Client>, Path(id): Path<String>) -> Response {
+    cloud_app_only(&client, move || crate::cloud::revoke_device(&id).map(|_| json!({ "ok": true }))).await
+}
+
 async fn get_doctor(AxState(state): AxState<Shared>) -> Json<Value> {
     Json(crate::doctor::report(&state).await)
 }
@@ -855,6 +898,11 @@ pub fn router(state: Shared) -> Router {
         .route("/api/cloud", get(get_cloud))
         .route("/api/cloud/link", post(post_cloud_link))
         .route("/api/cloud/unlink", post(post_cloud_unlink))
+        .route("/api/cloud/pair", get(get_cloud_pair).post(post_cloud_pair))
+        .route("/api/cloud/pair/confirm", post(post_cloud_pair_confirm))
+        .route("/api/cloud/pair/cancel", post(post_cloud_pair_cancel))
+        .route("/api/cloud/devices", get(get_cloud_devices))
+        .route("/api/cloud/devices/{id}", axum::routing::delete(delete_cloud_device))
         .route("/api/doctor/backend", post(post_doctor_backend))
         .route("/api/projects/{name}", axum::routing::delete(delete_project))
         .route("/api/services", get(get_services))

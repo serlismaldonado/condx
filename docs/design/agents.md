@@ -1,6 +1,6 @@
 # Design: agents that respond to incidents
 
-Status: A0, A2, A3 and A4 on the Mac done (2026-10-25, local). Builds on Condx Cloud (`cloud.md`, phone approvals).
+Status: everything on the Mac done (A0, A2-A5; 2026-10-25, local). Next: the phone (A0b, A1, A4 phone, A6). Builds on Condx Cloud (`cloud.md`, phone approvals).
 
 ## 1. Goal
 
@@ -127,6 +127,17 @@ always a proposal: it waits for your approval whatever the level.
   which asks for the approvals that workflow has. A frontend fix that Vercel must build needs the
   branch pushed: that's a later, approved step.
 
+## 6.3 Templates (A5)
+
+- The first enabled template whose sources and optional match text (title, fingerprint, error,
+  recipe) fit the incident is used; the generic one, with no sources, catches the rest.
+- Highest mode: a diagnose-only template turns an automatic fix into a diagnosis and refuses a
+  manual "Prepare a fix".
+- Tools: a template can only remove tools from its mode, never add one (the write tools exist only
+  in fix mode). Instructions are added to the prompt (pi's per-conversation `instructions`).
+- Limits per run: the daemon checks every 3 s and stops the run past its tokens or minutes, so a
+  run can go a little over. The daily budget still applies on top.
+
 ## 7. Phases
 
 | Phase | What | Done when |
@@ -138,5 +149,5 @@ always a proposal: it waits for your approval whatever the level.
 | **A3** ✅ | Fix mode: worktree, checks offline, commit on `condx/fix-…` | done: the daemon makes a worktree from the incident's commit (sharing `node_modules`), the agent edits there and runs the project's checks inside `sandbox-exec` (no network, writes only in the worktree, no reading `~/.condx`, `~/.ssh`… or the Keychain; only the scripts of the base commit), and the daemon commits as "Condx agent" when it ends; the user's checkout never changes. "Discard" removes the branch and the worktree |
 | A4 (Mac) ✅ | Run an enabled workflow with the fix's commit from the incident | done: the workflow asks for its own approvals; suggested workflows start turned off |
 | A4 (phone) | Approve the fix on the phone → deploy workflow; steer from the chat | with A0b |
-| A5 | Agent templates per incident kind ("agent factory"), budgets and limits | each kind has its tools and limits |
+| **A5** ✅ | Agent templates per incident kind ("agent factory"), budgets and limits | done: `templates.rs` with five built-in templates (frontend build, failing tests, Convex deploy, Convex not responding diagnose-only, generic); each sets when it applies, highest mode, provider/model, extra instructions, allowed tools and per-run limits (tokens, minutes). Edited in Settings → Agents → Templates |
 | A6 | Keys re-encrypted for paired devices and remote runners | an agent runs elsewhere without the key in plaintext in the cloud |

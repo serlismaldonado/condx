@@ -4,7 +4,7 @@
 // El daemon decide qué corre, con qué modelo y cuánto puede gastar; aquí solo se ejecuta.
 
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import { createRegistry, defineDoc, defineExtension, Harness, section } from "@earendil-works/pi-durable";
+import { createRegistry, defineDoc, defineExtension, Harness, section, type ToolRegistration } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 import { piProviderId, type Providers } from "./providers.ts";
@@ -79,6 +79,9 @@ export interface StartRun {
   cwd: string;
   /** El incidente tal como lo ve el daemon (evidencia ya redactada). */
   incident: Record<string, unknown>;
+  /** De la plantilla: instrucciones que se suman al prompt y herramientas permitidas (vacío: todas las del modo). */
+  instructions?: string;
+  tools?: string[];
 }
 
 export interface TranscriptItem {
@@ -96,6 +99,8 @@ export function incidentMessage(incident: Record<string, unknown>, mode: "diagno
 
 let diagnoseExt: ReturnType<typeof defineExtension> | undefined;
 let fixExt: ReturnType<typeof defineExtension> | undefined;
+let modeTools: { diagnose: AnyTool[]; fix: AnyTool[] } = { diagnose: [], fix: [] };
+type AnyTool = ToolRegistration;
 
 export class Host {
   #harness!: Harness;
@@ -116,6 +121,7 @@ export class Host {
     fixExt = defineExtension({ name: "condx-fix", sections: [section("condx", () => FIX_PROMPT, { tag: false })], tools: [...FIX_TOOLS, condx] });
     registry.install(diagnoseExt);
     registry.install(fixExt);
+    modeTools = { diagnose: [...READ_TOOLS, condx], fix: [...FIX_TOOLS, condx] };
     host.#harness = await Harness.open(await openNodeSqliteStorage(path), { models: providers.models, registry, identity: { attribution: { name: "condx", url: "https://condx.vercel.app" } } }, ctx);
     host.#harness.resume();
     // Las corridas que un proceso anterior dejó a medias: se vuelven a esperar.
@@ -143,7 +149,13 @@ export class Host {
     if (!provider) throw new Error(`there's no provider ${req.providerId}`);
     const model = { provider: piProviderId(provider), modelId: req.model };
     const ext = req.mode === "fix" ? fixExt! : diagnoseExt!;
-    const conversation = await this.#harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model, cwd: req.cwd, extensions: [ext] } }, ctx);
+    // La plantilla puede quitar herramientas del modo, nunca agregar (las de escritura solo existen en arreglo).
+    const allowed = req.tools && req.tools.length > 0 ? modeTools[req.mode].filter((t) => req.tools!.includes(t.name)) : undefined;
+    const instructions = req.instructions?.trim() ? req.instructions.trim() : undefined;
+    const conversation = await this.#harness.createConversation(
+      { ownership: { kind: "ownerless" }, agent: { model, cwd: req.cwd, extensions: [ext], ...(allowed ? { tools: allowed } : {}), ...(instructions ? { instructions } : {}) } },
+      ctx,
+    );
     const sub = await conversation.submit({ type: "input", content: incidentMessage(req.incident, req.mode), requestId: req.runId }, ctx);
     await this.#harness.commit(async (tx) => {
       (await tx.doc(Runs)).runs[req.runId] = { conversationId: conversation.id as number, submissionId: sub.id as number, mode: req.mode, createdAt: Date.now() };

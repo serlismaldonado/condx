@@ -273,6 +273,8 @@ pub struct DevtoolApp {
     pub agent_kind: String,
     /// Lo que trajo «Importar de pi» (o por qué no).
     pub agents_import: Option<Load>,
+    /// La plantilla de agente que se está editando (borrador; `id` vacío = nueva).
+    pub template_edit: Option<Value>,
     pub live_json_open: bool,
     /// Pestaña y modo del esquema de cada entorno (los de `env_tab`/`schema_mode` son del abierto).
     pub env_tabs: HashMap<String, EnvTab>,
@@ -437,6 +439,7 @@ impl DevtoolApp {
             agents_error: None,
             agent_kind: "anthropic".into(),
             agents_import: None,
+            template_edit: None,
             live_json_open: false,
             env_tabs: HashMap::new(),
             schema_modes: HashMap::new(),

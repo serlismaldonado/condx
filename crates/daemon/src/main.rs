@@ -32,6 +32,7 @@ mod secrets;
 mod services;
 mod state;
 mod store;
+mod templates;
 mod telemetry;
 mod workflows;
 #[cfg(test)]

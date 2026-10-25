@@ -24,8 +24,9 @@ interface Config {
   daemonToken: string;
   storage: string;
   providers: ProviderConfig[];
-  /** Solo pruebas: respuestas guionadas en vez de un modelo real. */
+  /** Solo pruebas: respuestas guionadas en vez de un modelo real (y a qué velocidad). */
   faux?: FauxStep[];
+  fauxTokensPerSecond?: number;
 }
 
 type FauxStep = { text: string } | { tool: string; args: Parameters<typeof fauxToolCall>[1] };
@@ -60,7 +61,7 @@ async function main(): Promise<void> {
   let fauxModel: { provider: string; id: string } | undefined;
   let resetFaux = () => {};
   if (config.faux) {
-    const faux = fauxProvider();
+    const faux = fauxProvider(config.fauxTokensPerSecond ? { tokensPerSecond: config.fauxTokensPerSecond } : {});
     providers.models.setProvider(faux.provider);
     fauxModel = faux.getModel();
     const script = config.faux;

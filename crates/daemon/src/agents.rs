@@ -382,6 +382,8 @@ pub fn json(state: &Shared) -> Value {
         "kinds": KINDS.iter().map(|k| json!({ "id": k.id, "label": k.label, "needsBaseUrl": k.needs_base_url, "model": k.model })).collect::<Vec<_>>(),
         "sources": SOURCES,
         "host": state.agent_host.status(),
+        "templates": crate::templates::list(state),
+        "tools": crate::templates::TOOLS,
         "usageToday": crate::agent_host::usage_today(state),
     })
 }

@@ -70,6 +70,60 @@ impl DevtoolApp {
         }, cx);
     }
 
+    fn edit_template(&mut self, template: Value, cx: &mut Context<Self>) {
+        for k in ["tpl-name", "tpl-match", "tpl-model", "tpl-instructions"] {
+            self.inputs.remove(k);
+        }
+        self.template_edit = Some(template);
+        cx.notify();
+    }
+
+    fn save_template(&mut self, cx: &mut Context<Self>) {
+        let Some(mut draft) = self.template_edit.clone() else { return };
+        let value = |app: &Self, key: &str, cx: &Context<Self>| app.inputs.get(key).map(|s| s.read(cx).value().trim().to_string());
+        if let Some(v) = value(self, "tpl-name", cx) {
+            draft["name"] = json!(v);
+        }
+        draft["match"] = json!(value(self, "tpl-match", cx).filter(|v| !v.is_empty()));
+        draft["model"] = json!(value(self, "tpl-model", cx).filter(|v| !v.is_empty()));
+        if let Some(v) = value(self, "tpl-instructions", cx) {
+            draft["instructions"] = json!(v);
+        }
+        self.post("/api/agents/templates".into(), draft, |app, res, cx| match res {
+            Load::Ready(_) => {
+                app.template_edit = None;
+                app.agents_error = None;
+                app.load_agents(cx);
+            }
+            Load::Failed(e) => app.agents_error = Some(e),
+            Load::Loading => {}
+        }, cx);
+    }
+
+    /// Enciende o apaga una plantilla (la guarda entera con `enabled` cambiado).
+    fn toggle_template(&mut self, mut template: Value, cx: &mut Context<Self>) {
+        template["enabled"] = json!(template["enabled"] != true);
+        self.post("/api/agents/templates".into(), template, |app, res, cx| match res {
+            Load::Failed(e) => app.agents_error = Some(e),
+            _ => app.load_agents(cx),
+        }, cx);
+    }
+
+    fn delete_template(&mut self, id: String, cx: &mut Context<Self>) {
+        self.delete(format!("/api/agents/templates/{id}"), |app, res, cx| match res {
+            Load::Failed(e) => app.agents_error = Some(e),
+            _ => app.load_agents(cx),
+        }, cx);
+    }
+
+    fn reset_templates(&mut self, cx: &mut Context<Self>) {
+        self.template_edit = None;
+        self.post("/api/agents/templates/reset".into(), Value::Null, |app, res, cx| match res {
+            Load::Failed(e) => app.agents_error = Some(e),
+            _ => app.load_agents(cx),
+        }, cx);
+    }
+
     fn delete_provider(&mut self, id: String, cx: &mut Context<Self>) {
         self.delete(format!("/api/agents/providers/{id}"), |app, res, cx| match res {
             Load::Failed(e) => app.agents_error = Some(e),
@@ -101,6 +155,148 @@ fn input(app: &mut DevtoolApp, key: &str, placeholder: String, masked: bool, win
     app.inputs.entry(key.to_string()).or_insert_with(|| cx.new(|cx| InputState::new(window, cx).masked(masked).placeholder(placeholder))).clone()
 }
 
+fn tokens_label(n: u64) -> String {
+    match n {
+        0 => t!("no limit").to_string(),
+        n if n >= 1_000_000 => format!("{}M", n / 1_000_000),
+        n => format!("{}k", n / 1000),
+    }
+}
+
+/// Una línea por plantilla: encendida o no, nombre, cuándo aplica y sus límites.
+fn template_rows(app: &mut DevtoolApp, data: &Value, cx: &mut Context<DevtoolApp>) -> Div {
+    let mut col = v_flex().gap_1().child(ui::muted(t!("How the agent works on each kind of incident. The first enabled template that matches is used; the last one catches the rest."), cx).text_xs());
+    for tpl in data["templates"].as_array().cloned().unwrap_or_default() {
+        let id = tpl["id"].as_str().unwrap_or_default().to_string();
+        let on = tpl["enabled"] == true;
+        let sources: Vec<String> = tpl["sources"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(str::to_string)).collect();
+        let when = if sources.is_empty() { t!("any incident").to_string() } else { sources.join(", ") };
+        let detail = [
+            Some(when),
+            tpl["match"].as_str().filter(|m| !m.is_empty()).map(|m| t!("with “{m}”", m = m).to_string()),
+            Some(if tpl["maxMode"] == "diagnose" { t!("diagnose only").to_string() } else { t!("up to a fix").to_string() }),
+            tpl["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string),
+            Some(format!("{} · {} min", tokens_label(tpl["maxTokens"].as_u64().unwrap_or(0)), tpl["maxMinutes"].as_u64().unwrap_or(0))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+        let (t_toggle, t_edit) = (tpl.clone(), tpl.clone());
+        let del = (!tpl["builtin"].as_bool().unwrap_or(false)).then(|| id.clone());
+        col = col.child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(ui::toggle(SharedString::from(format!("tpl-on-{id}")), on, cx).on_click(cx.listener(move |this, _, _, cx| this.toggle_template(t_toggle.clone(), cx))))
+                .child(div().w(px(190.)).flex_none().truncate().text_size(px(12.5)).child(ui::txt(&tpl["name"])))
+                .child(div().flex_1().min_w_0().truncate().child(ui::muted(detail, cx).text_xs()))
+                .child(Button::new(SharedString::from(format!("tpl-edit-{id}"))).xsmall().ghost().label(t!("Edit")).on_click(cx.listener(move |this, _, _, cx| this.edit_template(t_edit.clone(), cx))))
+                .when_some(del, |d, id| d.child(Button::new(SharedString::from(format!("tpl-del-{id}"))).xsmall().ghost().label(t!("Remove")).on_click(cx.listener(move |this, _, _, cx| this.delete_template(id.clone(), cx))))),
+        );
+    }
+    let _ = app;
+    col.child(
+        h_flex()
+            .gap_1()
+            .child(Button::new("tpl-new").xsmall().outline().icon(IconName::Plus).label(t!("New template")).on_click(cx.listener(|this, _, _, cx| {
+                this.edit_template(json!({ "id": "", "name": "", "enabled": true, "sources": [], "maxMode": "fix", "tools": [], "maxTokens": 150_000, "maxMinutes": 15, "instructions": "" }), cx)
+            })))
+            .child(Button::new("tpl-reset").xsmall().ghost().label(t!("Restore built-in templates")).on_click(cx.listener(|this, _, _, cx| this.reset_templates(cx)))),
+    )
+}
+
+/// El editor de una plantilla: los botones cambian el borrador; los textos se leen al guardar.
+fn template_editor(app: &mut DevtoolApp, data: &Value, window: &mut Window, cx: &mut Context<DevtoolApp>) -> Option<Div> {
+    let draft = app.template_edit.clone()?;
+    let t = crate::theme::Tokens::current(cx);
+    let text = |app: &mut DevtoolApp, key: &str, value: &Value, placeholder: String, window: &mut Window, cx: &mut Context<DevtoolApp>| {
+        let v = value.as_str().unwrap_or_default().to_string();
+        app.inputs.entry(key.to_string()).or_insert_with(|| cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).default_value(v))).clone()
+    };
+    let name = text(app, "tpl-name", &draft["name"], t!("Name").to_string(), window, cx);
+    let matcher = text(app, "tpl-match", &draft["match"], t!("Optional: text in the title or the error (e.g. stripe)").to_string(), window, cx);
+    let model = text(app, "tpl-model", &draft["model"], t!("Default model").to_string(), window, cx);
+    let instructions = text(app, "tpl-instructions", &draft["instructions"], t!("Extra instructions for the agent").to_string(), window, cx);
+    // Un botón que cambia un campo del borrador.
+    let set = |label: String, id: String, selected: bool, field: &'static str, value: Value, cx: &mut Context<DevtoolApp>| {
+        let b = Button::new(SharedString::from(id)).xsmall().label(label).on_click(cx.listener(move |this, _, _, cx| {
+            if let Some(d) = this.template_edit.as_mut() {
+                d[field] = value.clone();
+            }
+            cx.notify();
+        }));
+        ui::brand_if(selected, b, cx)
+    };
+    let list_has = |field: &str, v: &str| draft[field].as_array().is_some_and(|l| l.iter().any(|x| x == v));
+    let toggled = |field: &str, v: &str| {
+        let mut l: Vec<Value> = draft[field].as_array().cloned().unwrap_or_default();
+        if l.iter().any(|x| x == v) {
+            l.retain(|x| x != v);
+        } else {
+            l.push(json!(v));
+        }
+        json!(l)
+    };
+    let mut sources = h_flex().gap_1().flex_wrap();
+    for s in data["sources"].as_array().cloned().unwrap_or_default() {
+        let s = s.as_str().unwrap_or_default();
+        sources = sources.child(set(s.to_string(), format!("tpl-src-{s}"), list_has("sources", s), "sources", toggled("sources", s), cx));
+    }
+    let mut modes = h_flex().gap_1();
+    for (m, label) in [("diagnose", t!("Diagnose only")), ("fix", t!("Up to a fix"))] {
+        modes = modes.child(set(label.to_string(), format!("tpl-mode-{m}"), draft["maxMode"] == m, "maxMode", json!(m), cx));
+    }
+    let mut providers = h_flex().gap_1().flex_wrap().child(set(t!("Default").to_string(), "tpl-prov-default".into(), draft["provider"].as_str().is_none_or(str::is_empty), "provider", Value::Null, cx));
+    for p in data["providers"].as_array().cloned().unwrap_or_default() {
+        let id = p["id"].as_str().unwrap_or_default().to_string();
+        providers = providers.child(set(ui::txt(&p["label"]).to_string(), format!("tpl-prov-{id}"), draft["provider"] == id.as_str(), "provider", json!(id), cx));
+    }
+    let mut tools = h_flex().gap_1().flex_wrap();
+    for tool in data["tools"].as_array().cloned().unwrap_or_default() {
+        let tool = tool.as_str().unwrap_or_default();
+        tools = tools.child(set(tool.to_string(), format!("tpl-tool-{tool}"), list_has("tools", tool), "tools", toggled("tools", tool), cx));
+    }
+    let mut tokens = h_flex().gap_1();
+    for n in [25_000u64, 50_000, 150_000, 500_000, 0] {
+        tokens = tokens.child(set(tokens_label(n), format!("tpl-tok-{n}"), draft["maxTokens"].as_u64() == Some(n), "maxTokens", json!(n), cx));
+    }
+    let mut minutes = h_flex().gap_1();
+    for n in [5u64, 15, 30, 0] {
+        let label = if n == 0 { t!("no limit").to_string() } else { format!("{n} min") };
+        minutes = minutes.child(set(label, format!("tpl-min-{n}"), draft["maxMinutes"].as_u64() == Some(n), "maxMinutes", json!(n), cx));
+    }
+    Some(
+        v_flex()
+            .gap_1p5()
+            .p_2()
+            .border_1()
+            .border_color(t.card_border)
+            .child(ui::section(if draft["id"].as_str().is_some_and(|i| !i.is_empty()) { t!("Edit template") } else { t!("New template") }, cx))
+            .child(ui::kv(t!("Name"), Input::new(&name).small(), cx))
+            .child(ui::kv(t!("Sources"), sources, cx))
+            .child(ui::muted(t!("None selected: any incident."), cx).text_xs())
+            .child(ui::kv(t!("Matches"), Input::new(&matcher).small(), cx))
+            .child(ui::kv(t!("Highest mode"), modes, cx))
+            .child(ui::kv(t!("Provider"), providers, cx))
+            .child(ui::kv(t!("Model"), Input::new(&model).small(), cx))
+            .child(ui::kv(t!("Instructions"), Input::new(&instructions).small(), cx))
+            .child(ui::kv(t!("Tools"), tools, cx))
+            .child(ui::muted(t!("None selected: all the tools of the mode (the ones that write only exist when preparing a fix)."), cx).text_xs())
+            .child(ui::kv(t!("Tokens per run"), tokens, cx))
+            .child(ui::kv(t!("Minutes per run"), minutes, cx))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(ui::brand(Button::new("tpl-save").small().icon(IconName::Check).label(t!("Save template")), cx).on_click(cx.listener(|this, _, _, cx| this.save_template(cx))))
+                    .child(Button::new("tpl-cancel").small().ghost().label(t!("Cancel")).on_click(cx.listener(|this, _, _, cx| {
+                        this.template_edit = None;
+                        cx.notify();
+                    }))),
+            ),
+    )
+}
+
 pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolApp>) -> Div {
     let card = ui::card(cx).child(ui::section(t!("Agents · providers and autonomy"), cx));
     let Some(data) = app.agents.clone() else {
@@ -115,7 +311,7 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
     let default_provider = settings["defaultProvider"].as_str().map(str::to_string);
 
     // Qué hacer con cada tipo de incidente.
-    let mut autonomy = v_flex().gap_1p5().child(ui::muted(t!("What happens when something breaks. Diagnose and Fix start with the agent host (next phase); for now incidents are recorded and shown, and nothing runs without your approval."), cx).text_xs());
+    let mut autonomy = v_flex().gap_1p5().child(ui::muted(t!("What happens when something breaks. Diagnose and Fix start an agent on their own; a fix stays on its own branch and nothing is deployed without your approval."), cx).text_xs());
     for source in data["sources"].as_array().cloned().unwrap_or_default() {
         let source = source.as_str().unwrap_or_default().to_string();
         let current = settings["autonomy"][&source].as_str().unwrap_or("notify").to_string();
@@ -237,8 +433,13 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         max_buttons = max_buttons.child(ui::brand_if(max == n, button, cx));
     }
 
+    let templates = template_rows(app, &data, cx);
+    let editor = template_editor(app, &data, window, cx);
     card.child(ui::section(t!("Autonomy"), cx))
         .child(autonomy)
+        .child(ui::section(t!("Templates"), cx))
+        .child(templates)
+        .children(editor)
         .child(ui::section(t!("Providers"), cx))
         .child(saved)
         .child(import)

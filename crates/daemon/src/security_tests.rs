@@ -90,6 +90,9 @@ async fn el_token_de_agentes_no_aprueba_ni_toca_reglas_ni_claves() {
         (Method::POST, "/api/agents/providers", json!({ "kind": "anthropic", "apiKey": "sk-x" })),
         (Method::DELETE, "/api/agents/providers/anthropic", json!({})),
         (Method::POST, "/api/agents/import-pi", json!({})),
+        (Method::POST, "/api/agents/templates", json!({ "name": "x" })),
+        (Method::POST, "/api/agents/templates/reset", json!({})),
+        (Method::DELETE, "/api/agents/templates/generic", json!({})),
         // Arrancar un agente, escribirle o detenerlo cuesta tokens: solo la app.
         (Method::POST, "/api/incidents/inc-x/diagnose", json!({})),
         (Method::POST, "/api/agent-runs/run-x/message", json!({ "text": "hi" })),

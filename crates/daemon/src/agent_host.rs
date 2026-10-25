@@ -141,6 +141,7 @@ fn spawn(state: &Shared) -> Result<Running> {
         .with_context(|| format!("couldn't start {} (is Node installed?)", node()))?;
     let token = crate::auth::random_token()?;
     let faux = std::env::var("CONDX_AGENT_FAUX").ok().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let faux_speed = std::env::var("CONDX_AGENT_FAUX_TPS").ok().and_then(|v| v.parse::<u64>().ok());
     let config = json!({
         "hostToken": token,
         "daemonUrl": format!("http://127.0.0.1:{}", state.config.port),
@@ -148,6 +149,7 @@ fn spawn(state: &Shared) -> Result<Running> {
         "storage": crate::config::home().join("agents.sqlite").display().to_string(),
         "providers": if faux.is_some() { json!([]) } else { json!(providers(state)?) },
         "faux": faux,
+        "fauxTokensPerSecond": faux_speed,
     });
     let mut stdin = child.stdin.take().context("no stdin")?;
     writeln!(stdin, "{config}")?;
@@ -316,9 +318,28 @@ pub async fn start(state: &Shared, incident_id: &str, by: &str, mode: &str) -> R
     }
     let incident = state.store.incident(incident_id)?.with_context(|| format!("there's no incident “{incident_id}”"))?;
     let settings = crate::agents::settings(state);
-    let provider_id = settings.default_provider.clone().context("choose a default provider in Settings → Agents first")?;
+    // La plantilla de este tipo de incidente: su modo máximo, su modelo, sus instrucciones y límites.
+    let template = crate::templates::for_incident(&crate::templates::list(state), &incident).unwrap_or_default();
+    let mut mode = mode;
+    if mode == "fix" && template.max_mode < Level::Fix {
+        if by == "auto" {
+            mode = "diagnose";
+        } else {
+            bail!("“{}” incidents are diagnose-only (change it in Settings → Agents → Templates)", template.name);
+        }
+    }
+    let template_provider = template.provider.clone().filter(|p| !p.is_empty());
+    let provider_id = template_provider.clone().or_else(|| settings.default_provider.clone()).context("choose a default provider in Settings → Agents first")?;
     let provider = state.store.agent_providers()?.into_iter().find(|p| p["id"] == provider_id.as_str()).with_context(|| format!("there's no provider “{provider_id}”"))?;
-    let model = settings.default_model.clone().or_else(|| provider["model"].as_str().map(str::to_string)).filter(|m| !m.is_empty()).context("choose a model for the provider")?;
+    // El modelo: el de la plantilla; si la plantilla elige proveedor, el de ese proveedor; si no, el de por defecto.
+    let model = template
+        .model
+        .clone()
+        .filter(|m| !m.is_empty())
+        .or_else(|| if template_provider.is_some() { None } else { settings.default_model.clone() })
+        .or_else(|| provider["model"].as_str().map(str::to_string))
+        .filter(|m| !m.is_empty())
+        .context("choose a model for the provider")?;
     if settings.daily_token_budget == 0 || usage_today(state) >= settings.daily_token_budget {
         bail!("today's token budget is used up ({} of {})", usage_today(state), settings.daily_token_budget);
     }
@@ -344,7 +365,10 @@ pub async fn start(state: &Shared, incident_id: &str, by: &str, mode: &str) -> R
         "title": incident["title"], "source": incident["source"], "project": incident["project"], "env": incident["env"],
         "count": incident["count"], "firstSeen": incident["firstSeen"], "lastSeen": incident["lastSeen"], "evidence": incident["evidence"],
     });
-    let body = json!({ "runId": run_id, "mode": mode, "providerId": provider_id, "model": model, "cwd": cwd.display().to_string(), "incident": payload });
+    let body = json!({
+        "runId": run_id, "mode": mode, "providerId": provider_id, "model": model, "cwd": cwd.display().to_string(), "incident": payload,
+        "instructions": template.instructions, "tools": template.tools,
+    });
     let st = state.clone();
     let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/runs", Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
     let run = json!({
@@ -352,6 +376,8 @@ pub async fn start(state: &Shared, incident_id: &str, by: &str, mode: &str) -> R
         "status": "running", "startedAt": now_ms(), "endedAt": null, "answer": null, "error": null,
         "usage": { "total": 0 }, "conversationId": res["conversationId"],
         "worktree": (mode == "fix").then(|| cwd.display().to_string()), "branch": branch, "base": base, "fix": null,
+        "template": { "id": template.id, "name": template.name },
+        "limits": { "maxTokens": template.max_tokens, "maxMinutes": template.max_minutes },
     });
     state.store.save_agent_run(&run)?;
     set_incident_agent(state, incident_id, &run);
@@ -364,7 +390,7 @@ fn set_incident_agent(state: &Shared, incident_id: &str, run: &Value) {
         let answer = run["answer"].as_str().map(|a| a.chars().take(4_000).collect::<String>());
         // Del arreglo, lo que la tarjeta muestra (el parche entero está en la corrida).
         let fix = run["fix"].is_object().then(|| json!({ "branch": run["branch"], "commit": run["fix"]["commit"], "files": run["fix"]["files"], "stat": run["fix"]["stat"], "changes": run["fix"]["changes"], "discarded": run["fix"]["discarded"], "error": run["fix"]["error"] }));
-        inc["agent"] = json!({ "runId": run["id"], "mode": run["mode"], "status": run["status"], "answer": answer, "at": now_ms(), "model": run["model"], "fix": fix });
+        inc["agent"] = json!({ "runId": run["id"], "mode": run["mode"], "status": run["status"], "answer": answer, "at": now_ms(), "model": run["model"], "fix": fix, "template": run["template"]["name"] });
         let _ = state.store.save_incident(&inc);
     }
 }
@@ -397,12 +423,24 @@ pub async fn poll(state: &Shared) {
             let mut r = run.clone();
             r["usage"] = live["usage"].clone();
             let _ = state.store.save_agent_run(&r);
-            // Sobre el presupuesto: se detiene.
-            if usage_today(state) >= settings.daily_token_budget {
+            // Sobre el presupuesto del día o los límites de su plantilla: se detiene.
+            let max_tokens = r["limits"]["maxTokens"].as_u64().unwrap_or(0);
+            let max_minutes = r["limits"]["maxMinutes"].as_u64().unwrap_or(0);
+            let minutes = (now_ms() - r["startedAt"].as_i64().unwrap_or(0)).max(0) as u64 / 60_000;
+            let why = if usage_today(state) >= settings.daily_token_budget {
+                Some("today's token budget ran out".to_string())
+            } else if max_tokens > 0 && total > max_tokens {
+                Some(format!("it reached its template's limit of {max_tokens} tokens"))
+            } else if max_minutes > 0 && minutes >= max_minutes {
+                Some(format!("it reached its template's limit of {max_minutes} minutes"))
+            } else {
+                None
+            };
+            if let Some(why) = why {
                 let st = state.clone();
                 let path = format!("/runs/{id}/abort");
                 let _ = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", &path, Some(json!({})))).await;
-                finish(state, r, "stopped", live["answer"].as_str().map(str::to_string), Some("today's token budget ran out".into()), 0);
+                finish(state, r, "stopped", live["answer"].as_str().map(str::to_string), Some(why), 0);
             }
             continue;
         }

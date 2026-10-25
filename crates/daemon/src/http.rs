@@ -457,6 +457,37 @@ async fn post_agents_import_pi(AxState(state): AxState<Shared>, Extension(client
     }
 }
 
+/// Plantillas de agente (templates.rs): solo la app las cambia.
+async fn post_agent_template(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::templates::upsert(&state, &body) {
+        Ok(t) => Json(json!(t)).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn post_agent_templates_reset(AxState(state): AxState<Shared>, Extension(client): Extension<Client>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::templates::reset(&state) {
+        Ok(l) => Json(json!(l)).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn delete_agent_template(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Path(id): Path<String>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::templates::delete(&state, &id) {
+        Ok(()) => Json(json!({ "deleted": id })).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
 async fn delete_agent_provider(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Path(id): Path<String>) -> Response {
     if let Some(r) = deny(&client, Scope::JobsApprove) {
         return r;
@@ -1038,6 +1069,9 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agents/providers", post(post_agent_provider))
         .route("/api/agents/providers/{id}", delete(delete_agent_provider))
         .route("/api/agents/import-pi", post(post_agents_import_pi))
+        .route("/api/agents/templates", post(post_agent_template))
+        .route("/api/agents/templates/reset", post(post_agent_templates_reset))
+        .route("/api/agents/templates/{id}", delete(delete_agent_template))
         .route("/api/agent-runs/{id}", get(get_agent_run))
         .route("/api/agent-runs/{id}/{action}", post(post_agent_run_action))
         .route("/api/projects", get(get_projects).post(post_project))

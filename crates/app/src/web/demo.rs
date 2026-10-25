@@ -223,10 +223,10 @@ fn default_incidents() -> Vec<Value> {
     let t = now();
     vec![
         json!({ "id": "inc-1", "fingerprint": "vercel:fix/date-picker", "source": "vercel", "project": PROJECT, "env": null, "title": "Vercel deploy of fix/date-picker failed", "status": "open", "count": 2, "firstSeen": t - 90 * MIN, "lastSeen": t - 50 * MIN,
-                "agent": { "runId": "run-demo-1", "status": "done", "answer": demo_answer(), "at": t - 45 * MIN, "model": "claude-sonnet-5-5" },
+                "agent": { "runId": "run-demo-1", "status": "done", "answer": demo_answer(), "at": t - 45 * MIN, "model": "claude-sonnet-5-5", "template": "Frontend build (Vercel)" },
                 "evidence": { "url": "https://my-app-m3z7-ada.vercel.app", "branch": "fix/date-picker", "commit": "51d0aa2c3e11", "log": "src/components/DatePicker.tsx (41:18): \"formatISO\" is not exported by \"node_modules/date-fns/index.js\"\nerror during build:\nError: Command \"vite build\" exited with 1" } }),
         json!({ "id": "inc-2", "fingerprint": "job:seed:my-app-dev:uncaught error", "source": "job", "project": PROJECT, "env": DEV, "title": "Seed data failed on my-app-dev", "status": "open", "count": 1, "firstSeen": t - 3 * HOUR, "lastSeen": t - 3 * HOUR,
-                "agent": { "runId": "run-demo-2", "mode": "fix", "status": "done", "at": t - 2 * HOUR, "model": "claude-sonnet-5-5",
+                "agent": { "runId": "run-demo-2", "mode": "fix", "status": "done", "at": t - 2 * HOUR, "model": "claude-sonnet-5-5", "template": "Any other incident",
                     "answer": "## Cause\nseed:demoData throws when the tasks table already has rows, and the seed job runs on every deploy.\n\n## Change\nconvex/seed.ts: return early (and log) instead of throwing when there is data.\n\n## Checks\ntypecheck: passed · test: passed\n\n## Confidence\nhigh",
                     "fix": { "branch": "condx/fix-inc-2-1", "commit": "c41e9a07b2d1", "files": ["convex/seed.ts"], "stat": "convex/seed.ts | 5 +++--\n 1 file changed, 3 insertions(+), 2 deletions(-)", "changes": true } },
                 "evidence": { "jobId": "j-demo-5", "recipe": "seed", "error": "Uncaught Error: seed:demoData only runs on an empty database", "commit": null } }),
@@ -249,6 +249,14 @@ fn default_agents() -> Value {
         ],
         "sources": ["job", "vercel", "ci", "convex"],
         "host": { "available": true, "running": true, "error": null },
+        "tools": ["read_file", "list_files", "search_code", "git_log", "git_show", "condx", "edit_file", "write_file", "run_check"],
+        "templates": [
+            { "id": "frontend-build", "name": "Frontend build (Vercel)", "enabled": true, "sources": ["vercel"], "match": null, "maxMode": "fix", "tools": [], "maxTokens": 150_000, "maxMinutes": 15, "builtin": true, "instructions": "Start from the end of the build log." },
+            { "id": "failing-tests", "name": "Failing tests", "enabled": true, "sources": ["ci", "job"], "match": "test", "maxMode": "fix", "tools": [], "maxTokens": 150_000, "maxMinutes": 15, "builtin": true, "instructions": "Fix the code, not the test." },
+            { "id": "convex-deploy", "name": "Convex deploy or function error", "enabled": true, "sources": ["job"], "match": "deploy", "maxMode": "fix", "tools": [], "maxTokens": 150_000, "maxMinutes": 15, "builtin": true, "instructions": "" },
+            { "id": "convex-down", "name": "Convex not responding", "enabled": true, "sources": ["convex"], "match": null, "maxMode": "diagnose", "tools": ["condx", "git_log"], "maxTokens": 50_000, "maxMinutes": 15, "builtin": true, "instructions": "" },
+            { "id": "generic", "name": "Any other incident", "enabled": true, "sources": [], "match": null, "maxMode": "fix", "tools": [], "maxTokens": 150_000, "maxMinutes": 15, "builtin": true, "instructions": "" },
+        ],
         "usageToday": 18_420,
     })
 }

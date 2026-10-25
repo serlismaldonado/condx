@@ -175,3 +175,24 @@ test("en modo diagnóstico no hay herramientas que escriban", async () => {
     await new Promise((r) => child.once("exit", r));
   }
 });
+
+test("la plantilla limita las herramientas y suma sus instrucciones", async () => {
+  const dir = fixRepo();
+  const storage = join(mkdtempSync(join(tmpdir(), "condx-agent-store-")), "agents.sqlite");
+  const faux = [{ tool: "search_code", args: { pattern: "sum" } }, { tool: "read_file", args: { path: "sum.js" } }, { text: "## Cause\nx" }];
+  const { child, url } = await start(storage, faux);
+  try {
+    const run = { runId: "tpl-1", mode: "diagnose", providerId: "x", model: "x", cwd: dir, incident: { title: "x" }, instructions: "Only look at sum.js.", tools: ["read_file"] };
+    assert.equal((await call(url, "POST", "/runs", run)).status, 200);
+    let got: any;
+    await until(async () => (got = (await call(url, "GET", "/runs/tpl-1")).json).status === "done", "the run");
+    const tools = got.transcript.filter((t: any) => t.role === "tool");
+    assert.equal(tools[0].tool, "search_code");
+    assert.equal(tools[0].isError, true, JSON.stringify(tools[0]));
+    assert.equal(tools[1].isError, false);
+    assert.match(tools[1].text, /a - b/);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((r) => child.once("exit", r));
+  }
+});

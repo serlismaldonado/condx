@@ -150,6 +150,9 @@ fn agent_block(app: &mut DevtoolApp, inc: &Value, window: &mut Window, cx: &mut 
                 cx.notify();
             }))),
     );
+    if let Some(tpl) = agent["template"].as_str() {
+        block = block.child(ui::muted(t!("Template: {t}", t = tpl), cx).text_xs());
+    }
     if let Some(fix) = fix_block(app, &run_id, &agent["fix"], cx) {
         block = block.child(fix);
     }

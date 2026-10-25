@@ -750,5 +750,11 @@
   "Run “{w}” with this fix": "Correr «{w}» con este arreglo",
   "The commit is only on this Mac, on its own branch. Running a workflow with it asks for the approvals that workflow has.": "El commit está solo en esta Mac, en su propia rama. Correr un flujo con él pide las aprobaciones que tenga ese flujo.",
   "Prepare a fix": "Preparar un arreglo",
-  "Fix prepared by {m} · {w}": "Arreglo preparado por {m} · {w}"
+  "Fix prepared by {m} · {w}": "Arreglo preparado por {m} · {w}",
+  "Import from pi": "Importar de pi",
+  "Brings pi's providers and API keys (~/.pi/agent). OAuth logins aren't copied.": "Trae los proveedores y API keys de pi (~/.pi/agent). Los inicios de sesión OAuth no se copian.",
+  "Importing…": "Importando…",
+  "Nothing new to import": "Nada nuevo que importar",
+  "Imported: {list}": "Importados: {list}",
+  "Now the default: {p} · {m}": "Ahora por defecto: {p} · {m}"
 }

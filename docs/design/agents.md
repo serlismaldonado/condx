@@ -102,8 +102,15 @@ always a proposal: it waits for your approval whatever the level.
 - The daemon follows each run every 3 s, adds its tokens to today's usage, stops it past the daily
   budget, and stores the answer in the incident (`agent`). Writing to the agent steers it while it
   works or continues the conversation.
-- One provider per built-in kind (pi-ai registers providers by kind); OpenAI-compatible ones can be
-  several.
+- One provider per built-in kind (pi-ai registers providers by kind); OpenAI- and
+  Anthropic-compatible ones (own base URL) can be several.
+- **Import from pi** (Settings → Agents): the daemon reads `~/.pi/agent` (`models.json` custom
+  providers with their URL and models, `auth.json` API keys, `settings.json` default) and stores each
+  key encrypted. OAuth logins aren't copied (they rotate their tokens: a copy would break pi's
+  session) and keys that come from a command (`!…`) aren't run.
+- Tried with a real model (MiniMax M3, imported from pi) on 2026-10-25: on a one-line date bug it
+  diagnosed the cause with the exact evidence (~40k tokens), and in fix mode reproduced the failure
+  with `npm test` offline, changed the line, got the tests passing and left the commit (~30k tokens).
 
 ## 6.2 Fix mode (A3)
 

@@ -441,6 +441,22 @@ async fn post_agent_provider(AxState(state): AxState<Shared>, Extension(client):
     }
 }
 
+/// Trae los proveedores y claves de pi (agents::import_from_pi): lo pulsa la persona en la app.
+async fn post_agents_import_pi(AxState(state): AxState<Shared>, Extension(client): Extension<Client>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let st = state.clone();
+    match tokio::task::spawn_blocking(move || crate::agents::import_from_pi(&st, &crate::agents::pi_dir(), &crate::agents::seal_for_mac)).await {
+        Ok(Ok(v)) => {
+            crate::agent_host::push_providers(&state).await;
+            Json(v).into_response()
+        }
+        Ok(Err(e)) => fail(StatusCode::BAD_REQUEST, e),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, anyhow::anyhow!(e.to_string())),
+    }
+}
+
 async fn delete_agent_provider(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Path(id): Path<String>) -> Response {
     if let Some(r) = deny(&client, Scope::JobsApprove) {
         return r;
@@ -1021,6 +1037,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agents/settings", post(post_agent_settings))
         .route("/api/agents/providers", post(post_agent_provider))
         .route("/api/agents/providers/{id}", delete(delete_agent_provider))
+        .route("/api/agents/import-pi", post(post_agents_import_pi))
         .route("/api/agent-runs/{id}", get(get_agent_run))
         .route("/api/agent-runs/{id}/{action}", post(post_agent_run_action))
         .route("/api/projects", get(get_projects).post(post_project))

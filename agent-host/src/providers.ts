@@ -3,6 +3,7 @@
 // nunca en disco ni en el entorno del proceso.
 
 import { createModels, createProvider, InMemoryCredentialStore, type MutableModels } from "@earendil-works/pi-ai";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { googleProvider } from "@earendil-works/pi-ai/providers/google";
@@ -31,8 +32,14 @@ const BUILTIN: Record<string, () => Parameters<MutableModels["setProvider"]>[0]>
 };
 
 /** El id con que pi-ai conoce al proveedor: el tipo para los integrados (uno por tipo), el propio para los compatibles. */
+/** Los de URL propia (compatibles con la API de OpenAI o con la de Anthropic): pueden ser varios. */
+const COMPATIBLE: Record<string, { api: "openai-completions" | "anthropic-messages"; streams: () => ReturnType<typeof openAICompletionsApi> }> = {
+  "openai-compatible": { api: "openai-completions", streams: openAICompletionsApi },
+  "anthropic-compatible": { api: "anthropic-messages", streams: anthropicMessagesApi },
+};
+
 export function piProviderId(p: ProviderConfig): string {
-  return p.kind === "openai-compatible" ? `condx-${p.id}` : p.kind;
+  return p.kind in COMPATIBLE ? `condx-${p.id}` : p.kind;
 }
 
 /** Solo pruebas: el proveedor guionado de pi-ai, que main.ts registra aparte. */
@@ -53,16 +60,17 @@ export class Providers {
       this.#configs.set(p.id, p);
       const id = piProviderId(p);
       if (p.kind === FAUX) continue;
-      if (p.kind === "openai-compatible") {
-        if (!p.baseUrl || !p.model) throw new Error(`${p.id}: an OpenAI-compatible provider needs a base URL and a model`);
+      const compatible = COMPATIBLE[p.kind];
+      if (compatible) {
+        if (!p.baseUrl || !p.model) throw new Error(`${p.id}: a compatible provider needs a base URL and a model`);
         this.models.setProvider(
           createProvider({
             id,
             name: p.id,
             baseUrl: p.baseUrl,
             auth: { apiKey: { name: p.id, resolve: async () => ({ auth: p.apiKey ? { apiKey: p.apiKey } : {} }) } },
-            models: [{ id: p.model, name: p.model, api: "openai-completions", provider: id, baseUrl: p.baseUrl, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 16_000 }],
-            api: openAICompletionsApi(),
+            models: [{ id: p.model, name: p.model, api: compatible.api, provider: id, baseUrl: p.baseUrl, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 16_000 }],
+            api: compatible.streams(),
           }),
         );
       } else {

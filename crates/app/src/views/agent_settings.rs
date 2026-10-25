@@ -61,6 +61,15 @@ impl DevtoolApp {
         }, cx);
     }
 
+    /// El daemon lee la configuración de pi (~/.pi/agent) y guarda sus claves cifradas.
+    fn import_from_pi(&mut self, cx: &mut Context<Self>) {
+        self.agents_import = Some(Load::Loading);
+        self.post("/api/agents/import-pi".into(), Value::Null, |app, res, cx| {
+            app.agents_import = Some(res);
+            app.load_agents(cx);
+        }, cx);
+    }
+
     fn delete_provider(&mut self, id: String, cx: &mut Context<Self>) {
         self.delete(format!("/api/agents/providers/{id}"), |app, res, cx| match res {
             Load::Failed(e) => app.agents_error = Some(e),
@@ -157,6 +166,33 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         );
     }
 
+    // Traer los de pi (el agente de código), si los tiene: lo hace el daemon, sin pasar por aquí.
+    let import = {
+        let mut row = v_flex().gap_1().child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(Button::new("prov-import-pi").xsmall().outline().icon(IconName::ArrowDown).label(t!("Import from pi")).on_click(cx.listener(|this, _, _, cx| this.import_from_pi(cx))))
+                .child(ui::muted(t!("Brings pi's providers and API keys (~/.pi/agent). OAuth logins aren't copied."), cx).text_xs()),
+        );
+        match &app.agents_import {
+            Some(Load::Loading) => row = row.child(ui::muted(t!("Importing…"), cx)),
+            Some(Load::Failed(e)) => row = row.child(ui::status_tag(Health::Bad, e.clone())),
+            Some(Load::Ready(v)) => {
+                let names: Vec<String> = v["imported"].as_array().into_iter().flatten().map(|p| format!("{} ({})", ui::txt(&p["id"]), ui::txt(&p["model"]))).collect();
+                row = row.child(ui::status_tag(if names.is_empty() { Health::Unknown } else { Health::Ok }, if names.is_empty() { t!("Nothing new to import").to_string() } else { t!("Imported: {list}", list = names.join(", ")).to_string() }));
+                if let Some(d) = v["default"]["provider"].as_str() {
+                    row = row.child(ui::muted(t!("Now the default: {p} · {m}", p = d, m = ui::txt(&v["default"]["model"])), cx).text_xs());
+                }
+                for s in v["skipped"].as_array().into_iter().flatten() {
+                    row = row.child(ui::muted(format!("{} · {}", ui::txt(&s["name"]), ui::txt(&s["reason"])), cx).text_xs());
+                }
+            }
+            None => {}
+        }
+        row
+    };
+
     // Agregar uno: tipo, nombre, URL base (si la pide), modelo y la clave.
     let kind = kinds.iter().find(|k| k["id"] == app.agent_kind.as_str()).cloned().unwrap_or(Value::Null);
     let mut kind_buttons = h_flex().gap_1().flex_wrap();
@@ -205,6 +241,7 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         .child(autonomy)
         .child(ui::section(t!("Providers"), cx))
         .child(saved)
+        .child(import)
         .child(add)
         .child(ui::section(t!("Limits"), cx))
         .child(h_flex().gap_3().items_center().child(ui::muted(t!("Tokens per day"), cx).text_xs().w(px(150.))).child(budget_buttons))

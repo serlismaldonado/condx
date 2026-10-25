@@ -119,6 +119,7 @@ pub const KINDS: &[Kind] = &[
     Kind { id: "groq", label: "Groq", needs_base_url: false, model: "llama-3.3-70b-versatile" },
     Kind { id: "mistral", label: "Mistral", needs_base_url: false, model: "mistral-large-latest" },
     Kind { id: "openai-compatible", label: "OpenAI-compatible (Ollama, vLLM…)", needs_base_url: true, model: "" },
+    Kind { id: "anthropic-compatible", label: "Anthropic-compatible (MiniMax…)", needs_base_url: true, model: "" },
 ];
 
 fn kind(id: &str) -> Option<&'static Kind> {
@@ -256,6 +257,122 @@ pub fn delete_provider(state: &Shared, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// La carpeta de pi (el agente de código): `CONDX_PI_DIR` o `~/.pi/agent`.
+pub fn pi_dir() -> std::path::PathBuf {
+    std::env::var("CONDX_PI_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".pi/agent"))
+}
+
+fn read_json(path: &std::path::Path) -> Value {
+    std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null)
+}
+
+/// Variables de `~/.pi/agent/.env` (`NAME=valor`, con o sin `export`).
+fn pi_env(dir: &std::path::Path) -> std::collections::HashMap<String, String> {
+    std::fs::read_to_string(dir.join(".env"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().trim_start_matches("export ").trim().to_string(), v.trim().trim_matches('"').trim_matches('\'').to_string()))
+        .collect()
+}
+
+/// La clave de un proveedor de pi: la de `models.json` (literal o `env:NOMBRE`, que se busca en
+/// `auth.json`, en `.env` y en el entorno) o, si no, su API key de `auth.json`. Los comandos
+/// (`!…`) no se ejecutan.
+fn pi_key(dir: &std::path::Path, auth: &Value, provider: &str, model_key: Option<&str>) -> Option<String> {
+    let from_auth = || auth[provider].as_object().filter(|o| o.get("type").and_then(Value::as_str) == Some("api_key")).and_then(|o| o.get("key")?.as_str().map(str::to_string));
+    match model_key {
+        Some(k) if k.starts_with('!') => from_auth(),
+        Some(k) if k.starts_with("env:") => {
+            let var = &k[4..];
+            auth[format!("env:{var}")].as_str().or(auth[var].as_str()).map(str::to_string).or_else(|| pi_env(dir).get(var).cloned()).or_else(|| std::env::var(var).ok()).filter(|v| !v.is_empty()).or_else(from_auth)
+        }
+        Some(k) if !k.is_empty() => Some(k.to_string()),
+        _ => from_auth(),
+    }
+}
+
+/// Trae los proveedores de pi: los de `models.json` (compatibles con OpenAI o con Anthropic, con
+/// su URL y modelos) y las API keys de `auth.json` de los tipos integrados. Los inicios de sesión
+/// OAuth no se copian (renuevan sus tokens: copiarlos rompería la sesión de pi). No pisa los que
+/// ya hay. El proveedor y modelo por defecto de pi pasan a ser los de Condx si no hay uno.
+pub fn import_from_pi(state: &Shared, dir: &std::path::Path, seal_to: &dyn Fn(&str) -> Result<String>) -> Result<Value> {
+    let auth = read_json(&dir.join("auth.json"));
+    let models = read_json(&dir.join("models.json"));
+    let settings_pi = read_json(&dir.join("settings.json"));
+    if auth.is_null() && models.is_null() {
+        bail!("there's no pi configuration in {}", dir.display());
+    }
+    let existing: Vec<String> = state.store.agent_providers()?.iter().filter_map(|p| p["id"].as_str().map(str::to_string)).collect();
+    let (pi_default, pi_model) = (settings_pi["defaultProvider"].as_str(), settings_pi["defaultModel"].as_str());
+    let mut imported = vec![];
+    let mut skipped = vec![];
+    let mut covered = std::collections::HashSet::new();
+    let add = |id: &str, body: ProviderBody, imported: &mut Vec<Value>, skipped: &mut Vec<Value>| {
+        if existing.iter().any(|e| e == id) {
+            skipped.push(json!({ "name": id, "reason": "already in Condx" }));
+            return;
+        }
+        match upsert_provider(state, body, seal_to) {
+            Ok(p) => imported.push(json!({ "id": p["id"], "kind": p["kind"], "model": p["model"] })),
+            Err(e) => skipped.push(json!({ "name": id, "reason": format!("{e:#}") })),
+        }
+    };
+    for (name, p) in models["providers"].as_object().cloned().unwrap_or_default() {
+        covered.insert(name.clone());
+        let kind = match p["api"].as_str() {
+            Some("openai-completions") => "openai-compatible",
+            Some("anthropic-messages") => "anthropic-compatible",
+            other => {
+                skipped.push(json!({ "name": name, "reason": format!("its API ({}) isn't supported yet", other.unwrap_or("?")) }));
+                continue;
+            }
+        };
+        let ids: Vec<&str> = p["models"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str()).collect();
+        let model = pi_model.filter(|m| pi_default == Some(name.as_str()) && ids.contains(m)).or(ids.first().copied()).map(str::to_string);
+        let key = pi_key(dir, &auth, &name, p["apiKey"].as_str());
+        let url = p["baseUrl"].as_str().unwrap_or_default();
+        let local = url.contains("://127.0.0.1") || url.contains("://localhost");
+        if key.is_none() && !local {
+            let why = if p["apiKey"].as_str().is_some_and(|k| k.starts_with('!')) { "its key comes from a command (Condx doesn't run it)" } else { "its key wasn't found" };
+            skipped.push(json!({ "name": name, "reason": why }));
+            continue;
+        }
+        let body = ProviderBody { id: None, kind: kind.into(), label: Some(name.clone()), base_url: p["baseUrl"].as_str().map(str::to_string), model, api_key: key };
+        add(&slug(&name), body, &mut imported, &mut skipped);
+    }
+    for (name, cred) in auth.as_object().cloned().unwrap_or_default() {
+        if covered.contains(&name) || !cred.is_object() {
+            continue;
+        }
+        match cred["type"].as_str() {
+            Some("oauth") => skipped.push(json!({ "name": name, "reason": "OAuth login: not copied (it would break pi's session); add an API key instead" })),
+            Some("api_key") if kind(&name).is_some_and(|k| !k.needs_base_url) => {
+                let body = ProviderBody { id: None, kind: name.clone(), label: None, base_url: None, model: None, api_key: cred["key"].as_str().map(str::to_string) };
+                add(&slug(kind(&name).map(|k| k.label).unwrap_or(&name)), body, &mut imported, &mut skipped);
+            }
+            Some("api_key") => skipped.push(json!({ "name": name, "reason": "not a model provider Condx knows" })),
+            _ => {}
+        }
+    }
+    // El de pi por defecto, si se trajo y Condx no tiene uno.
+    let mut default = Value::Null;
+    if let Some(d) = pi_default.map(slug) {
+        let mut s = settings(state);
+        if s.default_provider.is_none() {
+            if let Some(p) = imported.iter().find(|p| p["id"] == d.as_str()) {
+                s.default_provider = Some(d.clone());
+                s.default_model = p["model"].as_str().map(str::to_string);
+                state.store.save_probe(SETTINGS_KEY, &serde_json::to_value(&s)?)?;
+                default = json!({ "provider": d, "model": s.default_model });
+            }
+        }
+    }
+    tracing::info!("imported {} provider(s) from pi", imported.len());
+    Ok(json!({ "imported": imported, "skipped": skipped, "default": default, "from": dir.display().to_string() }))
+}
+
 /// Todo lo que la app muestra en Configuración → Agentes.
 pub fn json(state: &Shared) -> Value {
     let providers: Vec<Value> = state.store.agent_providers().unwrap_or_default().iter().map(public).collect();
@@ -351,4 +468,56 @@ mod tests {
         assert!(save_settings(&st, &json!({ "defaultProvider": "ghost", "maxConcurrent": 1 })).is_err());
         assert!(save_settings(&st, &json!({ "maxConcurrent": 0 })).is_err());
     }
+
+    #[test]
+    fn trae_los_proveedores_de_pi_sin_oauth_ni_comandos() {
+        let st = state();
+        let dir = tempfile::tempdir().unwrap();
+        let w = |f: &str, v: Value| std::fs::write(dir.path().join(f), v.to_string()).unwrap();
+        w("auth.json", json!({
+            "anthropic": { "type": "oauth", "access": "a", "refresh": "r", "expires": 1 },
+            "openrouter": { "type": "api_key", "key": "sk-or-test" },
+            "nvidia": { "type": "api_key", "key": "nvapi-test" },
+            "resend": { "type": "api_key", "key": "re_test" },
+            "env:MOON_KEY": "sk-moon-from-auth",
+            "EBAY_APP_ID": "x",
+        }));
+        w("models.json", json!({ "providers": {
+            "minimax": { "api": "anthropic-messages", "baseUrl": "https://api.minimax.io/anthropic", "apiKey": "mm-literal", "models": [{ "id": "MiniMax-M2.7" }, { "id": "MiniMax-M3" }] },
+            "nvidia": { "api": "openai-completions", "baseUrl": "https://integrate.api.nvidia.com/v1", "apiKey": "env:NVIDIA_API_KEY_UNSET_IN_TESTS", "models": [{ "id": "meta/llama" }] },
+            "moonshot": { "api": "openai-completions", "baseUrl": "https://api.moonshot.ai/v1", "apiKey": "env:MOON_KEY", "models": [{ "id": "kimi" }] },
+            "sneaky": { "api": "openai-completions", "baseUrl": "https://x.test/v1", "apiKey": "!cat ~/.ssh/id_rsa", "models": [{ "id": "m" }] },
+            "bedrock": { "api": "bedrock-converse-stream", "models": [] },
+        }}));
+        w("settings.json", json!({ "defaultProvider": "minimax", "defaultModel": "MiniMax-M3" }));
+        let mac = age::x25519::Identity::generate();
+        let to = mac.to_public();
+        let seal_to = move |k: &str| seal(k, std::slice::from_ref(&to));
+        let out = import_from_pi(&st, dir.path(), &seal_to).unwrap();
+        let mut ids: Vec<&str> = out["imported"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["minimax", "moonshot", "nvidia", "openrouter"], "{out}");
+        let key = |id: &str| {
+            let p = st.store.agent_providers().unwrap().into_iter().find(|p| p["id"] == id).unwrap();
+            (p["kind"].as_str().unwrap().to_string(), p["model"].as_str().unwrap_or("").to_string(), open(p["sealedKey"].as_str().unwrap(), &mac).unwrap())
+        };
+        assert_eq!(key("minimax"), ("anthropic-compatible".into(), "MiniMax-M3".into(), "mm-literal".into()));
+        assert_eq!(key("moonshot").2, "sk-moon-from-auth");
+        // Una variable que no existe: la API key de auth.json del mismo proveedor.
+        assert_eq!(key("nvidia").2, "nvapi-test");
+        assert_eq!(key("openrouter").0, "openrouter");
+        let skipped = out["skipped"].to_string();
+        assert!(skipped.contains("OAuth"), "{skipped}");
+        assert!(skipped.contains("bedrock"));
+        assert!(skipped.contains("resend"));
+        // El comando no se ejecutó: sin clave en auth.json, no hay clave y no se importa.
+        assert!(!ids.contains(&"sneaky"));
+        assert!(skipped.contains("command (Condx doesn't run it)"), "{skipped}");
+        assert_eq!(out["default"]["provider"], "minimax");
+        assert_eq!(settings(&st).default_model.as_deref(), Some("MiniMax-M3"));
+        // Otra vez: no pisa nada.
+        let again = import_from_pi(&st, dir.path(), &seal_to).unwrap();
+        assert!(again["imported"].as_array().unwrap().is_empty());
+    }
 }
+

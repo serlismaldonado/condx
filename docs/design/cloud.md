@@ -127,10 +127,19 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 | --- | --- | --- |
 | **C0** ✅ | Clone the library, this doc, Rust `localfirst-core`: types, `planOp`, sets, view, with the TS tests ported and shared JSON fixtures | done 2026-10-25: 400 shared cases match (`condx-localfirst`, branch `condx`) |
 | **C1** ✅ | Reduced engine in Rust: SQLite outbox and replica, cursors, backoff; a fake transport and the contract tests | done 2026-10-25: sans-IO engine; 6000 seeds × 100 steps converge on memory and SQLite, with calls in flight across steps |
-| C2 | Condx Cloud backend (Convex project): tables, doorbell/pull/push for Condx scopes, auth | push/pull tested with convex-test |
+| **C2** ✅ | Condx Cloud backend (Convex project): tables, doorbell/pull/push for Condx scopes, auth | done 2026-10-25: 15 convex-test tests, differential vs `FakeServer` (300 seeds agree), and the Rust engine against a throwaway local backend |
 | C3 | Daemon publishes `env`, `jobs`, `approvals` (one-way mirror) through the Rust transport | the web view shows the daemon live |
 | C4 | **Approve from the phone**: requests, the daemon's checks, Touch ID for production, pairing by QR | an approval from the phone runs a job on the Mac; a stale one is refused |
 | C5 | Workflows on/off and runs from the phone; several daemons per user | — |
+
+### 7.1 Notes from C2
+
+- Convex stores object keys sorted. Fields in `set` and `overwrote` may come back in another order
+  (harmless), and set items that are objects get their keys sorted: keep set items scalar, or
+  objects with sorted keys, so the local view matches before the server confirms.
+- A permanent rejection is a `ConvexError` with `{ code, message, status }`; Convex rolls back the
+  whole group. Numbers come back as float64 (`1.0`); the Rust transport normalizes them.
+- Registering a daemon is internal (admin or deploy key only): no public function creates daemons.
 
 ## 8. Open questions
 

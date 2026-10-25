@@ -821,5 +821,12 @@
   "Its result: free text (in {node.<id>.report}).": "Su resultado: texto libre (en {node.<id>.report}).",
   "Its result: {f}. Use them as {{node.{id}.<field>}} in later nodes.": "Su resultado: {f}. Úsalos como {{node.{id}.<campo>}} en los nodos siguientes.",
   "Instructions for this flow": "Instrucciones para este flujo",
-  "It reads the event that started the flow and the results of the nodes connected to it.": "Lee el evento que inició el flujo y los resultados de los nodos conectados a él."
+  "It reads the event that started the flow and the results of the nodes connected to it.": "Lee el evento que inició el flujo y los resultados de los nodos conectados a él.",
+  "Flows": "Flujos",
+  "Priority": "Prioridad",
+  "Normal": "Normal",
+  "High (urgent on the phone)": "Alta (urgente en el teléfono)",
+  "It goes to the phone (Settings → Notifications) and stays in the run. Use {node.<id>.<field>} for the agents' results.": "Llega al teléfono (Configuración → Notificaciones) y queda en la corrida. Usa {node.<id>.<campo>} para los resultados de los agentes.",
+  "From {a}, only if (empty: always):": "Desde {a}, solo si (vacío: siempre):",
+  "For example: risk.risk >= high and risk.immediate_fix == true · review.verdict == approve · deploy.status == failed": "Por ejemplo: risk.risk >= high and risk.immediate_fix == true · review.verdict == approve · deploy.status == failed"
 }

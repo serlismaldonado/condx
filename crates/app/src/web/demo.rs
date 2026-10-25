@@ -90,6 +90,13 @@ pub fn get(path: &str) -> Result<Value> {
             json!(s.incidents.iter().filter(|i| (i["status"] == "resolved") == resolved).cloned().collect::<Vec<_>>())
         }),
         ["agents"] => with(|s| s.agents.clone()),
+        ["agents", "roles"] => json!({ "roles": [
+            { "id": "triage", "name": "Triage", "enabled": true, "mode": "read", "instructions": "You triage an error: where it happens and the most likely cause.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": { "summary": "string", "where": "list", "likely_cause": "string", "confidence": "low|medium|high" }, "builtin": true },
+            { "id": "risk", "name": "Risk", "enabled": true, "mode": "read", "instructions": "You rate the risk of a triaged error, what to check and whether it needs a fix now.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": { "risk": "low|medium|high|critical", "impact": "string", "check": "list", "immediate_fix": "boolean", "reason": "string" }, "builtin": true },
+            { "id": "fixer", "name": "Fixer", "enabled": true, "mode": "write", "instructions": "You fix the error in your own worktree.", "tools": [], "maxTokens": 150000, "maxMinutes": 15, "output": { "change": "string", "files": "list", "checks": "string" }, "builtin": true },
+            { "id": "reviewer", "name": "Reviewer", "enabled": true, "mode": "read", "instructions": "You review a fix another agent made.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": { "verdict": "approve|changes", "findings": "list" }, "builtin": true },
+            { "id": "explainer", "name": "Explainer", "enabled": true, "mode": "read", "instructions": "You answer the developer's questions.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": {}, "builtin": true },
+        ], "tools": ["read_file", "list_files", "search_code", "git_log", "git_show", "condx", "edit_file", "write_file", "run_check"] }),
         ["agent-runs"] => json!({ "runs": [
             { "id": "chat-demo-1", "kind": "chat", "title": "Which functions does the mobile app call?", "incident": null, "mode": "chat", "status": "done", "model": "claude-sonnet-5-5", "startedAt": now() - 20 * MIN, "usage": 9_310 },
             { "id": "run-demo-1", "kind": "incident", "title": "Vercel deploy of fix/date-picker failed", "incident": "inc-1", "mode": "diagnose", "status": "done", "model": "claude-sonnet-5-5", "startedAt": now() - 45 * MIN, "usage": 18_420 },
@@ -637,7 +644,21 @@ fn flow(id: &str, name: &str, description: &str, enabled: bool, nodes: Vec<Value
 }
 
 fn default_workflows() -> Vec<Value> {
+    // Con agentes: Triage → Riesgo, y el aviso urgente solo si el riesgo es alto.
+    let mut triage = flow(
+        "w-triage",
+        "Triage an error, notify if risky",
+        "An agent looks at the error, another rates the risk; the notice only goes out when it's high or critical.",
+        true,
+        vec![
+            node("triage", "agent", "Triage", 0., json!({ "agent": "triage" })),
+            node("risk", "agent", "Risk", 380., json!({ "agent": "risk" })),
+            node("notify", "notify", "Urgent notice", 760., json!({ "message": "Risk {node.risk.risk}: {node.triage.summary}", "priority": "high" })),
+        ],
+    );
+    triage["conditions"] = json!({ "risk>notify": "risk.risk >= high" });
     vec![
+        triage,
         flow(
             "w-deploy-dev",
             "Deploy to cloud dev",
@@ -684,7 +705,16 @@ fn default_runs() -> Vec<Value> {
         let nodes: Vec<Value> = order.iter().map(|id| json!({ "id": id, "status": "succeeded", "job": null, "startedAt": t - ago, "endedAt": t - ago + 30_000, "message": "", "outputs": {} })).collect();
         json!({ "id": format!("r-{}", w["id"].as_str().unwrap_or_default()), "workflowId": w["id"], "workflowName": w["name"], "project": PROJECT, "commit": "main", "status": "succeeded", "requestedBy": "app", "createdAt": t - ago, "endedAt": t - ago + 40_000, "error": null, "order": order, "nodes": nodes, "snapshot": w })
     };
-    vec![run(&flows[0], 20 * HOUR), run(&flows[1], 2 * HOUR)]
+    let mut triage = run(&flows[0], 25 * MIN);
+    triage["event"] = json!({ "source": "convex-error", "env": DEV, "title": "Uncaught Error in payments:charge" });
+    triage["nodes"][0]["job"] = json!("r-w-triage-triage");
+    triage["nodes"][0]["message"] = json!("Triage: payments:charge throws when the card is null");
+    triage["nodes"][0]["outputs"] = json!({ "summary": "payments:charge throws when the card is null", "where": "convex/payments.ts:40", "likely_cause": "missing null check on card", "confidence": "high" });
+    triage["nodes"][1]["job"] = json!("r-w-triage-risk");
+    triage["nodes"][1]["message"] = json!("Risk: high");
+    triage["nodes"][1]["outputs"] = json!({ "risk": "high", "impact": "checkout fails for users without a saved card", "check": "convex/payments.ts:40", "immediate_fix": "true", "reason": "main flow broken" });
+    triage["nodes"][2]["message"] = json!("Risk high: payments:charge throws when the card is null");
+    vec![triage, run(&flows[1], 20 * HOUR), run(&flows[2], 2 * HOUR)]
 }
 
 fn workflows() -> Value {

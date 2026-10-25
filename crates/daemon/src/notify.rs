@@ -29,11 +29,13 @@ pub struct Settings {
     pub incidents: bool,
     pub agents: bool,
     pub approvals: bool,
+    /// Los avisos de los flujos (nodo «aviso»).
+    pub flows: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { enabled: false, server: "https://ntfy.sh".into(), topic: String::new(), incidents: true, agents: true, approvals: true }
+        Self { enabled: false, server: "https://ntfy.sh".into(), topic: String::new(), incidents: true, agents: true, approvals: true, flows: true }
     }
 }
 
@@ -122,6 +124,7 @@ pub fn send(state: &Shared, kind: &str, m: Message) {
         "incident" => s.incidents,
         "agent" => s.agents,
         "approval" => s.approvals,
+        "flow" => s.flows,
         _ => true,
     };
     if !s.enabled || !wanted {

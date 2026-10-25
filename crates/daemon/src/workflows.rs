@@ -89,8 +89,16 @@ pub struct Workflow {
     /// Aristas `[desde, hasta]`.
     #[serde(default)]
     pub edges: Vec<(String, String)>,
+    /// Condición de una arista (`"desde>hasta"` → `risk.risk >= high`; conditions.rs). Sin
+    /// condición, la arista se cumple cuando el nodo de origen terminó.
+    #[serde(default)]
+    pub conditions: HashMap<String, String>,
     #[serde(default)]
     pub updated_at: i64,
+}
+
+pub fn edge_key(from: &str, to: &str) -> String {
+    format!("{from}>{to}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +234,17 @@ pub fn problems(w: &Workflow, envs: &HashSet<String>, recipe_exists: impl Fn(&st
     if let Err(e) = topo_order(w) {
         out.push(e.to_string());
     }
+    for (key, cond) in &w.conditions {
+        if cond.trim().is_empty() {
+            continue;
+        }
+        let Some((a, b)) = key.split_once('>') else { continue };
+        if !w.edges.iter().any(|(x, y)| x == a && y == b) {
+            out.push(format!("the condition on {a} → {b} has no connection"));
+        } else if let Err(e) = crate::conditions::check(cond) {
+            out.push(format!("condition on {a} → {b}: {e}"));
+        }
+    }
     let s = |n: &Node, k: &str| n.params[k].as_str().unwrap_or_default().trim().to_string();
     for n in w.nodes.iter().filter(|n| n.enabled) {
         let t = &n.title;
@@ -331,12 +350,12 @@ pub fn templates(project: &str, is_default: bool, envs: &[(String, String)]) -> 
             node("promote", NodeKind::Recipe, "Promote to production", 1200., 0., json!({ "recipe": "promote-prod", "env": prod, "args": { "commit": "{run.commit}" } })),
         ];
         let edges = chain(&nodes);
-        out.push(Workflow { id: String::new(), project: project.into(), name: "Promotion to production".into(), description: "The usual chain: backup, rehearsal, cloud dev, a 30-minute wait and production.".into(), nodes, edges, enabled: true, updated_at: 0 });
+        out.push(Workflow { id: String::new(), project: project.into(), name: "Promotion to production".into(), description: "The usual chain: backup, rehearsal, cloud dev, a 30-minute wait and production.".into(), nodes, edges, enabled: true, conditions: HashMap::new(), updated_at: 0 });
     }
     // Los sugeridos (`suggested`): se crean apagados con «Crear los sugeridos».
     let flow = |name: &str, description: &str, nodes: Vec<Node>| {
         let edges = chain(&nodes);
-        Workflow { id: String::new(), project: project.into(), name: name.into(), description: description.into(), nodes, edges, enabled: true, updated_at: 0 }
+        Workflow { id: String::new(), project: project.into(), name: name.into(), description: description.into(), nodes, edges, enabled: true, conditions: HashMap::new(), updated_at: 0 }
     };
     if !local.is_empty() {
         out.push(flow(
@@ -415,8 +434,20 @@ pub fn templates(project: &str, is_default: bool, envs: &[(String, String)]) -> 
             node("notify", NodeKind::Notify, "Notice", 600., 0., json!({ "message": "Reviewed: {node.triage.summary} · risk {node.risk.risk} · fix now: {node.risk.immediate_fix}" })),
         ],
     ));
-    out.push(Workflow { id: String::new(), project: project.into(), name: "Example: check, approve and run".into(), description: "A starting point for building your own.".into(), nodes, edges, enabled: true, updated_at: 0 });
-    out.push(Workflow { id: String::new(), project: project.into(), name: "Blank".into(), description: String::new(), nodes: vec![], edges: vec![], enabled: true, updated_at: 0 });
+    // Lo mismo, pero solo avisa (con prioridad alta) si el riesgo es alto o crítico.
+    let mut urgent = flow(
+        "Triage an error, notify if risky",
+        "Like “Triage an error”, but the notice only goes out when the risk is high or critical, and with high priority.",
+        vec![
+            node("triage", NodeKind::Agent, "Triage", 0., 0., json!({ "agent": "triage" })),
+            node("risk", NodeKind::Agent, "Risk", 380., 0., json!({ "agent": "risk" })),
+            node("notify", NodeKind::Notify, "Urgent notice", 760., 0., json!({ "message": "Risk {node.risk.risk}: {node.triage.summary}. Check: {node.risk.check}", "priority": "high" })),
+        ],
+    );
+    urgent.conditions.insert(edge_key("risk", "notify"), "risk.risk >= high".into());
+    out.push(urgent);
+    out.push(Workflow { id: String::new(), project: project.into(), name: "Example: check, approve and run".into(), description: "A starting point for building your own.".into(), nodes, edges, enabled: true, conditions: HashMap::new(), updated_at: 0 });
+    out.push(Workflow { id: String::new(), project: project.into(), name: "Blank".into(), description: String::new(), nodes: vec![], edges: vec![], enabled: true, conditions: HashMap::new(), updated_at: 0 });
     out
 }
 
@@ -496,7 +527,7 @@ pub fn get(state: &Shared, id: &str) -> Result<Workflow> {
 
 /// JSON para el repo: sin id ni proyecto (se asignan al importar).
 pub fn export(w: &Workflow) -> Value {
-    json!({ "condxWorkflow": 1, "name": w.name, "description": w.description, "enabled": w.enabled, "nodes": w.nodes, "edges": w.edges })
+    json!({ "condxWorkflow": 1, "name": w.name, "description": w.description, "enabled": w.enabled, "nodes": w.nodes, "edges": w.edges, "conditions": w.conditions })
 }
 
 pub fn import(project: &str, raw: &Value) -> Result<Workflow> {
@@ -511,6 +542,7 @@ pub fn import(project: &str, raw: &Value) -> Result<Workflow> {
         nodes: serde_json::from_value(raw["nodes"].clone())?,
         edges: serde_json::from_value(raw["edges"].clone()).unwrap_or_default(),
         enabled: raw["enabled"].as_bool().unwrap_or(true),
+        conditions: serde_json::from_value(raw["conditions"].clone()).unwrap_or_default(),
         updated_at: 0,
     })
 }
@@ -657,6 +689,13 @@ async fn execute(state: &Shared, run_id: &str, mut cancel: watch::Receiver<bool>
             persist(state, &run);
             continue;
         }
+        // Por qué camino se llega: si ninguna arista de entrada se cumple, se salta.
+        if let Some(why) = blocked(state, &run, &node.id) {
+            run.nodes[i].status = NodeStatus::Skipped;
+            run.nodes[i].message = why;
+            persist(state, &run);
+            continue;
+        }
         if run.nodes[i].started_at.is_none() {
             run.nodes[i].started_at = Some(now_ms());
         }
@@ -722,6 +761,58 @@ async fn follow_job(state: &Shared, run: &mut Run, i: usize, job_id: &str, cance
     }
 }
 
+/// Lo que las condiciones leen de una corrida: las salidas de sus nodos, su estado y el orden de
+/// las opciones de cada agente (low < medium < high < critical).
+struct RunFacts<'a> {
+    state: &'a Shared,
+    run: &'a Run,
+}
+
+impl crate::conditions::Facts for RunFacts<'_> {
+    fn value(&self, node: &str, field: &str) -> Option<String> {
+        let nr = self.run.nodes.iter().find(|n| n.id == node)?;
+        if field == "status" {
+            return serde_json::to_value(nr.status).ok().and_then(|v| v.as_str().map(str::to_string));
+        }
+        nr.outputs.get(field).cloned()
+    }
+    fn order(&self, node: &str, field: &str) -> Option<Vec<String>> {
+        let n = self.run.snapshot.nodes.iter().find(|n| n.id == node)?;
+        let role = crate::roles::get(self.state, n.params["agent"].as_str()?)?;
+        let t = role.output.get(field)?;
+        t.contains('|').then(|| t.split('|').map(|v| v.trim().to_string()).collect())
+    }
+}
+
+/// `None` si el nodo puede correr: no tiene aristas de entrada, o alguna se cumple (su origen
+/// terminó —o está apagado— y su condición, si la tiene, es cierta). Si no, por qué se salta.
+fn blocked(state: &Shared, run: &Run, node: &str) -> Option<String> {
+    let incoming: Vec<&(String, String)> = run.snapshot.edges.iter().filter(|(_, b)| b == node).collect();
+    if incoming.is_empty() {
+        return None;
+    }
+    let facts = RunFacts { state, run };
+    let mut reasons = vec![];
+    for (from, _) in incoming {
+        let Some(src) = run.nodes.iter().find(|n| &n.id == from) else { continue };
+        let passed = match src.status {
+            NodeStatus::Succeeded | NodeStatus::Failed => true,
+            NodeStatus::Skipped => src.message == "disabled in the workflow",
+            _ => false,
+        };
+        if !passed {
+            reasons.push(format!("{from} didn't run"));
+            continue;
+        }
+        match run.snapshot.conditions.get(&edge_key(from, node)).filter(|c| !c.trim().is_empty()) {
+            None => return None,
+            Some(cond) if crate::conditions::eval(cond, &facts) => return None,
+            Some(cond) => reasons.push(format!("“{cond}” isn't true")),
+        }
+    }
+    Some(format!("skipped: {}", reasons.join("; ")))
+}
+
 async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut watch::Receiver<bool>) -> Result<String> {
     let p = &node.params;
     let s = |k: &str| p[k].as_str().unwrap_or_default().to_string();
@@ -770,6 +861,9 @@ async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut
         NodeKind::Notify => {
             let msg = substitute(&s("message"), run);
             run.nodes[i].outputs.insert("message".into(), msg.clone());
+            // Al teléfono (ntfy, si está encendido el aviso de flujos); prioridad alta si el nodo lo pide.
+            let high = s("priority") == "high";
+            crate::notify::send(state, "flow", crate::notify::Message { title: run.workflow_name.clone(), body: msg.clone(), tags: if high { "rotating_light" } else { "robot" }, priority: if high { 4 } else { 3 } });
             Ok(msg)
         }
         NodeKind::Agent => {
@@ -940,7 +1034,7 @@ mod tests {
     use super::*;
 
     fn wf(nodes: Vec<Node>, edges: Vec<(&str, &str)>) -> Workflow {
-        Workflow { id: "w1".into(), project: "p".into(), name: "Prueba".into(), description: String::new(), nodes, edges: edges.into_iter().map(|(a, b)| (a.into(), b.into())).collect(), enabled: true, updated_at: 0 }
+        Workflow { id: "w1".into(), project: "p".into(), name: "Prueba".into(), description: String::new(), nodes, edges: edges.into_iter().map(|(a, b)| (a.into(), b.into())).collect(), enabled: true, conditions: HashMap::new(), updated_at: 0 }
     }
 
     #[test]
@@ -1056,5 +1150,39 @@ mod tests {
         // El aviso usa las salidas de los agentes.
         run.nodes[1].outputs = crate::roles::outputs(&json!({ "risk": "high", "immediate_fix": true }), "");
         assert_eq!(substitute("{node.triage.summary} · {node.risk.risk} · {node.risk.immediate_fix}", &run), "charge throws on null card · high · true");
+    }
+
+    #[test]
+    fn una_arista_con_condicion_salta_lo_que_no_toca() {
+        let envs = vec![("dev".to_string(), "cloud-dev".to_string())];
+        let w = templates("otro", false, &envs).into_iter().find(|w| w.name == "Triage an error, notify if risky").unwrap();
+        let names: HashSet<String> = envs.iter().map(|(n, _)| n.clone()).collect();
+        assert!(problems(&w, &names, |_| true).is_empty());
+        let mut bad = w.clone();
+        bad.conditions.insert(edge_key("risk", "notify"), "risk >= high".into());
+        bad.conditions.insert(edge_key("triage", "notify"), "x.y == 1".into());
+        let p = problems(&bad, &names, |_| true);
+        assert!(p.iter().any(|x| x.contains("node.field")) && p.iter().any(|x| x.contains("no connection")), "{p:?}");
+        let st = crate::state::test_state();
+        let order = topo_order(&w).unwrap();
+        let mut run = Run {
+            id: "r1".into(), workflow_id: "w".into(), workflow_name: w.name.clone(), project: "otro".into(), commit: "abc".into(), status: RunStatus::Running,
+            snapshot: w.clone(), order: order.clone(),
+            nodes: order.iter().map(|id| NodeRun { id: id.clone(), status: NodeStatus::Succeeded, job: None, started_at: None, ended_at: None, message: String::new(), outputs: HashMap::new() }).collect(),
+            requested_by: "app".into(), created_at: 0, ended_at: None, error: None, event: None,
+        };
+        let risk = run.nodes.iter_mut().find(|n| n.id == "risk").unwrap();
+        risk.outputs = crate::roles::outputs(&json!({ "risk": "medium" }), "");
+        let why = blocked(&st, &run, "notify").unwrap();
+        assert!(why.contains("risk.risk >= high"), "{why}");
+        run.nodes.iter_mut().find(|n| n.id == "risk").unwrap().outputs = crate::roles::outputs(&json!({ "risk": "critical" }), "");
+        assert!(blocked(&st, &run, "notify").is_none(), "critical >= high, by the risk agent's order");
+        // Sin aristas de entrada corre; si el anterior se saltó, este también.
+        assert!(blocked(&st, &run, "triage").is_none());
+        run.nodes.iter_mut().find(|n| n.id == "risk").unwrap().status = NodeStatus::Skipped;
+        assert!(blocked(&st, &run, "notify").unwrap().contains("risk didn't run"));
+        // Exportar e importar conserva las condiciones.
+        let back = import("otro", &export(&w)).unwrap();
+        assert_eq!(back.conditions.get(&edge_key("risk", "notify")).map(String::as_str), Some("risk.risk >= high"));
     }
 }

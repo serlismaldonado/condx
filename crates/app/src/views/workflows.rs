@@ -227,6 +227,7 @@ fn canvas_el(app: &DevtoolApp, d: Value, run: Option<Value>, cx: &mut Context<De
     let status_of = move |id: &str| -> Option<String> { run.as_ref()?["nodes"].as_array()?.iter().find(|n| n["id"] == id).and_then(|n| n["status"].as_str().map(str::to_string)) };
     let nodes = nodes_of(&d);
     let edges: Vec<(String, String)> = d["edges"].as_array().into_iter().flatten().filter_map(|e| Some((e[0].as_str()?.to_string(), e[1].as_str()?.to_string()))).collect();
+    let conds: std::collections::HashMap<String, String> = d["conditions"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.trim().to_string()))).filter(|(_, v)| !v.is_empty()).collect()).unwrap_or_default();
     // Estados y colores calculados aquí (el pintado no tiene acceso al tema de Kit).
     let painted: Vec<(Value, Option<(String, Hsla)>)> = nodes
         .iter()
@@ -284,7 +285,19 @@ fn canvas_el(app: &DevtoolApp, d: Value, run: Option<Value>, cx: &mut Context<De
                 };
                 for (a, bb) in &edges {
                     if let (Some(pa), Some(pb)) = (pos(a), pos(bb)) {
-                        wire((pa.0 + NODE_W, pa.1 + NODE_H / 2.), (pb.0, pb.1 + NODE_H / 2.), t.subtle, 1.6, window);
+                        let cond = conds.get(&format!("{a}>{bb}"));
+                        wire((pa.0 + NODE_W, pa.1 + NODE_H / 2.), (pb.0, pb.1 + NODE_H / 2.), if cond.is_some() { t.accent_ink } else { t.subtle }, 1.6, window);
+                        // La condición, en una etiqueta a mitad de camino.
+                        if let Some(cond) = cond {
+                            let mid = view.to_view(((pa.0 + NODE_W + pb.0) / 2., (pa.1 + pb.1) / 2. + NODE_H / 2.));
+                            let fs = (11. * z).max(8.);
+                            let w = (cond.chars().count() as f32 * fs * 0.56 + 12.).min(260. * z);
+                            // Encima de la línea, para no tapar los puntos de los nodos.
+                            let top = mid.1 - fs * 2. - 8. * z;
+                            let lb = Bounds::new(o + point(px(mid.0 - w / 2.), px(top)), size(px(w), px(fs * 2.)));
+                            window.paint_quad(quad(lb, px(4.), t.panel, px(1.), t.accent_ink, BorderStyle::default()));
+                            text(cond, fs, t.accent_ink, FontWeight::MEDIUM, (f32::from(o.x) + mid.0 - w / 2. + 6., f32::from(o.y) + top + fs * 0.4), w - 10., window, cx);
+                        }
                     }
                 }
                 if let Some(WfGrab::Wire { from, now }) = &grab {
@@ -311,6 +324,7 @@ fn canvas_el(app: &DevtoolApp, d: Value, run: Option<Value>, cx: &mut Context<De
                         "approval" => t.accent,
                         "wait" => t.subtle,
                         "check" => t.muted,
+                        "agent" => rgb(0x60a5fa).into(),
                         _ => t.accent_ink.opacity(0.6),
                     };
                     window.paint_quad(fill(Bounds::new(r.origin + point(px(1.), px(1.)), size(px(4. * z), px(NODE_H * z - 2.))), stripe));
@@ -472,6 +486,20 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
     let message = field(app, format!("wf-{id}-message"), sv(if node["kind"] == "agent" { "instructions" } else { "message" }), window, cx);
     let minutes = field(app, format!("wf-{id}-minutes"), sv("minutes"), window, cx);
     let hours = field(app, format!("wf-{id}-hours"), sv("hours"), window, cx);
+    // Una entrada por arista que llega aquí, con su condición.
+    let cond_keys: Vec<String> = app
+        .wf_draft
+        .as_ref()
+        .and_then(|d| d["edges"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| e[1] == id.as_str())
+        .filter_map(|e| Some(format!("{}>{id}", e[0].as_str()?)))
+        .collect();
+    for key in &cond_keys {
+        let current = app.wf_draft.as_ref().and_then(|d| d["conditions"][key.as_str()].as_str().map(str::to_string)).unwrap_or_default();
+        field(app, format!("wf-cond-{key}"), current, window, cx);
+    }
     // Los desplegables escriben directo en el borrador.
     let me = cx.entity();
     window.open_sheet(cx, move |sheet, window, cx| {
@@ -595,11 +623,24 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
                     .child(row(t!("Instructions for this flow"), Input::new(&message).small().into_any_element(), cx))
                     .child(ui::muted(t!("It reads the event that started the flow and the results of the nodes connected to it."), cx).text_xs());
             }
+            "notify" => {
+                body = body
+                    .child(row(t!("Message"), Input::new(&message).small().into_any_element(), cx))
+                    .child(row(t!("Priority"), select(format!("wf-pr-{id}"), vec![("normal".into(), t!("Normal").into()), ("high".into(), t!("High (urgent on the phone)").into())], if s("priority") == "high" { "high".into() } else { "normal".into() }, "priority").into_any_element(), cx))
+                    .child(ui::muted(t!("It goes to the phone (Settings → Notifications) and stays in the run. Use {node.<id>.<field>} for the agents' results."), cx).text_xs());
+            }
             _ => body = body.child(row(t!("Message"), Input::new(&message).small().into_any_element(), cx)),
         }
         // Conexiones del nodo, con su × para quitarlas.
         if !edges.is_empty() {
             let mut list = v_flex().gap_1().child(ui::section(t!("Connections"), cx));
+            // Las que llegan a este nodo pueden tener condición (cuándo se pasa por ellas).
+            for (a, b) in edges.iter().filter(|(_, b)| *b == id) {
+                if let Some(st) = app_now.inputs.get(&format!("wf-cond-{a}>{b}")).cloned() {
+                    list = list.child(v_flex().gap_0p5().child(ui::muted(t!("From {a}, only if (empty: always):", a = a), cx).text_xs()).child(Input::new(&st).small()));
+                }
+            }
+            list = list.child(ui::muted(t!("For example: risk.risk >= high and risk.immediate_fix == true · review.verdict == approve · deploy.status == failed"), cx).text_xs());
             for (i, (a, b)) in edges.into_iter().enumerate() {
                 let m = me.downgrade();
                 let (a2, b2) = (a.clone(), b.clone());
@@ -618,6 +659,7 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
             body = body.child(list);
         }
         let (m_ok, m_del) = (me.clone(), me.clone());
+        let cond_keys = cond_keys.clone();
         let (id_ok, id_del) = (id.clone(), id.clone());
         let (t_, m_, mi_, h_) = (title.clone(), message.clone(), minutes.clone(), hours.clone());
         body = body.child(
@@ -644,9 +686,21 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
                     let val = |s: &Entity<InputState>, cx: &App| s.read(cx).value().trim().to_string();
                     let (title, message, minutes, hours) = (val(&t_, cx), val(&m_, cx), val(&mi_, cx), val(&h_, cx));
                     let id = id_ok.clone();
+                    let cond_keys = cond_keys.clone();
                     m_ok.update(cx, |app, cx| {
                         let parsed_args = recipe_args_of(app, &id, cx);
+                        let conds: Vec<(String, String)> = cond_keys.iter().filter_map(|k| app.inputs.get(&format!("wf-cond-{k}")).map(|s| (k.clone(), s.read(cx).value().trim().to_string()))).collect();
                         app.wf_mutate(|d| {
+                            if !d["conditions"].is_object() {
+                                d["conditions"] = json!({});
+                            }
+                            for (k, v) in &conds {
+                                if v.is_empty() {
+                                    d["conditions"].as_object_mut().map(|o| o.remove(k));
+                                } else {
+                                    d["conditions"][k.as_str()] = json!(v);
+                                }
+                            }
                             if let Some(n) = d["nodes"].as_array_mut().and_then(|l| l.iter_mut().find(|n| n["id"] == id.as_str())) {
                                 if !title.is_empty() {
                                     n["title"] = json!(title);

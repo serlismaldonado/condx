@@ -78,7 +78,7 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
     let topic = input(app, "ntfy-topic", topic_now, t!("Topic").to_string(), false, window, cx);
     let token = input(app, "ntfy-token", String::new(), if cfg["hasToken"] == true { t!("Token saved (type to replace it)").to_string() } else { t!("Optional: the server's access token").to_string() }, true, window, cx);
     let mut kinds = h_flex().gap_1().flex_wrap();
-    for (field, label) in [("incidents", t!("Incidents")), ("agents", t!("Agents done")), ("approvals", t!("Approvals"))] {
+    for (field, label) in [("incidents", t!("Incidents")), ("agents", t!("Agents done")), ("approvals", t!("Approvals")), ("flows", t!("Flows"))] {
         let selected = s[field] == true;
         let b = Button::new(SharedString::from(format!("ntfy-{field}"))).xsmall().label(label).on_click(cx.listener(move |this, _, _, cx| this.save_notify(move |v| v[field] = json!(!selected), cx)));
         kinds = kinds.child(ui::brand_if(selected, b, cx));

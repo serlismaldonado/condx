@@ -162,6 +162,10 @@ pub(crate) fn local_access(env: &Environment) -> Result<(String, String)> {
 
 async fn fetch(env: &Environment) -> Result<Value> {
     let (url, admin) = local_access(env)?;
+    fetch_at(url, admin).await
+}
+
+async fn fetch_at(url: String, admin: String) -> Result<Value> {
     let res = tokio::task::spawn_blocking(move || -> Result<Value> {
         let body = json!({ "path": "_system/frontend/getSchemas", "args": {}, "format": "json" });
         let text = ureq::AgentBuilder::new()
@@ -184,7 +188,7 @@ async fn fetch(env: &Environment) -> Result<Value> {
 }
 
 /// El entorno local del mismo proyecto que `env` (el devbox, o `<proyecto>-local`).
-fn local_of(state: &Shared, env: &Environment) -> Option<Environment> {
+pub fn local_of(state: &Shared, env: &Environment) -> Option<Environment> {
     state.store.environments().ok()?.into_iter().find(|e| e.kind == EnvKind::Devbox && e.project == env.project)
 }
 
@@ -218,6 +222,92 @@ pub async fn schema(state: &Shared, env: &Environment) -> Result<Value> {
     v["source"] = json!(if from.is_some() { "checkout" } else { "deployed" });
     v["fromEnvironment"] = json!(from.unwrap_or_else(|| env.name.clone()));
     Ok(v)
+}
+
+/// El esquema que de verdad está desplegado en `env`: local con su admin key, cloud con la deploy
+/// key del Llavero (pestaña Claves). Sin key no se puede leer un cloud.
+pub async fn deployed(env: &Environment) -> Result<Value> {
+    let (url, admin) = crate::data::system_access(env)?
+        .ok_or_else(|| anyhow!("{} needs its deploy key to read the deployed schema (save it in its Keys tab)", env.name))?;
+    fetch_at(url, admin).await
+}
+
+fn by_name(list: &Value) -> std::collections::BTreeMap<String, Value> {
+    list.as_array().into_iter().flatten().filter_map(|x| Some((x["name"].as_str()?.to_string(), x.clone()))).collect()
+}
+
+/// Qué cambia al desplegar el esquema `from` donde hoy está `to`: tablas y campos que entran,
+/// salen o cambian, índices, y lo que puede hacer fallar el despliegue o romper datos (`risks`).
+pub fn diff(from: &Value, to: &Value) -> Value {
+    let (a, b) = (by_name(&from["tables"]), by_name(&to["tables"]));
+    let mut risks: Vec<String> = vec![];
+    let added: Vec<&String> = a.keys().filter(|k| !b.contains_key(*k)).collect();
+    let removed: Vec<&String> = b.keys().filter(|k| !a.contains_key(*k)).collect();
+    for t in &removed {
+        risks.push(format!("table {t} leaves the schema (its documents stay, without validation)"));
+    }
+    let mut changed = vec![];
+    for (name, ta) in &a {
+        let Some(tb) = b.get(name) else { continue };
+        let (fa, fb) = (by_name(&ta["fields"]), by_name(&tb["fields"]));
+        let mut fields_added = vec![];
+        let mut fields_removed = vec![];
+        let mut fields_changed = vec![];
+        for (f, x) in &fa {
+            match fb.get(f) {
+                None => {
+                    if x["optional"] != true && tb["typed"] == true {
+                        risks.push(format!("{name}.{f} is new and required: existing documents don't have it"));
+                    }
+                    fields_added.push(json!({ "name": f, "type": x["type"], "optional": x["optional"] }));
+                }
+                Some(y) if y["type"] != x["type"] || y["optional"] != x["optional"] => {
+                    if y["type"] != x["type"] {
+                        risks.push(format!("{name}.{f} changes type ({} → {})", y["type"].as_str().unwrap_or("?"), x["type"].as_str().unwrap_or("?")));
+                    } else if x["optional"] != true {
+                        risks.push(format!("{name}.{f} becomes required: documents without it fail validation"));
+                    }
+                    fields_changed.push(json!({ "name": f, "from": { "type": y["type"], "optional": y["optional"] }, "to": { "type": x["type"], "optional": x["optional"] } }));
+                }
+                _ => {}
+            }
+        }
+        for (f, y) in &fb {
+            if !fa.contains_key(f) {
+                if ta["typed"] == true {
+                    risks.push(format!("{name}.{f} leaves the schema: documents that still have it fail validation"));
+                }
+                fields_removed.push(json!({ "name": f, "type": y["type"] }));
+            }
+        }
+        let index_names = |t: &Value| -> std::collections::BTreeSet<String> {
+            ["indexes", "searchIndexes", "vectorIndexes"].iter().flat_map(|k| t[*k].as_array().cloned().unwrap_or_default()).filter_map(|i| i["name"].as_str().map(str::to_string)).collect()
+        };
+        let (ia, ib) = (index_names(ta), index_names(tb));
+        let indexes_added: Vec<&String> = ia.difference(&ib).collect();
+        let indexes_removed: Vec<&String> = ib.difference(&ia).collect();
+        if !(fields_added.is_empty() && fields_removed.is_empty() && fields_changed.is_empty() && indexes_added.is_empty() && indexes_removed.is_empty()) {
+            changed.push(json!({
+                "table": name,
+                "fieldsAdded": fields_added,
+                "fieldsRemoved": fields_removed,
+                "fieldsChanged": fields_changed,
+                "indexesAdded": indexes_added,
+                "indexesRemoved": indexes_removed,
+            }));
+        }
+    }
+    let same = added.is_empty() && removed.is_empty() && changed.is_empty();
+    json!({ "same": same, "tablesAdded": added, "tablesRemoved": removed, "changed": changed, "risks": risks })
+}
+
+/// El diff entre lo desplegado en `from` (el backend local tiene lo del checkout) y en `to`.
+pub async fn diff_envs(from: &Environment, to: &Environment) -> Result<Value> {
+    let (a, b) = tokio::join!(deployed(from), deployed(to));
+    let mut d = diff(&a?, &b?);
+    d["from"] = json!(from.name);
+    d["to"] = json!(to.name);
+    Ok(d)
 }
 
 #[cfg(test)]
@@ -273,5 +363,45 @@ export default defineSchema({
         assert_eq!(fields.iter().find(|f| f["name"] == "tags").unwrap()["type"], "string[]");
         assert_eq!(fields.iter().find(|f| f["name"] == "state").unwrap()["type"], "\"a\" | \"b\"");
         assert_eq!(s["tables"][0]["indexes"][0]["name"], "by_author");
+    }
+
+    #[test]
+    fn diff_de_esquemas() {
+        let local = json!({ "tables": [
+            { "name": "tasks", "typed": true, "fields": [
+                { "name": "title", "type": "string", "optional": false },
+                { "name": "done", "type": "boolean", "optional": false },
+                { "name": "priority", "type": "number", "optional": true },
+                { "name": "owner", "type": "id<users>", "optional": false }
+            ], "indexes": [{ "name": "by_owner" }, { "name": "by_done" }] },
+            { "name": "tags", "typed": true, "fields": [], "indexes": [] }
+        ]});
+        let cloud = json!({ "tables": [
+            { "name": "tasks", "typed": true, "fields": [
+                { "name": "title", "type": "string", "optional": false },
+                { "name": "done", "type": "string", "optional": false },
+                { "name": "legacy", "type": "string", "optional": true }
+            ], "indexes": [{ "name": "by_owner" }, { "name": "by_title" }] },
+            { "name": "old", "typed": true, "fields": [], "indexes": [] }
+        ]});
+        let d = super::diff(&local, &cloud);
+        assert_eq!(d["same"], false);
+        assert_eq!(d["tablesAdded"], json!(["tags"]));
+        assert_eq!(d["tablesRemoved"], json!(["old"]));
+        let t = &d["changed"][0];
+        assert_eq!(t["table"], "tasks");
+        assert_eq!(t["fieldsAdded"].as_array().unwrap().len(), 2);
+        assert_eq!(t["fieldsRemoved"][0]["name"], "legacy");
+        assert_eq!(t["fieldsChanged"][0]["name"], "done");
+        assert_eq!(t["indexesAdded"], json!(["by_done"]));
+        assert_eq!(t["indexesRemoved"], json!(["by_title"]));
+        let risks: Vec<String> = serde_json::from_value(d["risks"].clone()).unwrap();
+        assert!(risks.iter().any(|r| r.contains("tasks.owner is new and required")), "{risks:?}");
+        assert!(risks.iter().any(|r| r.contains("tasks.done changes type")), "{risks:?}");
+        assert!(risks.iter().any(|r| r.contains("tasks.legacy leaves")), "{risks:?}");
+        assert!(risks.iter().any(|r| r.contains("table old leaves")), "{risks:?}");
+        // Un campo opcional nuevo no es un riesgo.
+        assert!(!risks.iter().any(|r| r.contains("priority")), "{risks:?}");
+        assert_eq!(super::diff(&local, &local)["same"], true);
     }
 }

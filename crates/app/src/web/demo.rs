@@ -77,6 +77,7 @@ pub fn get(path: &str) -> Result<Value> {
         ["deployments"] => deployments(&q("env").unwrap_or_default()),
         ["approval"] => approval(&q("recipe").unwrap_or_default(), &q("env").unwrap_or_default(), q("function").as_deref()),
         ["promotion"] => json!({ "ok": true, "checks": [] }),
+        ["schema-diff"] => schema_diff(&q("from").unwrap_or_default(), &q("to").unwrap_or_default()),
         ["environments", env, "tables"] => tables(env),
         ["environments", env, "first-table"] => json!({ "table": "tasks" }),
         ["environments", env, "documents"] => documents(env, &q("table").unwrap_or_default(), q("cursor").and_then(|c| c.parse().ok()).unwrap_or(0), q("limit").and_then(|l| l.parse().ok()).unwrap_or(50)),
@@ -209,6 +210,23 @@ fn overview() -> Value {
         "deployer": null,
         "frontendProduction": null,
         "tabs": { "count": 0, "list": [] },
+    })
+}
+
+/// Lo que trae el checkout (comentarios con menciones) frente a lo desplegado en cloud.
+fn schema_diff(from: &str, to: &str) -> Value {
+    json!({
+        "from": from, "to": to, "same": false,
+        "tablesAdded": ["mentions"], "tablesRemoved": [],
+        "changed": [
+            { "table": "comments", "fieldsAdded": [{ "name": "mentions", "type": "array<id<users>>", "optional": true }], "fieldsRemoved": [], "fieldsChanged": [], "indexesAdded": ["by_task_and_time"], "indexesRemoved": [] },
+            { "table": "tasks", "fieldsAdded": [{ "name": "priority", "type": "\"low\" | \"normal\" | \"high\"", "optional": false }], "fieldsRemoved": [{ "name": "legacyStatus", "type": "string" }], "fieldsChanged": [{ "name": "dueAt", "from": { "type": "string", "optional": true }, "to": { "type": "number", "optional": true } }], "indexesAdded": [], "indexesRemoved": [] }
+        ],
+        "risks": [
+            "tasks.priority is new and required: existing documents don't have it",
+            "tasks.legacyStatus leaves the schema: documents that still have it fail validation",
+            "tasks.dueAt changes type (string → number)"
+        ]
     })
 }
 

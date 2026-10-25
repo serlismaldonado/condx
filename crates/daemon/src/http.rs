@@ -561,6 +561,25 @@ async fn get_documents(AxState(state): AxState<Shared>, Path(name): Path<String>
     }
 }
 
+#[derive(serde::Deserialize)]
+struct DiffQuery {
+    from: String,
+    to: String,
+}
+
+/// Qué cambiaría el esquema de `from` (normalmente el local) al desplegarse en `to`.
+async fn get_schema_diff(AxState(state): AxState<Shared>, Query(q): Query<DiffQuery>) -> Response {
+    let env = |name: &str| state.store.environment(name).ok().flatten().ok_or_else(|| format!("environment {name} doesn't exist"));
+    let (from, to) = match (env(&q.from), env(&q.to)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) | (_, Err(e)) => return fail(StatusCode::NOT_FOUND, e),
+    };
+    match crate::schema::diff_envs(&from, &to).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, format!("{e:#}")),
+    }
+}
+
 async fn get_schema(AxState(state): AxState<Shared>, Path(name): Path<String>) -> Response {
     let env = match state.store.environment(&name) {
         Ok(Some(e)) => e,
@@ -786,6 +805,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/secrets", get(get_secrets))
         .route("/api/deployments", get(get_deployments))
         .route("/api/environments/{name}/schema", get(get_schema))
+        .route("/api/schema-diff", get(get_schema_diff))
         .route("/api/environments/{name}/tables", get(get_tables))
         .route("/api/policy", get(get_policy).post(post_policy))
         .route("/api/environments/{name}/documents", get(get_documents))

@@ -146,6 +146,8 @@ pub struct DevtoolApp {
     pub palette_open: bool,
     pub palette_recent: Vec<SharedString>,
     pub palette_view: Option<Entity<views::palette::PaletteView>>,
+    /// El último diff de esquemas pedido (GET /api/schema-diff).
+    pub schema_diff: Option<Load>,
     pub backend_download: Option<Load>,
     pub service_logs: HashMap<String, String>,
     pub log_tab: usize,
@@ -325,6 +327,7 @@ impl DevtoolApp {
             palette_open: false,
             palette_recent: vec![],
             palette_view: None,
+            schema_diff: None,
             backend_download: None,
             service_logs: HashMap::new(),
             log_tab: 0,

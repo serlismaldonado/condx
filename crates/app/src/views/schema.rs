@@ -786,6 +786,17 @@ pub fn render(app: &mut DevtoolApp, env: &str, window: &mut Window, cx: &mut Con
                 })),
         )
         .child(Button::new("schema-reload").xsmall().ghost().icon(IconName::RefreshCw).label(t!("Reload")).on_click(cx.listener(move |this, _, _, cx| this.load_schema(e.clone(), cx))));
+    // Antes de desplegar: qué cambia del esquema local al de un cloud (o del local al cloud dev).
+    if let Some((from, to)) = super::schema_diff::pair(app, env) {
+        toolbar = toolbar.child(
+            Button::new("schema-compare")
+                .xsmall()
+                .outline()
+                .icon(IconName::ArrowRight)
+                .label(t!("Compare {a} → {b}", a = from, b = to))
+                .on_click(cx.listener(move |this, _, window, cx| super::schema_diff::open(this, from.clone(), to.clone(), window, cx))),
+        );
+    }
 
     // El diagrama: un solo elemento pintado (ver `er.rs`).
     let ctx = Rc::new(er::Ctx { view_key: view_key.clone(), places_key: places_key.clone(), env: env.to_string(), select_on_release: mode == Mode::Focus, folder: (mode == Mode::Folder).then(|| folder.clone()) });

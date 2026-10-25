@@ -13,6 +13,7 @@ pub mod overview;
 pub mod palette;
 pub mod repo;
 pub mod schema;
+pub mod schema_diff;
 pub mod settings;
 pub mod terminal;
 pub mod welcome;

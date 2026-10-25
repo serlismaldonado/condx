@@ -572,7 +572,7 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
             }
             "check" => {
                 body = body
-                    .child(row(t!("Check"), select(format!("wf-ck-{id}"), vec![("env-reachable".into(), t!("The environment responds").into()), ("recent-backup".into(), t!("There's a recent backup").into()), ("ci-green".into(), t!("CI is green").into())], s("check"), "check").into_any_element(), cx))
+                    .child(row(t!("Check"), select(format!("wf-ck-{id}"), vec![("env-reachable".into(), t!("The environment responds").into()), ("recent-backup".into(), t!("There's a recent backup").into()), ("ci-green".into(), t!("CI is green").into()), ("schema-safe".into(), t!("The local schema is safe to deploy here").into())], s("check"), "check").into_any_element(), cx))
                     .child(row(t!("Environment"), select(format!("wf-ev-{id}"), env_choices.clone(), s("env"), "env").into_any_element(), cx));
                 if s("check") == "recent-backup" {
                     body = body.child(row(t!("Within the last (hours)"), Input::new(&hours).small().into_any_element(), cx));

@@ -33,7 +33,7 @@ pub enum NodeKind {
     Wait,
     /// Aprobación en la app: `{env, level: simple|strict, message}`.
     Approval,
-    /// Verificación: `{check: recent-backup|ci-green|env-reachable, env, hours}`.
+    /// Verificación: `{check: recent-backup|ci-green|env-reachable|schema-safe, env, hours}`.
     Check,
     /// Aviso: `{message}`.
     Notify,
@@ -249,7 +249,7 @@ pub fn problems(w: &Workflow, envs: &HashSet<String>, recipe_exists: impl Fn(&st
             NodeKind::Approval => env_ok(&mut out),
             NodeKind::Check => {
                 match s(n, "check").as_str() {
-                    "recent-backup" | "env-reachable" => env_ok(&mut out),
+                    "recent-backup" | "env-reachable" | "schema-safe" => env_ok(&mut out),
                     "ci-green" => {}
                     other => out.push(format!("“{t}”: unknown check “{other}”")),
                 }
@@ -760,6 +760,17 @@ async fn check(state: &Shared, project: &str, kind: &str, env: &str, hours: f64)
                 }
             }
             Ok("CI green".into())
+        }
+        "schema-safe" => {
+            // Lo del backend local del proyecto contra lo desplegado en `env`: sin riesgos, pasa.
+            let target = state.store.environment(env)?.ok_or_else(|| anyhow!("environment {env} doesn't exist"))?;
+            let local = crate::schema::local_of(state, &target).ok_or_else(|| anyhow!("project {project} has no local backend to compare with"))?;
+            let d = crate::schema::diff_envs(&local, &target).await?;
+            let risks: Vec<String> = d["risks"].as_array().into_iter().flatten().filter_map(|r| r.as_str().map(str::to_string)).collect();
+            if !risks.is_empty() {
+                bail!("schema risks for {env}: {}", risks.join("; "));
+            }
+            Ok(if d["same"] == true { format!("{env} already has this schema") } else { format!("schema changes for {env} are safe") })
         }
         "env-reachable" => {
             let e = state.store.environment(env)?.ok_or_else(|| anyhow!("environment {env} doesn't exist"))?;

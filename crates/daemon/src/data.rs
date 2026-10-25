@@ -57,7 +57,7 @@ fn query(url: &str, admin: &str, path: &str, args: Value) -> Result<Value> {
 /// URL y key para las consultas de sistema: la admin key en local; en cloud, la deploy key del
 /// Llavero si el usuario la guardó (si no, `None` y se lee con la CLI). La key tiene que ser del
 /// tipo y del deployment del entorno.
-fn system_access(env: &Environment) -> Result<Option<(String, String)>> {
+pub(crate) fn system_access(env: &Environment) -> Result<Option<(String, String)>> {
     if is_local(env) {
         return crate::schema::local_access(env).map(Some);
     }

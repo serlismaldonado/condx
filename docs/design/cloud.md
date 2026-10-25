@@ -121,7 +121,7 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 
 | Phase | What | Done when |
 | --- | --- | --- |
-| **C0** | Clone the library, this doc, Rust `localfirst-core`: types, `planOp`, sets, view, with the TS tests ported and shared JSON fixtures | `cargo test` passes the same fixtures as `vitest` |
+| **C0** ✅ | Clone the library, this doc, Rust `localfirst-core`: types, `planOp`, sets, view, with the TS tests ported and shared JSON fixtures | done 2026-10-25: 400 shared cases match (`condx-localfirst`, branch `condx`) |
 | C1 | Reduced engine in Rust: SQLite outbox and replica, cursors, backoff; a fake transport and the contract tests | the convergence sequences converge in Rust |
 | C2 | Condx Cloud backend (Convex project): tables, doorbell/pull/push for Condx scopes, auth | push/pull tested with convex-test |
 | C3 | Daemon publishes `env`, `jobs`, `approvals` (one-way mirror) through the Rust transport | the web view shows the daemon live |

@@ -1,6 +1,6 @@
 # Design: agents that respond to incidents
 
-Status: all phases done (A0-A6, 2026-10-25, local). Next: push inside Condx and the QR camera when nsh releases its host channel; remote runners that pair like phones. Builds on Condx Cloud (`cloud.md`, phone approvals).
+Status: all phases done (A0-A6, 2026-10-25, local). Next: push inside Condx and the QR camera when nsh releases its host channel; remote runners (A7, designed in §6.7). Builds on Condx Cloud (`cloud.md`, phone approvals).
 
 ## 1. Goal
 
@@ -180,6 +180,31 @@ always a proposal: it waits for your approval whatever the level.
 - Phones paired before A6 have no recipient: they must pair again to receive keys.
 - A remote runner can pair the same way (its own identity, confirmed on the Mac); not built yet.
 
+## 6.7 Remote runners (A7, not built)
+
+A machine away from the Mac (a Linux box, a CI runner, a server) that runs agents when the Mac is
+off or busy. Design only; nothing of it exists yet.
+
+- **Pairing:** like a phone. `condx runner pair` shows a code; the Mac confirms the key's
+  fingerprint and stores the runner in `cloud-devices.json` with its signing key, its age recipient
+  and `kind: runner`. Unpairing it re-seals the keys without it (A6).
+- **Work:** the daemon publishes a scope `runs:<daemonId>` with the runs it hands out (incident,
+  mode, template, evidence redacted as for the phone). A runner takes one with a signed claim
+  (`condx-run:v1|daemon|run|runner|at`); the daemon accepts the first and ignores the rest.
+- **Keys:** the runner reads scope `keys` and opens only the provider its template names; the key
+  lives in memory for that run.
+- **Repo:** the runner clones from the remote (`git remote get-url origin`) at the incident's
+  commit with its own deploy key (read-only); it never gets the Mac's checkout or `~/.condx`.
+- **Tools:** no Condx MCP over the internet. The evidence travels with the run; tools that need
+  the Mac (`get_environment`, `list_jobs`) are left out of the runner's tool list.
+- **Result:** diagnosis as text; a fix as a patch (`git format-patch`) signed by the runner. The
+  daemon checks the signature, applies it on `condx/fix-<run>` in its own worktree, runs the checks
+  in the sandbox and only then shows "Fix ready". Deploying stays on the Mac (workflow + approvals).
+- **Limits:** the Mac's budget and agents-at-once count runner runs too; a runner that doesn't
+  report in the template's minutes loses the run.
+- **Open questions:** where runners get Node and pi (container image?), whether a runner can run
+  checks that need network, and how to rotate its deploy key.
+
 ## 7. Phases
 
 | Phase | What | Done when |
@@ -193,3 +218,4 @@ always a proposal: it waits for your approval whatever the level.
 | **A4 (phone)** ✅ | Approve the fix on the phone → deploy workflow; steer from the chat | done with A0b |
 | **A5** ✅ | Agent templates per incident kind ("agent factory"), budgets and limits | done: `templates.rs` with five built-in templates (frontend build, failing tests, Convex deploy, Convex not responding diagnose-only, generic); each sets when it applies, highest mode, provider/model, extra instructions, allowed tools and per-run limits (tokens, minutes). Edited in Settings → Agents → Templates |
 | **A6** ✅ | Keys re-encrypted for paired devices and remote runners | done for phones: age identity at pairing, scope `keys` sealed to the Mac and confirmed devices, re-sealed on unpair; verified with two phones (one revoked) and a scan with no plaintext key in the cloud or daemon databases. Runners pair the same way when they exist |
+| A7 | Remote runners (design in §6.7) | not started |

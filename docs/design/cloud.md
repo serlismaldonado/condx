@@ -133,7 +133,9 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
   confirmed, gets "unknown phone".
 - Production (`cloud-prod`) or a `reinforced` approval: the phone only proposes (`needs-mac`); the
   Mac's approvals panel marks it "from your phone" and asks for Touch ID. Rejecting from the phone
-  always works. `typed` approvals need the environment's name typed on the phone.
+  always works. `typed` approvals: on the Mac you type the environment's name; on the phone you
+  slide to approve (as deliberate, easier on a touch screen), and the signed decision carries the
+  name the daemon checks. The name was never the security check: the signature is.
 - Removing a phone on the Mac revokes it in the backend and drops its key locally.
 - Each push is idempotent (`opId`), so retries never approve twice.
 - Stale requests (older than the window, or for an old attempt) are ignored and reported.

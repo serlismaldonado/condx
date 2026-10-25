@@ -15,6 +15,13 @@ so your AI agents can help without being able to ship on their own.
 - **Data browser.** Tables with record counts, paging, filters, sorting, relation ids
   (`field → table`) and dates, plus a JSON panel. Read-only, and production stays hidden unless
   you allow it.
+- **Check before you deploy.** Compare the local schema with what's deployed in cloud: tables,
+  fields and indexes that change, the changes that would make `convex deploy` fail, and
+  environment variables missing there (names only). Also a workflow check and an MCP tool.
+- **⌘K command palette.** Jump to any page, environment tab or table with fuzzy search.
+- **CI per project.** The GitHub Actions runs of each project's repo, in the app and in workflows.
+- **Guided first launch.** Checks Node, the Convex CLI session, git and gh, and downloads the
+  local Convex backend if it's missing.
 - **Jobs from recipes.** Deploy a commit, back up (encrypted for cloud), rehearse a deploy on a
   copy of real data in a throwaway backend, run a function, import, roll back.
 - **Approvals.** What changes an environment waits for you in the app — a click, typing the

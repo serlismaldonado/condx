@@ -32,6 +32,7 @@
     }
     * { box-sizing: border-box; }
     html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+    html { overflow-x: clip; }
     body { margin: 0; background: var(--ground); color: var(--fg); font: 15px/1.65 "IBM Plex Sans", system-ui, sans-serif; }
     a { color: inherit; }
     img { display: block; max-width: 100%; height: auto; }
@@ -326,7 +327,16 @@
             <p>Each backend's schema as a diagram. Compare local with cloud before you deploy.</p>
             <ul class="list"><li>Flags changes that would break the deploy</li><li>Also a workflow check and an MCP tool</li></ul>
           </div>
-          <div class="shot"><img src="shots/schema.jpg" alt="The schema diagram of the sample project" loading="lazy" width="1800" height="1125"></div>
+          <div class="shot"><img src="shots/schema-diff.jpg" alt="Comparing the local schema with cloud dev: risky changes, a missing environment variable and the field changes" loading="lazy" width="1800" height="1125"></div>
+        </div>
+
+        <div class="feature">
+          <div class="text">
+            <h3>Which function is slow?</h3>
+            <p>Calls, errors and p50/p95 per function, from the logs you already read.</p>
+            <ul class="list"><li>Failing and slow ones first</li><li>The last error beside each</li></ul>
+          </div>
+          <div class="shot"><img src="shots/insights.jpg" alt="Performance by function: calls, errors, p50, p95 and the last error, above the function logs" loading="lazy" width="1800" height="1125"></div>
         </div>
 
         <div class="grid3">

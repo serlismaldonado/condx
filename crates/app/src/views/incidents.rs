@@ -19,9 +19,10 @@ impl DevtoolApp {
         self.get("/api/incidents?status=resolved&limit=50".into(), |app, res| app.incidents_resolved = Some(res), cx);
     }
 
-    /// Arranca un agente de diagnóstico (lo decide y limita el daemon).
-    fn diagnose(&mut self, id: String, cx: &mut Context<Self>) {
-        self.post(format!("/api/incidents/{id}/diagnose"), Value::Null, |app, res, cx| match res {
+    /// Arranca un agente: `diagnose` (solo lee) o `fix` (prepara un arreglo en su rama). Lo
+    /// decide y limita el daemon.
+    fn start_agent(&mut self, id: String, mode: &'static str, cx: &mut Context<Self>) {
+        self.post(format!("/api/incidents/{id}/{mode}"), Value::Null, |app, res, cx| match res {
             Load::Ready(run) => {
                 app.agent_run_open = run["id"].as_str().map(str::to_string);
                 app.load_agent_run(cx);
@@ -53,6 +54,27 @@ impl DevtoolApp {
             Load::Ready(_) => {
                 app.inputs.remove("agent-message");
                 app.load_agent_run(cx);
+            }
+            other => app.action = Some(other),
+        }, cx);
+    }
+
+    fn discard_fix(&mut self, id: String, cx: &mut Context<Self>) {
+        self.post(format!("/api/agent-runs/{id}/discard"), Value::Null, |app, res, cx| match res {
+            Load::Ready(_) => app.load_agent_run(cx),
+            other => app.action = Some(other),
+        }, cx);
+    }
+
+    /// Corre un flujo del proyecto con el commit del arreglo (el flujo pide sus propias aprobaciones).
+    fn deploy_fix(&mut self, workflow: String, commit: String, cx: &mut Context<Self>) {
+        self.post(format!("/api/workflows/{workflow}/run"), json!({ "commit": commit }), |app, res, cx| match res {
+            Load::Ready(run) => {
+                app.wf_run_sel = run["id"].as_str().map(str::to_string);
+                // Como abrir la página Flujos: ahí se sigue la corrida y sus aprobaciones.
+                app.go(crate::app::Page::Workflows, cx);
+                app.load_workflows(cx);
+                app.poll_workflows(cx);
             }
             other => app.action = Some(other),
         }, cx);
@@ -101,7 +123,9 @@ fn agent_block(app: &mut DevtoolApp, inc: &Value, window: &mut Window, cx: &mut 
     let run_id = agent["runId"].as_str()?.to_string();
     let status = agent["status"].as_str().unwrap_or("running");
     let (health, label) = match status {
+        "running" if agent["mode"] == "fix" => (Health::Warn, t!("An agent is preparing a fix ({m})", m = ui::txt(&agent["model"])).to_string()),
         "running" => (Health::Warn, t!("An agent is diagnosing it ({m})", m = ui::txt(&agent["model"])).to_string()),
+        "done" if agent["mode"] == "fix" => (Health::Ok, t!("Fix prepared by {m} · {w}", m = ui::txt(&agent["model"]), w = agent["at"].as_i64().map(ui::ago).unwrap_or_default()).to_string()),
         "done" => (Health::Ok, t!("Diagnosis by {m} · {w}", m = ui::txt(&agent["model"]), w = agent["at"].as_i64().map(ui::ago).unwrap_or_default()).to_string()),
         "aborted" => (Health::Unknown, t!("The agent was stopped").to_string()),
         "stopped" => (Health::Unknown, t!("The agent stopped: today's token budget ran out").to_string()),
@@ -126,6 +150,9 @@ fn agent_block(app: &mut DevtoolApp, inc: &Value, window: &mut Window, cx: &mut 
                 cx.notify();
             }))),
     );
+    if let Some(fix) = fix_block(app, &run_id, &agent["fix"], cx) {
+        block = block.child(fix);
+    }
     // La respuesta, con sus secciones (## Cause, ## Fix…) como títulos pequeños.
     if let Some(answer) = agent["answer"].as_str().filter(|a| !a.trim().is_empty()).filter(|_| !open) {
         block = block.child(answer_view(answer, cx));
@@ -157,6 +184,23 @@ fn agent_block(app: &mut DevtoolApp, inc: &Value, window: &mut Window, cx: &mut 
             _ => answer_view(text, cx),
         });
     }
+    // El parche del arreglo, con las líneas agregadas y quitadas en color.
+    if let Some(patch) = run["fix"]["patch"].as_str().filter(|p| !p.is_empty()) {
+        let mut diff = v_flex().p_2().bg(t.ground).border_1().border_color(t.card_border);
+        for line in patch.lines().take(600) {
+            let color: Hsla = if line.starts_with('+') && !line.starts_with("+++") {
+                rgb(0x4ade80).into()
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                rgb(0xe5756e).into()
+            } else if line.starts_with("@@") {
+                t.subtle
+            } else {
+                t.muted
+            };
+            diff = diff.child(ui::mono(line.to_string()).text_size(px(11.)).text_color(color));
+        }
+        convo = convo.child(div().pt_2().child(ui::section(t!("The change"), cx))).child(diff);
+    }
     let usage = run["usage"]["total"].as_u64().unwrap_or(0);
     let input = app.inputs.entry("agent-message".into()).or_insert_with(|| cx.new(|cx| InputState::new(window, cx).placeholder(t!("Ask or redirect the agent…")))).clone();
     let (send_id, stop_id) = (run_id.clone(), run_id.clone());
@@ -175,6 +219,67 @@ fn agent_block(app: &mut DevtoolApp, inc: &Value, window: &mut Window, cx: &mut 
             .child(ui::muted(t!("{n} tokens · it only reads; it can't change files, deploy or approve", n = usage), cx).text_xs())
             .when_some(run["error"].as_str(), |b, e| b.child(ui::status_tag(Health::Bad, e.to_string()))),
     )
+}
+
+/// El arreglo que preparó un agente: la rama, los archivos, y qué hacer con él.
+fn fix_block(app: &mut DevtoolApp, run_id: &str, fix: &Value, cx: &mut Context<DevtoolApp>) -> Option<Div> {
+    if !fix.is_object() {
+        return None;
+    }
+    let t = crate::theme::Tokens::current(cx);
+    if let Some(e) = fix["error"].as_str() {
+        return Some(v_flex().child(ui::status_tag(Health::Bad, t!("Couldn't save the fix: {e}", e = e).to_string())));
+    }
+    if fix["discarded"] == true {
+        return Some(v_flex().child(ui::muted(t!("Fix discarded (its branch was deleted)"), cx)));
+    }
+    if fix["changes"] != true {
+        return Some(v_flex().child(ui::muted(t!("The agent didn't change anything"), cx)));
+    }
+    let commit = fix["commit"].as_str().unwrap_or_default().to_string();
+    let files = fix["files"].as_array().map(Vec::len).unwrap_or(0);
+    let mut col = v_flex().gap_1().child(ui::status_tag(
+        Health::Ok,
+        t!("Fix ready on {b} · commit {c} · {n} files", b = ui::txt(&fix["branch"]), c = &commit[..commit.len().min(8)], n = files).to_string(),
+    ));
+    if let Some(stat) = fix["stat"].as_str() {
+        col = col.child(div().p_1p5().bg(t.ground).children(stat.lines().map(|l| ui::mono(l.to_string()).text_size(px(11.)).text_color(t.muted))));
+    }
+    // Los flujos del proyecto, para desplegar el arreglo (cada uno pide sus aprobaciones).
+    if app.wf_data.is_none() {
+        app.load_workflows(cx);
+    }
+    let workflows: Vec<(String, String)> = match &app.wf_data {
+        // Solo los que están encendidos (los sugeridos nacen apagados) y sin problemas.
+        Some(Load::Ready(v)) => v["workflows"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter(|w| w["workflow"]["enabled"] == true && w["problems"].as_array().is_none_or(|p| p.is_empty()))
+            .filter_map(|w| Some((w["workflow"]["id"].as_str()?.to_string(), w["workflow"]["name"].as_str()?.to_string())))
+            .take(4)
+            .collect(),
+        _ => vec![],
+    };
+    let mut actions = h_flex().gap_1().flex_wrap();
+    if workflows.is_empty() {
+        actions = actions.child(ui::muted(t!("Turn on a workflow (Workflows) to deploy fixes from here."), cx).text_xs());
+    }
+    for (id, name) in workflows {
+        let c = commit.clone();
+        actions = actions.child(
+            Button::new(SharedString::from(format!("fix-run-{run_id}-{id}")))
+                .xsmall()
+                .outline()
+                .icon(IconName::Play)
+                .label(t!("Run “{w}” with this fix", w = name))
+                .on_click(cx.listener(move |this, _, _, cx| this.deploy_fix(id.clone(), c.clone(), cx))),
+        );
+    }
+    let did = run_id.to_string();
+    actions = actions.child(Button::new(SharedString::from(format!("fix-discard-{run_id}"))).xsmall().ghost().label(t!("Discard")).on_click(cx.listener(move |this, _, _, cx| this.discard_fix(did.clone(), cx))));
+    Some(col.child(actions).child(ui::muted(t!("The commit is only on this Mac, on its own branch. Running a workflow with it asks for the approvals that workflow has."), cx).text_xs()))
 }
 
 /// Texto del agente: las líneas `## …` como etiquetas de sección, el resto tal cual.
@@ -257,9 +362,11 @@ fn card(app: &mut DevtoolApp, inc: &Value, window: &mut Window, cx: &mut Context
     let agent_running = inc["agent"]["status"] == "running";
     let has_provider = app.agents.as_ref().is_some_and(|a| a["providers"].as_array().is_some_and(|l| !l.is_empty()));
     if status != "resolved" && !agent_running && has_provider {
-        let did = id.clone();
+        let (did, fid) = (id.clone(), id.clone());
         let label = if inc["agent"].is_object() { t!("Diagnose again") } else { t!("Diagnose") };
-        actions = actions.child(ui::brand(Button::new(SharedString::from(format!("inc-diagnose-{id}"))).xsmall().label(label), cx).on_click(cx.listener(move |this, _, _, cx| this.diagnose(did.clone(), cx))));
+        actions = actions
+            .child(ui::brand(Button::new(SharedString::from(format!("inc-diagnose-{id}"))).xsmall().label(label), cx).on_click(cx.listener(move |this, _, _, cx| this.start_agent(did.clone(), "diagnose", cx))))
+            .child(Button::new(SharedString::from(format!("inc-fix-{id}"))).xsmall().outline().label(t!("Prepare a fix")).on_click(cx.listener(move |this, _, _, cx| this.start_agent(fid.clone(), "fix", cx))));
     }
     actions = match status {
         "open" => actions.child(action(t!("Ignore"), "ignore", id.clone(), cx)).child(action(t!("Mark resolved"), "resolve", id.clone(), cx)),

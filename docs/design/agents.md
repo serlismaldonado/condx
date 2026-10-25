@@ -1,6 +1,6 @@
 # Design: agents that respond to incidents
 
-Status: A0 and A2 done (2026-10-25, local). Builds on Condx Cloud (`cloud.md`, phone approvals).
+Status: A0, A2, A3 and A4 on the Mac done (2026-10-25, local). Builds on Condx Cloud (`cloud.md`, phone approvals).
 
 ## 1. Goal
 
@@ -105,6 +105,21 @@ always a proposal: it waits for your approval whatever the level.
 - One provider per built-in kind (pi-ai registers providers by kind); OpenAI-compatible ones can be
   several.
 
+## 6.2 Fix mode (A3)
+
+- The agent's write tools (`edit_file`, `write_file`) and `run_check` exist only in fix mode; a
+  diagnose conversation doesn't have them.
+- `run_check` runs `npm|pnpm|yarn|bun run <script>` for a script that was in the base commit's
+  `package.json` (the agent can't add one and run it), under `sandbox-exec`: no network at all (not
+  even localhost, where the daemon listens), writes only in the worktree and temp folders, no
+  reading of `~/.condx`, `~/.ssh`, `~/.aws`, `gh`'s config or the Keychain service. Checks that
+  need the network fail, and the agent says so.
+- The worktree lives in `~/.condx/daemon/worktrees/<run>`; the branch is `condx/fix-<run>`. The
+  daemon, not the agent, commits (author "Condx agent"), with the agent's "Cause" in the message.
+  Nothing is pushed: deploying is running one of the project's enabled workflows with that commit,
+  which asks for the approvals that workflow has. A frontend fix that Vercel must build needs the
+  branch pushed: that's a later, approved step.
+
 ## 7. Phases
 
 | Phase | What | Done when |
@@ -113,7 +128,8 @@ always a proposal: it waits for your approval whatever the level.
 | A0b | Incidents on the phone (Condx Cloud scope), ignore and assign from there (signed) | the phone sees an incident and the daemon applies its decision |
 | A1 | Push notifications (with the QR camera: needs a native host app around nsh) | the phone rings for a new incident |
 | **A2** ✅ | Agent host with pi durable, diagnose only; the conversation in the Mac app (the phone in A0b) | done: `agent-host/` (Node, pi durable 1.4.0, SQLite), `agent_host.rs`; a failed job opens an incident, the agent starts on its own (autonomy "diagnose"), reads the repo and Condx, and its diagnosis lands in the incident; runs survive a host restart; budget and agents-at-once enforced by the daemon |
-| A3 | Fix mode: worktree, tests on a throwaway environment, commit on `condx/fix-…` | "fix ready" with the diff summary and the test result |
-| A4 | Approve the fix on the phone → deploy workflow (dev; production with Touch ID); steer from the chat | a fix approved from the phone reaches cloud dev |
+| **A3** ✅ | Fix mode: worktree, checks offline, commit on `condx/fix-…` | done: the daemon makes a worktree from the incident's commit (sharing `node_modules`), the agent edits there and runs the project's checks inside `sandbox-exec` (no network, writes only in the worktree, no reading `~/.condx`, `~/.ssh`… or the Keychain; only the scripts of the base commit), and the daemon commits as "Condx agent" when it ends; the user's checkout never changes. "Discard" removes the branch and the worktree |
+| A4 (Mac) ✅ | Run an enabled workflow with the fix's commit from the incident | done: the workflow asks for its own approvals; suggested workflows start turned off |
+| A4 (phone) | Approve the fix on the phone → deploy workflow; steer from the chat | with A0b |
 | A5 | Agent templates per incident kind ("agent factory"), budgets and limits | each kind has its tools and limits |
 | A6 | Keys re-encrypted for paired devices and remote runners | an agent runs elsewhere without the key in plaintext in the cloud |

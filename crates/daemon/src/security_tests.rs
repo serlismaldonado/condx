@@ -93,6 +93,8 @@ async fn el_token_de_agentes_no_aprueba_ni_toca_reglas_ni_claves() {
         (Method::POST, "/api/incidents/inc-x/diagnose", json!({})),
         (Method::POST, "/api/agent-runs/run-x/message", json!({ "text": "hi" })),
         (Method::POST, "/api/agent-runs/run-x/abort", json!({})),
+        (Method::POST, "/api/agent-runs/run-x/discard", json!({})),
+        (Method::POST, "/api/incidents/inc-x/fix", json!({})),
     ];
     for (method, path, body) in cases {
         let (status, res) = call(method.clone(), path, &host, Some(CLI), Some(body)).await;

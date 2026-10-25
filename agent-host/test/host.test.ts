@@ -110,3 +110,68 @@ test("una corrida de diagnóstico lee el repo, responde y sobrevive a un reinici
     await new Promise((r) => child.once("exit", r));
   }
 });
+
+function fixRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "condx-agent-fix-"));
+  writeFileSync(join(dir, "sum.js"), "export const sum = (a, b) => a - b;\n");
+  writeFileSync(join(dir, "test.js"), "import { sum } from './sum.js';\nif (sum(2, 3) !== 5) { console.log('FAIL sum(2,3)=' + sum(2, 3)); process.exit(1); }\nconsole.log('PASS');\n");
+  writeFileSync(join(dir, "net.js"), "fetch('https://example.com').then(() => console.log('ONLINE')).catch(() => console.log('OFFLINE'));\n");
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "fixme", type: "module", scripts: { test: "node test.js", net: "node net.js" } }));
+  const git = (...a: string[]) => execFileSync("git", a, { cwd: dir, stdio: "ignore" });
+  git("init", "-q");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "add", "-A");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "sum");
+  // Un script que el agente agregara después no cuenta: solo los del commit base.
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "fixme", type: "module", scripts: { test: "node test.js", net: "node net.js", evil: "curl https://example.com" } }));
+  return dir;
+}
+
+test("en modo arreglo edita su worktree, corre los chequeos sin red y solo los scripts del commit base", async () => {
+  const dir = fixRepo();
+  const storage = join(mkdtempSync(join(tmpdir(), "condx-agent-store-")), "agents.sqlite");
+  const faux = [
+    { tool: "run_check", args: { script: "test" } },
+    { tool: "edit_file", args: { path: "sum.js", old_text: "a - b", new_text: "a + b" } },
+    { tool: "run_check", args: { script: "test" } },
+    { tool: "run_check", args: { script: "evil" } },
+    { tool: "run_check", args: { script: "net" } },
+    { tool: "edit_file", args: { path: "../outside.js", old_text: "x", new_text: "y" } },
+    { text: "## Cause\nsum subtracted.\n\n## Change\nsum.js: add instead of subtract.\n\n## Checks\ntest passes.\n\n## Confidence\nhigh" },
+  ];
+  const { child, url } = await start(storage, faux);
+  try {
+    await call(url, "POST", "/runs", { runId: "fix-1", mode: "fix", providerId: "x", model: "x", cwd: dir, incident: { title: "Tests fail" } });
+    let got: any;
+    await until(async () => (got = (await call(url, "GET", "/runs/fix-1")).json).status === "done", "the fix run");
+    const tools = got.transcript.filter((t: any) => t.role === "tool");
+    assert.match(tools[0].text, /exit 1[\s\S]*FAIL sum\(2,3\)=-1/, tools[0].text);
+    assert.equal(tools[1].text, "edited sum.js");
+    assert.match(tools[2].text, /^exit 0[\s\S]*PASS/, tools[2].text);
+    assert.match(tools[3].text, /no script “evil”/);
+    assert.match(tools[4].text, /OFFLINE/, tools[4].text);
+    assert.doesNotMatch(tools[4].text, /ONLINE/);
+    assert.match(tools[5].text, /outside the repository/);
+    assert.equal(execFileSync("git", ["diff", "--stat"], { cwd: dir, encoding: "utf8" }).includes("sum.js"), true);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((r) => child.once("exit", r));
+  }
+});
+
+test("en modo diagnóstico no hay herramientas que escriban", async () => {
+  const dir = fixRepo();
+  const storage = join(mkdtempSync(join(tmpdir(), "condx-agent-store-")), "agents.sqlite");
+  const faux = [{ tool: "edit_file", args: { path: "sum.js", old_text: "a - b", new_text: "a + b" } }, { text: "## Cause\nx" }];
+  const { child, url } = await start(storage, faux);
+  try {
+    await call(url, "POST", "/runs", { runId: "diag-1", mode: "diagnose", providerId: "x", model: "x", cwd: dir, incident: { title: "x" } });
+    let got: any;
+    await until(async () => (got = (await call(url, "GET", "/runs/diag-1")).json).status === "done", "the run");
+    const tool = got.transcript.find((t: any) => t.role === "tool");
+    assert.equal(tool.isError, true, JSON.stringify(tool));
+    assert.match(execFileSync("cat", ["sum.js"], { cwd: dir, encoding: "utf8" }), /a - b/);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((r) => child.once("exit", r));
+  }
+});

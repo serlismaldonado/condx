@@ -739,5 +739,16 @@
   "The agent host isn't installed (agent-host/ with its node_modules, and Node)": "El host de agentes no está instalado (agent-host/ con sus node_modules, y Node)",
   "The agent host didn't start: {e}": "El host de agentes no arrancó: {e}",
   "Agent host running": "Host de agentes corriendo",
-  "The agent host starts with the first agent": "El host de agentes arranca con el primer agente"
+  "The agent host starts with the first agent": "El host de agentes arranca con el primer agente",
+  "An agent is preparing a fix ({m})": "Un agente está preparando un arreglo ({m})",
+  "The change": "El cambio",
+  "Couldn't save the fix: {e}": "No se pudo guardar el arreglo: {e}",
+  "Fix discarded (its branch was deleted)": "Arreglo descartado (se borró su rama)",
+  "The agent didn't change anything": "El agente no cambió nada",
+  "Fix ready on {b} · commit {c} · {n} files": "Arreglo listo en {b} · commit {c} · {n} archivos",
+  "Turn on a workflow (Workflows) to deploy fixes from here.": "Enciende un flujo (Flujos) para desplegar arreglos desde aquí.",
+  "Run “{w}” with this fix": "Correr «{w}» con este arreglo",
+  "The commit is only on this Mac, on its own branch. Running a workflow with it asks for the approvals that workflow has.": "El commit está solo en esta Mac, en su propia rama. Correr un flujo con él pide las aprobaciones que tenga ese flujo.",
+  "Prepare a fix": "Preparar un arreglo",
+  "Fix prepared by {m} · {w}": "Arreglo preparado por {m} · {w}"
 }

@@ -397,9 +397,9 @@ async fn post_incident_action(AxState(state): AxState<Shared>, Extension(client)
     if let Some(r) = deny(&client, Scope::JobsApprove) {
         return r;
     }
-    // Diagnosticar arranca un agente (cuesta tokens): también solo la app.
-    if action == "diagnose" {
-        return match crate::agent_host::start(&state, &id, "app").await {
+    // Diagnosticar o arreglar arranca un agente (cuesta tokens): también solo la app.
+    if action == "diagnose" || action == "fix" {
+        return match crate::agent_host::start(&state, &id, "app", &action).await {
             Ok(v) => Json(v).into_response(),
             Err(e) => fail(StatusCode::BAD_REQUEST, e),
         };
@@ -473,7 +473,8 @@ async fn post_agent_run_action(AxState(state): AxState<Shared>, Extension(client
             crate::agent_host::message(&state, &id, &text).await
         }
         "abort" => crate::agent_host::abort(&state, &id).await,
-        other => Err(anyhow::anyhow!("unknown action “{other}”: message or abort")),
+        "discard" => crate::agent_host::discard(&state, &id),
+        other => Err(anyhow::anyhow!("unknown action “{other}”: message, abort or discard")),
     };
     match res {
         Ok(v) => Json(v).into_response(),

@@ -221,8 +221,99 @@ fn repo_for(state: &Shared, incident: &Value) -> PathBuf {
     crate::projects::get(state, incident["project"].as_str()).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir())
 }
 
-/// Arranca una corrida de diagnóstico para un incidente. `by`: `app` o `auto`.
-pub async fn start(state: &Shared, incident_id: &str, by: &str) -> Result<Value> {
+fn git(dir: &std::path::Path, args: &[&str]) -> Result<String> {
+    let out = Command::new("git").args(args).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0").output().context("couldn't run git")?;
+    if !out.status.success() {
+        bail!("git {}: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// El commit del que parte un arreglo: el del incidente si está en el repo, si no su rama, si no HEAD.
+fn fix_base(repo: &std::path::Path, incident: &Value) -> String {
+    let ev = &incident["evidence"];
+    for candidate in [ev["commit"].as_str(), ev["branch"].as_str()].into_iter().flatten() {
+        if let Ok(sha) = git(repo, &["rev-parse", "--verify", "--quiet", &format!("{candidate}^{{commit}}")]) {
+            return sha;
+        }
+    }
+    git(repo, &["rev-parse", "HEAD"]).unwrap_or_else(|_| "HEAD".into())
+}
+
+/// Un worktree propio en la rama `condx/fix-…`, con los node_modules del repo (los chequeos corren
+/// sin red: no se puede instalar nada).
+fn prepare_worktree(repo: &std::path::Path, worktrees: &std::path::Path, run_id: &str, incident: &Value) -> Result<(PathBuf, String, String)> {
+    git(repo, &["rev-parse", "--git-dir"]).context("fixes need the project to be a git repository")?;
+    let base = fix_base(repo, incident);
+    let dir = worktrees.join(run_id);
+    let branch = format!("condx/fix-{}", run_id.trim_start_matches("run-"));
+    std::fs::create_dir_all(dir.parent().unwrap_or(&dir))?;
+    git(repo, &["worktree", "add", "-q", "-b", &branch, &dir.display().to_string(), &base])?;
+    let modules = repo.join("node_modules");
+    if modules.is_dir() {
+        #[cfg(unix)]
+        let _ = std::os::unix::fs::symlink(&modules, dir.join("node_modules"));
+    }
+    Ok((dir, branch, base))
+}
+
+/// Al terminar un arreglo, el daemon (no el agente) hace el commit en su rama y guarda el diff.
+fn commit_fix(run: &Value, incident: &Value) -> Value {
+    let Some(dir) = run["worktree"].as_str().map(PathBuf::from) else { return Value::Null };
+    if !dir.exists() {
+        return json!({ "error": "the worktree is gone" });
+    }
+    let attempt = || -> Result<Value> {
+        git(&dir, &["add", "-A", "--", ".", ":(exclude)node_modules"])?;
+        if git(&dir, &["diff", "--cached", "--name-only"])?.is_empty() {
+            let head = git(&dir, &["rev-parse", "HEAD"])?;
+            let changed = head != run["base"].as_str().unwrap_or_default();
+            return Ok(json!({ "changes": changed, "commit": changed.then_some(head) }));
+        }
+        let cause = run["answer"].as_str().and_then(|a| a.split("## Cause").nth(1)).map(|s| s.split("##").next().unwrap_or("").trim().to_string()).unwrap_or_default();
+        let message = format!("fix: {} (Condx agent)\n\n{cause}\n\nIncident: {}\nRun: {}", incident["title"].as_str().unwrap_or("incident"), incident["id"].as_str().unwrap_or("?"), run["id"].as_str().unwrap_or("?"));
+        git(&dir, &["-c", "user.name=Condx agent", "-c", "user.email=agent@condx.local", "-c", "commit.gpgsign=false", "commit", "-q", "-m", &message])?;
+        let commit = git(&dir, &["rev-parse", "HEAD"])?;
+        let base = run["base"].as_str().unwrap_or("HEAD~1");
+        let stat = git(&dir, &["diff", "--stat", base, "HEAD"])?;
+        let files: Vec<String> = git(&dir, &["diff", "--name-only", base, "HEAD"])?.lines().map(str::to_string).collect();
+        let mut patch = devtool_core::redact(&git(&dir, &["diff", base, "HEAD"])?);
+        if patch.len() > 80_000 {
+            patch.truncate(80_000);
+            patch.push_str("\n[… cut]");
+        }
+        Ok(json!({ "changes": true, "commit": commit, "files": files, "stat": stat, "patch": patch }))
+    };
+    attempt().unwrap_or_else(|e| json!({ "error": format!("{e:#}") }))
+}
+
+/// Descarta un arreglo: borra su worktree y su rama.
+pub fn discard(state: &Shared, id: &str) -> Result<Value> {
+    let mut run = state.store.agent_run(id)?.with_context(|| format!("there's no run “{id}”"))?;
+    if run["status"] == "running" {
+        bail!("stop the agent first");
+    }
+    let incident = state.store.incident(run["incident"].as_str().unwrap_or_default())?.unwrap_or(Value::Null);
+    let repo = repo_for(state, &incident);
+    if let Some(dir) = run["worktree"].as_str() {
+        let _ = git(&repo, &["worktree", "remove", "--force", dir]);
+    }
+    if let Some(branch) = run["branch"].as_str() {
+        let _ = git(&repo, &["branch", "-D", branch]);
+    }
+    run["fix"]["discarded"] = json!(true);
+    state.store.save_agent_run(&run)?;
+    if let Some(inc) = run["incident"].as_str() {
+        set_incident_agent(state, inc, &run);
+    }
+    Ok(run)
+}
+
+/// Arranca una corrida para un incidente: `diagnose` (solo lee) o `fix` (en su worktree). `by`: `app` o `auto`.
+pub async fn start(state: &Shared, incident_id: &str, by: &str, mode: &str) -> Result<Value> {
+    if !matches!(mode, "diagnose" | "fix") {
+        bail!("unknown mode “{mode}”");
+    }
     let incident = state.store.incident(incident_id)?.with_context(|| format!("there's no incident “{incident_id}”"))?;
     let settings = crate::agents::settings(state);
     let provider_id = settings.default_provider.clone().context("choose a default provider in Settings → Agents first")?;
@@ -240,18 +331,27 @@ pub async fn start(state: &Shared, incident_id: &str, by: &str) -> Result<Value>
     }
     let n = state.store.agent_runs(&[], Some(incident_id))?.len() + 1;
     let run_id = format!("run-{incident_id}-{n}");
-    let cwd = repo_for(state, &incident);
+    let repo = repo_for(state, &incident);
+    let (cwd, branch, base) = if mode == "fix" {
+        let (r, id, inc) = (repo.clone(), run_id.clone(), incident.clone());
+        let worktrees = crate::config::home().join("worktrees");
+        let (dir, branch, base) = tokio::task::spawn_blocking(move || prepare_worktree(&r, &worktrees, &id, &inc)).await.map_err(|e| anyhow!(e.to_string()))??;
+        (dir, Some(branch), Some(base))
+    } else {
+        (repo, None, None)
+    };
     let payload = json!({
         "title": incident["title"], "source": incident["source"], "project": incident["project"], "env": incident["env"],
         "count": incident["count"], "firstSeen": incident["firstSeen"], "lastSeen": incident["lastSeen"], "evidence": incident["evidence"],
     });
-    let body = json!({ "runId": run_id, "mode": "diagnose", "providerId": provider_id, "model": model, "cwd": cwd.display().to_string(), "incident": payload });
+    let body = json!({ "runId": run_id, "mode": mode, "providerId": provider_id, "model": model, "cwd": cwd.display().to_string(), "incident": payload });
     let st = state.clone();
     let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/runs", Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
     let run = json!({
-        "id": run_id, "incident": incident_id, "mode": "diagnose", "provider": provider_id, "model": model, "by": by,
+        "id": run_id, "incident": incident_id, "mode": mode, "provider": provider_id, "model": model, "by": by,
         "status": "running", "startedAt": now_ms(), "endedAt": null, "answer": null, "error": null,
         "usage": { "total": 0 }, "conversationId": res["conversationId"],
+        "worktree": (mode == "fix").then(|| cwd.display().to_string()), "branch": branch, "base": base, "fix": null,
     });
     state.store.save_agent_run(&run)?;
     set_incident_agent(state, incident_id, &run);
@@ -262,7 +362,9 @@ pub async fn start(state: &Shared, incident_id: &str, by: &str) -> Result<Value>
 fn set_incident_agent(state: &Shared, incident_id: &str, run: &Value) {
     if let Ok(Some(mut inc)) = state.store.incident(incident_id) {
         let answer = run["answer"].as_str().map(|a| a.chars().take(4_000).collect::<String>());
-        inc["agent"] = json!({ "runId": run["id"], "status": run["status"], "answer": answer, "at": now_ms(), "model": run["model"] });
+        // Del arreglo, lo que la tarjeta muestra (el parche entero está en la corrida).
+        let fix = run["fix"].is_object().then(|| json!({ "branch": run["branch"], "commit": run["fix"]["commit"], "files": run["fix"]["files"], "stat": run["fix"]["stat"], "changes": run["fix"]["changes"], "discarded": run["fix"]["discarded"], "error": run["fix"]["error"] }));
+        inc["agent"] = json!({ "runId": run["id"], "mode": run["mode"], "status": run["status"], "answer": answer, "at": now_ms(), "model": run["model"], "fix": fix });
         let _ = state.store.save_incident(&inc);
     }
 }
@@ -316,6 +418,10 @@ fn finish(state: &Shared, mut run: Value, status: &str, answer: Option<String>, 
     run["endedAt"] = json!(now_ms());
     run["answer"] = json!(answer);
     run["error"] = json!(error.filter(|_| status != "done"));
+    if run["mode"] == "fix" && matches!(status, "done" | "stopped" | "aborted") {
+        let incident = run["incident"].as_str().and_then(|i| state.store.incident(i).ok().flatten()).unwrap_or(Value::Null);
+        run["fix"] = commit_fix(&run, &incident);
+    }
     let _ = state.store.save_agent_run(&run);
     if let Some(inc) = run["incident"].as_str() {
         set_incident_agent(state, inc, &run);
@@ -376,11 +482,13 @@ pub async fn auto_start(state: &Shared, opened: &[Value]) {
     let settings = crate::agents::settings(state);
     for inc in opened {
         let source = inc["source"].as_str().unwrap_or_default();
-        if settings.level(source) < Level::Diagnose {
-            continue;
-        }
+        let mode = match settings.level(source) {
+            Level::Fix => "fix",
+            Level::Diagnose => "diagnose",
+            _ => continue,
+        };
         let id = inc["id"].as_str().unwrap_or_default();
-        if let Err(e) = start(state, id, "auto").await {
+        if let Err(e) = start(state, id, "auto", mode).await {
             tracing::info!("no agent for {id}: {e:#}");
         }
     }
@@ -397,3 +505,49 @@ pub fn spawn_poller(state: &Shared) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let g = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(dir.path()).output().unwrap().status.success(), "{args:?}");
+        std::fs::write(dir.path().join("sum.js"), "export const sum = (a, b) => a - b;\n").unwrap();
+        std::fs::create_dir(dir.path().join("node_modules")).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
+        g(&["init", "-q"]);
+        g(&["add", "-A"]);
+        g(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "sum"]);
+        dir
+    }
+
+    #[test]
+    fn un_arreglo_trabaja_en_su_worktree_y_el_daemon_hace_el_commit() {
+        let repo = repo();
+        let worktrees = tempfile::tempdir().unwrap();
+        let incident = json!({ "id": "inc-1", "title": "Tests fail", "evidence": { "commit": "doesnotexist" } });
+        let (dir, branch, base) = prepare_worktree(repo.path(), worktrees.path(), "run-inc-1-1", &incident).unwrap();
+        assert_eq!(branch, "condx/fix-inc-1-1");
+        assert!(dir.join("sum.js").exists());
+        assert!(dir.join("node_modules").exists(), "node_modules shared");
+        // Lo que haría el agente:
+        std::fs::write(dir.join("sum.js"), "export const sum = (a, b) => a + b;\n").unwrap();
+        let run = json!({ "id": "run-inc-1-1", "worktree": dir.display().to_string(), "base": base, "answer": "## Cause\nsum subtracted.\n\n## Change\nsum.js" });
+        let fix = commit_fix(&run, &incident);
+        assert_eq!(fix["changes"], true, "{fix}");
+        assert_eq!(fix["files"], json!(["sum.js"]));
+        assert!(fix["patch"].as_str().unwrap().contains("+export const sum = (a, b) => a + b;"));
+        // El commit está en la rama, con el autor del agente, y sin node_modules.
+        let log = git(repo.path(), &["log", "-1", "--format=%an|%s|%b", &branch]).unwrap();
+        assert!(log.starts_with("Condx agent|fix: Tests fail (Condx agent)|sum subtracted."), "{log}");
+        assert_eq!(git(repo.path(), &["show", "--name-only", "--format=", &branch]).unwrap(), "sum.js");
+        // El checkout del usuario no cambió.
+        assert!(std::fs::read_to_string(repo.path().join("sum.js")).unwrap().contains("a - b"));
+        // Sin cambios nuevos, no hay otro commit.
+        let again = commit_fix(&json!({ "worktree": dir.display().to_string(), "base": base }), &incident);
+        assert_eq!(again["changes"], true);
+        assert_eq!(again["commit"], fix["commit"]);
+    }
+}
+

@@ -3,8 +3,9 @@
 // tiempo y salida acotados. Los archivos de secretos no se leen aunque estén en el repo.
 
 import { execFile } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { Context } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
@@ -162,3 +163,102 @@ export function condxTool(daemonUrl: string, token: string) {
 }
 
 export const READ_TOOLS = [readFileTool, listFilesTool, searchCodeTool, gitLogTool, gitShowTool];
+
+// ---------- Modo arreglo (A3): escribir en su worktree y correr chequeos sin red ----------
+
+const MAX_WRITE = 512 * 1024;
+
+export const editFileTool = defineTool({
+  name: "edit_file",
+  description: "Replace an exact piece of text in a file of your worktree. old_text must appear exactly once; include enough context.",
+  parameters: Type.Object({ path: Type.String(), old_text: Type.String(), new_text: Type.String() }),
+  execute: async (args, api, context) => {
+    const full = inside(await repo(api, context), args.path);
+    const before = await readFile(full, "utf8").catch(() => {
+      throw new ToolError(`${args.path} doesn't exist (use write_file to create it)`);
+    });
+    const at = before.indexOf(args.old_text);
+    if (at < 0) throw new ToolError("old_text isn't in the file (read it again: it must match exactly)");
+    if (before.indexOf(args.old_text, at + 1) >= 0) throw new ToolError("old_text appears more than once: include more context");
+    const after = before.slice(0, at) + args.new_text + before.slice(at + args.old_text.length);
+    if (after.length > MAX_WRITE) throw new ToolError("the file would be too big");
+    await writeFile(full, after);
+    return text(`edited ${args.path}`);
+  },
+});
+
+export const writeFileTool = defineTool({
+  name: "write_file",
+  description: "Create a file in your worktree, or replace a whole file.",
+  parameters: Type.Object({ path: Type.String(), content: Type.String() }),
+  execute: async (args, api, context) => {
+    const full = inside(await repo(api, context), args.path);
+    if (args.content.length > MAX_WRITE) throw new ToolError("too big");
+    await mkdir(dirname(full), { recursive: true });
+    await writeFile(full, args.content);
+    return text(`wrote ${args.path}`);
+  },
+});
+
+/** Perfil de sandbox-exec: sin red (ni siquiera localhost: el daemon escucha ahí), escribe solo en
+ * el worktree y en temporales, y no lee credenciales del usuario ni habla con el Llavero. */
+export function sandboxProfile(worktree: string, home: string, tmp: string): string {
+  const q = (s: string) => JSON.stringify(s);
+  const secret = [".condx", ".ssh", ".aws", ".gnupg", ".config/gh", ".netrc", ".npmrc", ".docker", "Library/Keychains"].map((p) => `(subpath ${q(`${home}/${p}`)})`).join(" ");
+  return [
+    "(version 1)",
+    "(allow default)",
+    "(deny network*)",
+    "(allow network* (remote unix-socket))",
+    `(deny file-read* ${secret})`,
+    "(deny file-write*)",
+    `(allow file-write* (subpath ${q(worktree)}) (subpath ${q(tmp)}) (subpath "/private/var/folders") (subpath "/private/tmp") (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/tty") (regex #"^/dev/fd/"))`,
+    '(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd"))',
+  ].join("\n");
+}
+
+/** Los scripts de package.json tal como estaban en el commit base (el agente no puede agregar uno). */
+async function baseScripts(root: string): Promise<Record<string, string>> {
+  try {
+    const pkg = JSON.parse(await run("git", ["show", "HEAD:package.json"], root));
+    return pkg.scripts ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function packageManager(root: string): string {
+  const has = (f: string) => existsSync(join(root, f));
+  return has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lockb") || has("bun.lock") ? "bun" : "npm";
+}
+
+export const runCheckTool = defineTool({
+  name: "run_check",
+  description: "Run one of the project's package.json scripts (as they were before your changes: typically test, typecheck, lint, build) in your worktree, offline (no network), and get its output.",
+  parameters: Type.Object({ script: Type.String() }),
+  execute: async (args, api, context) => {
+    const root = await repo(api, context);
+    const scripts = await baseScripts(root);
+    if (!(args.script in scripts)) throw new ToolError(`no script “${args.script}”. Available: ${Object.keys(scripts).join(", ") || "none"}`);
+    const pm = packageManager(root);
+    const home = process.env.HOME ?? "/nonexistent";
+    const tmp = join(process.env.TMPDIR ?? "/private/tmp", `condx-check-${process.pid}`);
+    await mkdir(tmp, { recursive: true });
+    const profile = sandboxProfile(root, home, tmp);
+    const out = await new Promise<string>((ok) => {
+      execFile(
+        "/usr/bin/sandbox-exec",
+        ["-p", profile, pm, "run", args.script],
+        { cwd: root, timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, TMPDIR: tmp, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" } },
+        (err, stdout, stderr) => {
+          const code = err ? ((err as { code?: number | string }).code ?? "error") : 0;
+          const tail = `${stdout}\n${stderr}`.trim().split("\n").slice(-150).join("\n");
+          ok(`exit ${code}\n${tail}`);
+        },
+      );
+    });
+    return text(clip(out));
+  },
+});
+
+export const FIX_TOOLS = [...READ_TOOLS, editFileTool, writeFileTool, runCheckTool];

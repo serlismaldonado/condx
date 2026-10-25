@@ -35,8 +35,8 @@ Without the cloud, everything keeps working as today. With it, the daemon is sti
 
 ## 3. Building blocks
 
-We reuse the local-first library built for Heskala ERP (`@heskala/localfirst`), cloned as
-`condx-localfirst` (branch `condx`; upstream `Heskala/heskala-localfirst`).
+We reuse the local-first library [`localfirst`](https://github.com/serlismaldonado/localfirst)
+(MIT, public; born inside Heskala ERP), which includes the Rust port (`rust/localfirst-core`).
 
 | Piece | Reuse | Where |
 | --- | --- | --- |
@@ -125,7 +125,7 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 
 | Phase | What | Done when |
 | --- | --- | --- |
-| **C0** ✅ | Clone the library, this doc, Rust `localfirst-core`: types, `planOp`, sets, view, with the TS tests ported and shared JSON fixtures | done 2026-10-25: 400 shared cases match (`condx-localfirst`, branch `condx`) |
+| **C0** ✅ | Clone the library, this doc, Rust `localfirst-core`: types, `planOp`, sets, view, with the TS tests ported and shared JSON fixtures | done 2026-10-25: 400 shared cases match |
 | **C1** ✅ | Reduced engine in Rust: SQLite outbox and replica, cursors, backoff; a fake transport and the contract tests | done 2026-10-25: sans-IO engine; 6000 seeds × 100 steps converge on memory and SQLite, with calls in flight across steps |
 | **C2** ✅ | Condx Cloud backend (Convex project): tables, doorbell/pull/push for Condx scopes, auth | done 2026-10-25: 15 convex-test tests, differential vs `FakeServer` (300 seeds agree), and the Rust engine against a throwaway local backend |
 | C3 | Daemon publishes `env`, `jobs`, `approvals` (one-way mirror) through the Rust transport | the web view shows the daemon live |
@@ -143,9 +143,8 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 
 ## 8. Open questions
 
-1. **Licence.** `Heskala/heskala-localfirst` is private; Condx is MIT and public. Shipping the web
-   client and the Rust port publicly needs the library (or its protocol and core) to be published
-   under a compatible licence. Until decided, `condx-localfirst` stays local (not pushed).
+1. ~~Licence.~~ Settled 2026-10-25: the library is public and MIT at
+   `serlismaldonado/localfirst`.
 2. Convex component vs. tables in the app's schema (the ERP kept them in its schema; a component
    would let Condx Cloud `app.use(localfirst)`).
 3. Hosted Condx Cloud (multi-tenant) later, or only bring-your-own Convex.

@@ -207,7 +207,7 @@
           <div>
             <div class="kicker">A local devtool for Convex</div>
             <h1>Condx brings <em>calm</em><br>to your Convex deploys</h1>
-            <p class="lede">Your local backend, every environment, your data and your deploys live in one app. Changes wait for your approval, and your AI agents can do the legwork without ever shipping on their own.</p>
+            <p class="lede">Every environment, your data and your deploys in one app. Changes wait for your approval.</p>
             <div class="ctas">
               <a class="btn primary" href="#install">Install <span>▸</span></a>
               <a class="btn" href="#demo">Try the live demo</a>
@@ -232,32 +232,32 @@
             <div class="veil">
               <div>
                 <button class="btn primary" id="launch" type="button">▶ Launch the real app</button>
-                <p>This is Condx itself, compiled to WebAssembly, running on a sample project. Approve a deploy, browse the data, open a workflow. About 6&nbsp;MB.</p>
+                <p>The real app in WebAssembly, on a sample project. About 6&nbsp;MB.</p>
               </div>
             </div>
           </div>
         </div>
-        <div class="caption"><span>Sample data, nothing leaves your browser. Best in Chrome, Edge or Safari.</span><a href="demo/" class="mono">Open full screen ↗</a></div>
+        <div class="caption"><span>Sample data. Best in Chrome, Edge or Safari.</span><a href="demo/" class="mono">Open full screen ↗</a></div>
       </section>
 
       <section id="ways">
         <div class="pad" style="padding-bottom:28px">
           <div class="label"><b>02</b> How it works</div>
           <h2>Two ways in, <em>one daemon</em></h2>
-          <p class="sub">A small daemon on your Mac knows your projects and environments. You use the app; your agents use the MCP. Both go through the same rules.</p>
+          <p class="sub">You use the app, your agents use the MCP. Same rules for both.</p>
         </div>
         <div class="grid2">
           <div style="display:grid;gap:16px">
             <div class="card">
               <div class="tagline">For you</div>
               <h3>Condx, the app</h3>
-              <p>Every environment, your data, jobs, workflows and approvals. The only place where changes are approved and keys are saved.</p>
+              <p>The only place where changes are approved.</p>
               <div class="chips"><span class="chip">macOS</span><span class="chip">GPUI</span><span class="chip soon">signed app soon</span></div>
             </div>
             <div class="card">
               <div class="tagline">For your agents</div>
               <h3>The MCP server</h3>
-              <p>Claude Code, Cursor, Codex or any MCP client see what you see and can request jobs or start workflows.</p>
+              <p>Agents see what you see and can request jobs.</p>
               <div class="chips"><span class="chip">stdio</span><span class="chip">HTTP</span><span class="chip">no approve tool</span></div>
             </div>
           </div>
@@ -271,7 +271,7 @@
               <div><span>Change the rules</span><b class="no">No</b></div>
               <div><span>Read deploy keys</span><b class="no">No</b></div>
             </div>
-            <p class="sub" style="font-size:14px">The daemon listens only on 127.0.0.1. Agents get a token without the approve scope; approvals, rules and keys only change from the app.</p>
+            <p class="sub" style="font-size:14px">Local only. Agents can't approve, change rules or read keys.</p>
           </div>
         </div>
       </section>
@@ -280,14 +280,14 @@
         <div class="pad" style="padding-bottom:28px">
           <div class="label"><b>03</b> Features</div>
           <h2>Everything around <em>your backend</em></h2>
-          <p class="sub">The parts of working with Convex that live outside your editor, in one place.</p>
+          <p class="sub">What lives outside your editor, in one place.</p>
         </div>
 
         <div class="feature">
           <div class="text">
             <h3>Data, in every environment</h3>
-            <p>Browse tables with record counts and real paging. Relation ids show where they point, dates read as dates, and the document opens beside the table.</p>
-            <ul class="list"><li>Read-only, production hidden unless you allow it</li><li>Double-click an _id to copy it</li><li>Counts in cloud with the environment's deploy key</li></ul>
+            <p>Tables with counts, paging, relations and the document beside them.</p>
+            <ul class="list"><li>Read-only; production hidden by default</li><li>Double-click an _id to copy it</li></ul>
           </div>
           <div class="shot"><img src="shots/data.jpg" alt="The Data tab: tasks table with relation ids and the JSON document" loading="lazy" width="1800" height="1125"></div>
         </div>
@@ -295,8 +295,8 @@
         <div class="feature flip">
           <div class="text">
             <h3>Workflows you can trust</h3>
-            <p>Chain checks, approvals, waits and recipes: CI green, cloud dev responds, your approval, deploy, a notice. Agents can start them; only you approve.</p>
-            <ul class="list"><li>Turn workflows and nodes on and off</li><li>Retry from the node that failed</li><li>Export them as JSON for your repo</li></ul>
+            <p>Checks, approvals and deploys in a chain. Agents start them; you approve.</p>
+            <ul class="list"><li>Turn them on and off</li><li>Retry from the failed node</li></ul>
           </div>
           <div class="shot"><img src="shots/workflows.jpg" alt="The workflow editor with checks, an approval and a deploy" loading="lazy" width="1800" height="1125"></div>
         </div>
@@ -304,8 +304,8 @@
         <div class="feature">
           <div class="text">
             <h3>Jobs and approvals</h3>
-            <p>Deploys, encrypted backups, rehearsals on a copy of real data, running a function. Each job keeps its steps, arguments and full log.</p>
-            <ul class="list"><li>Queries run right away; mutations ask first</li><li>Touch ID or typing the name for production</li><li>See which credential each job runs with</li></ul>
+            <p>Deploys, backups, rehearsals and functions, each with its log.</p>
+            <ul class="list"><li>Queries run now; mutations ask first</li><li>Touch ID for production</li></ul>
           </div>
           <div class="shot"><img src="shots/jobs.jpg" alt="Recent jobs, one waiting for approval, and a job's steps" loading="lazy" width="1800" height="1125"></div>
         </div>
@@ -313,19 +313,19 @@
         <div class="feature flip">
           <div class="text">
             <h3>Your schema, drawn</h3>
-            <p>The schema deployed on each backend as a tree and a diagram, with the relations between tables and every index.</p>
-            <ul class="list"><li>Focus a table and its relations</li><li>Indexes, search and vector indexes</li><li>Local or cloud</li></ul>
+            <p>Each backend's schema as a diagram, with relations and indexes.</p>
+            <ul class="list"><li>Focus a table and its relations</li><li>Local or cloud</li></ul>
           </div>
           <div class="shot"><img src="shots/schema.jpg" alt="The schema diagram of the sample project" loading="lazy" width="1800" height="1125"></div>
         </div>
 
         <div class="grid3">
-          <div><h3>Local backend, no Docker</h3><p>Convex's local backend, its deployer and your Vite or Next frontend as managed processes.</p></div>
-          <div><h3>Rehearsals</h3><p>Try a commit on a copy of real data in a throwaway backend before it reaches anyone.</p></div>
-          <div><h3>Encrypted backups</h3><p>Cloud exports encrypted with age, kept for 14 days.</p></div>
-          <div><h3>Keys in the Keychain</h3><p>Save each cloud environment's deploy key once; it's never shown again.</p></div>
-          <div><h3>Rules per environment</h3><p>Who reads records and how much a change needs, for local, cloud dev and production.</p></div>
-          <div><h3>English and Spanish</h3><p>Switch languages in Settings.</p></div>
+          <div><h3>Local backend, no Docker</h3><p>Backend, deployer and frontend as processes.</p></div>
+          <div><h3>Rehearsals</h3><p>Try a commit on a copy of real data first.</p></div>
+          <div><h3>Encrypted backups</h3><p>Encrypted, kept 14 days.</p></div>
+          <div><h3>Keys in the Keychain</h3><p>Saved once, never shown again.</p></div>
+          <div><h3>Rules per environment</h3><p>Who reads and how much a change needs.</p></div>
+          <div><h3>English and Spanish</h3><p>Switch in Settings.</p></div>
         </div>
       </section>
 
@@ -334,7 +334,7 @@
         <div class="hero" style="grid-template-columns:1fr 1fr;align-items:start">
           <div>
             <h2>Built for agents, <em>with a leash</em></h2>
-            <p class="sub">Connect your agent once. It gets the full picture of your environments and can do the legwork; anything that changes them waits for you in the app.</p>
+            <p class="sub">Your agent does the legwork. Changes wait for you.</p>
           </div>
           <pre><span class="c"># Claude Code</span>
 claude mcp add condx -- ~/.condx/daemon/bin/condxd mcp
@@ -348,7 +348,7 @@ claude mcp add condx -- ~/.condx/daemon/bin/condxd mcp
         <div class="hero" style="grid-template-columns:1fr 1fr;align-items:start">
           <div>
             <h2>Start in <em>two commands</em></h2>
-            <p class="sub">v0.1 runs on macOS 15 or later and builds from source with Rust; the toolchain installs itself. A signed app and Homebrew are on the way.</p>
+            <p class="sub">macOS 15+, built from source with Rust. Homebrew soon.</p>
           </div>
           <pre>git clone https://github.com/serlismaldonado/condx.git
 cd condx &amp;&amp; cargo build --release

@@ -18,6 +18,8 @@ so your AI agents can help without being able to ship on their own.
 - **Check before you deploy.** Compare the local schema with what's deployed in cloud: tables,
   fields and indexes that change, the changes that would make `convex deploy` fail, and
   environment variables missing there (names only). Also a workflow check and an MCP tool.
+- **Performance by function.** From the function logs: calls, errors, p50/p95/max time and the
+  last error of each function, failing and slow ones first.
 - **⌘K command palette.** Jump to any page, environment tab or table with fuzzy search.
 - **CI per project.** The GitHub Actions runs of each project's repo, in the app and in workflows.
 - **Guided first launch.** Checks Node, the Convex CLI session, git and gh, and downloads the

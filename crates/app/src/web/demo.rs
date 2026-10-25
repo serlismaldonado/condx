@@ -679,12 +679,31 @@ fn functions() -> Vec<Value> {
 
 fn function_logs() -> Value {
     let t = now() as f64 / 1000.0;
-    let entry = |ago: f64, kind: &str, identifier: &str, lines: &[&str], error: Option<&str>| json!({ "timestamp": t - ago, "udfType": kind, "identifier": identifier, "logLines": lines, "error": error });
-    json!({ "logs": [
-        entry(4.0, "Query", "tasks:listByProject", &[], None),
-        entry(12.0, "Mutation", "tasks:move", &["moved a task to in_review"], None),
-        entry(31.0, "Action", "invites:send", &["sending invite to guest41@example.com"], None),
-        entry(58.0, "Mutation", "comments:add", &[], Some("Uncaught Error: task not found")),
-        entry(73.0, "Query", "users:me", &[], None),
-    ] })
+    // Ejecuciones de varias funciones con sus tiempos (segundos, como los da `convex logs --jsonl`).
+    let fns: [(&str, &str, f64, u32); 7] = [
+        ("tasks:listByProject", "Query", 0.006, 0),
+        ("users:me", "Query", 0.002, 0),
+        ("tasks:move", "Mutation", 0.018, 0),
+        ("comments:add", "Mutation", 0.024, 5),
+        ("invites:send", "Action", 0.640, 0),
+        ("search:tasks", "Query", 0.090, 0),
+        ("files:generateUploadUrl", "Mutation", 0.011, 0),
+    ];
+    let mut logs = vec![];
+    let mut ago = 2.0;
+    for i in 0..84u32 {
+        let (id, kind, base, fail_every) = fns[(i as usize * 5 + i as usize / 3) % fns.len()];
+        // Un poco de variación y alguna lenta, siempre igual en cada carga.
+        let jitter = 1.0 + ((i * 37 % 11) as f64) / 6.0 + if i % 23 == 0 { 6.0 } else { 0.0 };
+        let error = (fail_every > 0 && (i / 3) % fail_every < 2).then_some("Uncaught Error: task not found");
+        let lines: Vec<String> = match id {
+            "invites:send" => vec![format!("sending invite to guest{}@example.com", 40 + i % 9)],
+            "tasks:move" => vec!["moved a task to in_review".into()],
+            _ => vec![],
+        };
+        logs.push(json!({ "timestamp": t - ago, "udfType": kind, "identifier": id, "executionTime": base * jitter, "logLines": lines, "error": error }));
+        ago += 3.0 + (i % 5) as f64;
+    }
+    logs.reverse();
+    json!({ "logs": logs })
 }

@@ -243,12 +243,12 @@ fn logs(app: &mut DevtoolApp, name: &str, window: &mut Window, cx: &mut Context<
                     .small()
                     .outline()
                     .icon(IconName::RefreshCw)
-                    .label(t!("Load last 100"))
+                    .label(t!("Load last 300"))
                     .loading(matches!(app.env_logs.get(name), Some(Load::Loading)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let key = n.clone();
                         this.env_logs.insert(key.clone(), Load::Loading);
-                        let args = json!({ "name": key.clone(), "limit": 100, "errorsOnly": false });
+                        let args = json!({ "name": key.clone(), "limit": 300, "errorsOnly": false });
                         this.call("get_function_logs", args, move |app, r| {
                             app.env_logs.insert(key, r);
                         }, cx);
@@ -260,12 +260,15 @@ fn logs(app: &mut DevtoolApp, name: &str, window: &mut Window, cx: &mut Context<
         Some(Load::Loading) => card.child(ui::muted(t!("Reading logs…"), cx)),
         Some(Load::Failed(e)) => card.child(ui::muted(e.clone(), cx).text_color(cx.theme().danger)),
         Some(Load::Ready(v)) => {
-            let lines = crate::ely::function_log_lines(v["logs"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+            let raw = v["logs"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            let lines = crate::ely::function_log_lines(raw);
             if lines.is_empty() {
                 return card.child(ui::muted(t!("No logs in this range."), cx));
             }
+            // Arriba, el rendimiento por función de estas mismas ejecuciones.
+            let insights = super::insights::table(name, raw, cx);
             let this = cx.entity().downgrade();
-            card.child(
+            let card = card.child(
                 ui::chained_log(
                     SharedString::from(format!("env-logs-{name}")),
                     LogViewer::new(SharedString::from(format!("env-logs-{name}")), lines)
@@ -281,7 +284,8 @@ fn logs(app: &mut DevtoolApp, name: &str, window: &mut Window, cx: &mut Context<
                         .into_any_element(),
                 )
                 .h(px(460.)),
-            )
+            );
+            v_flex().gap_3().children(insights).child(card)
         }
     }
 }

@@ -46,3 +46,9 @@ In an environment's **Schema** tab, **Compare local → cloud** reads the schema
 
 Nothing is deployed. The same comparison is a workflow check (**The local schema is safe to
 deploy here**, which also fails on missing variables) and an MCP tool (`get_schema_diff`), so an agent can look before it asks.
+
+## Performance by function
+
+In an environment's **Logs** tab, **Load last 300** also builds a table **By function**: calls,
+errors, p50, p95 and max execution time, and the last error, failing functions first and then
+the slowest. It's computed in the app from those same logs; nothing else is read.

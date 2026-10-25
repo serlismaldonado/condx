@@ -5,6 +5,7 @@ pub mod er;
 pub mod er_layout;
 pub mod er_route;
 pub mod guide;
+pub mod insights;
 pub mod jobs;
 pub mod keys;
 pub mod local;

@@ -50,3 +50,9 @@ ambos (el de cloud con su deploy key, de la pestaña Claves) y lista:
 No se despliega nada. La misma comparación es una verificación de flujos (**El esquema local es
 seguro para desplegar aquí**, que también falla si faltan variables) y una herramienta del MCP (`get_schema_diff`), para que un agente
 mire antes de pedir.
+
+## Rendimiento por función
+
+En la pestaña **Logs** de un entorno, **Cargar las últimas 300** arma también una tabla **Por
+función**: llamadas, errores, tiempos p50, p95 y máximo, y el último error; primero las que
+fallan y después las más lentas. Se calcula en la app con esos mismos logs; no se lee nada más.

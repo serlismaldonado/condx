@@ -1,6 +1,6 @@
 # Flows with agents, events and threads
 
-Status: design (2026-10-25). Builds on the workflow engine (`workflows.rs`), the agent host
+Status: design (2026-10-25). First event sources: Convex errors, frontend errors and external agents through the MCP. Builds on the workflow engine (`workflows.rs`), the agent host
 (`agent_host.rs`, `agent-host/` with pi durable), incidents, notifications and the phone.
 
 ## 1. Goal
@@ -26,13 +26,33 @@ fingerprint, severity, payload, at }` (payload redacted, size-capped, untrusted)
 
 | Source | What it is | Today |
 | --- | --- | --- |
+| `convex-error` | **First.** Errors of Convex functions (uncaught errors, failed mutations/actions) on cloud dev and prod | the daemon reads them on demand (`function_logs`, `convex logs`); not as events |
+| `frontend-error` | **First.** Errors of the frontend: in the browser of real users (production) and in local tabs (dev), plus failed Vercel builds | local tabs: Condx telemetry (`get_errors`); Vercel builds: incidents; production browsers: new |
+| `mcp` | **First.** An external agent (Claude Code, another tool) reports an event through Condx's MCP | new tool `report_event` |
 | `incident` | An incident opened or reopened (job, Vercel, CI, Convex down) | exists (incidents.rs) |
-| `convex-error` | Errors of Convex functions on cloud dev / prod (the deployment's log stream) | new |
-| `app-error` | Errors of the running app (console, promises, Convex calls) from Condx telemetry | exists as data (`get_errors`), not as events |
-| `webhook` | Any JSON a service posts to Condx Cloud (Sentry, an uptime check, another tool), signed with a per-source secret | new |
+| `webhook` | Any JSON a service posts to Condx Cloud (Sentry, an uptime check), signed with a per-source secret | new |
 | `task` | The developer opens a task from the chat ("add field X to Y") | new |
 | `schedule` | Every N hours / a cron | new |
 | `manual` | Run it from the app or the phone | exists |
+
+How the first three arrive:
+
+- **Convex errors.** The daemon follows the log stream of each cloud environment it has a key for
+  (`npx convex logs --deployment …`, the same deploy keys it already keeps in the Keychain; dev and
+  prod), keeps the errors and groups them by function and message (the fingerprint). Convex's log
+  streams (webhook integration, paid plans) can feed the same source through Condx Cloud, for when
+  the Mac is off.
+- **Frontend errors.** In dev, the telemetry the app already sends to the daemon (console,
+  promises, failed Convex calls) becomes events. In production, a small client (`@condx/report`, a
+  few lines in the app) posts errors to Condx Cloud with a public, per-project ingest key: rate
+  limited, size capped, grouped by message and stack top, no cookies or user data. The daemon pulls
+  them by sync, as it does with the phone's requests. Failed Vercel builds already are incidents.
+- **External agents (MCP).** A new MCP tool, `report_event { title, severity, details, source,
+  fingerprint? }`, lets an agent working on the project (Claude Code, say) raise an event: "the
+  checkout test fails on prod data", "this migration will lock the table". It goes through the
+  same triggers and opens (or joins) a thread, where that agent's report is the first message.
+  Allowed for the developer's MCP token, rate limited; **not** for Condx's own agents (no loops), and
+  it can only start flows the developer configured: it never approves or deploys anything.
 
 Webhooks arrive at Condx Cloud (the Mac may be behind NAT) and reach the daemon by sync, like the
 phone's requests; the daemon verifies the source's HMAC.
@@ -154,7 +174,7 @@ the checks, the approval buttons, and anything the developer asks along the way.
 | --- | --- | --- |
 | Flow engine (graph, durable runs, approvals, notify) | yes | `agent` and `ask` nodes, edge conditions, triggers |
 | Agent host with pi durable | yes (diagnose, fix, chat) | agent definitions with roles and structured output; runs bound to a thread and a node |
-| Incidents as signals | yes | as flow events (plus convex-error, app-error, webhook, task, schedule) |
+| Incidents as signals | yes | as flow events (plus convex-error, frontend-error, mcp, webhook, task, schedule) |
 | Chat | yes (one agent per conversation) | threads with several agents, mentions, flow messages and cards |
 | Phone | incidents, approvals, keys | threads, notices with the summary |
 
@@ -165,7 +185,7 @@ the checks, the approval buttons, and anything the developer asks along the way.
 | F1 | Agent catalog (roles, mode, output schema) and the `agent` node; outputs flow to the next nodes | a manual flow Triage → Risk produces a validated risk report in the run |
 | F2 | Edge conditions; `notify` with a summary to the phone and the thread | the same flow notifies only when risk ≥ the threshold, and skips the rest with a reason |
 | F3 | Threads: each run is a thread with its agents, flow messages, cards and mentions; the Agents page lists threads; `ask` node | the developer asks `@risk` something in the run's thread and gets the answer in context |
-| F4 | Events and triggers: incident, convex-error, app-error, webhook (via Condx Cloud, HMAC), task, schedule; dedupe by fingerprint | a Convex error on dev starts the flow once and later occurrences join its thread |
+| F4 | Events and triggers, in this order: convex-error (log stream of dev/prod), frontend-error (dev telemetry; production client via Condx Cloud), mcp (`report_event`), then incident, webhook, task, schedule; dedupe by fingerprint | a Convex error on dev and a browser error in production each start their flow once, later occurrences join the thread, and an external agent can raise one through the MCP |
 | F5 | Fix pipeline in flows: Fixer → Reviewer → checks → approval or auto → deploy; autonomy per flow; built-in flows ("Error in production", "CI failing", "Task from chat") | a real error goes from event to a reviewed, tested fix waiting for approval on the phone |
 | F6 | Threads on the phone (read, write, approve) | the whole loop can be driven from the phone |
 | F7 | Outcomes per agent and flow (accepted, discarded, reverted, cost) | Settings shows which agents and flows pay off |
@@ -175,8 +195,10 @@ so nothing changes until the developer edits it.
 
 ## 6. Open questions
 
-- Error sources first: Convex function errors from the deployment's logs, app telemetry, or an
-  external service (Sentry or similar) by webhook?
-- A webhook payload can be large: keep only a capped, redacted excerpt plus a link?
+- Production frontend errors need the small client in the app and an ingest endpoint on Condx Cloud
+  that the public internet can reach: which key model (one public key per project, rotatable) and
+  which limits (events per minute, payload size)?
+- Convex errors while the Mac is off: only Convex log streams (paid plan) can deliver them; is that
+  needed now, or is "the daemon follows the logs while it runs" enough to start?
 - Can one flow run several agents in parallel (triage and a log search at once), or keep it one node
   at a time as today?

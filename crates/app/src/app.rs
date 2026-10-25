@@ -25,6 +25,8 @@ pub enum Page {
     Env(String),
     Live,
     Repo,
+    /// El frontend del proyecto en Vercel (views::frontend).
+    Frontend,
     Jobs,
     Approvals,
     /// Flujos de despliegue del proyecto (views::workflows).
@@ -252,6 +254,8 @@ pub struct DevtoolApp {
     pub approval_folds: HashMap<String, bool>,
     /// Git de cada proyecto (cambios, ramas, commits).
     pub git: HashMap<String, Load>,
+    /// `/api/frontend` por proyecto.
+    pub frontend: HashMap<String, Load>,
     pub live_json_open: bool,
     /// Pestaña y modo del esquema de cada entorno (los de `env_tab`/`schema_mode` son del abierto).
     pub env_tabs: HashMap<String, EnvTab>,
@@ -404,6 +408,7 @@ impl DevtoolApp {
             schema_bounds: std::rc::Rc::new(std::cell::Cell::new(Bounds::default())),
             approval_folds: HashMap::new(),
             git: HashMap::new(),
+            frontend: HashMap::new(),
             live_json_open: false,
             env_tabs: HashMap::new(),
             schema_modes: HashMap::new(),
@@ -670,6 +675,10 @@ impl DevtoolApp {
             Page::Repo => {
                 self.go(Page::Repo, cx);
                 self.load_git(cx);
+            }
+            Page::Frontend => {
+                self.go(Page::Frontend, cx);
+                self.load_frontend(false, cx);
             }
             Page::Live => {
                 self.snapshot = None;
@@ -1225,6 +1234,7 @@ impl Render for DevtoolApp {
             Page::Env(name) => views::env::render(self, &name, window, cx).into_any_element(),
             Page::Live => views::live::render(self, window, cx).into_any_element(),
             Page::Repo => views::repo::render(self, window, cx).into_any_element(),
+            Page::Frontend => views::frontend::render(self, window, cx).into_any_element(),
             Page::Workflows => views::workflows::render(self, window, cx).into_any_element(),
             Page::Jobs => views::jobs::render(self, window, cx).into_any_element(),
             Page::Approvals => views::approvals::render(self, window, cx).into_any_element(),

@@ -82,6 +82,7 @@ pub fn get(path: &str) -> Result<Value> {
         }
         ["mcp"] => json!({ "lastAt": now() - 3 * MIN, "client": "claude-code", "command": "~/.condx/daemon/bin/condxd", "url": "http://127.0.0.1:4790/mcp", "tokenFile": "~/.condx/daemon/token" }),
         ["git"] => git(),
+        ["frontend"] => frontend(),
         ["deployments"] => deployments(&q("env").unwrap_or_default()),
         ["approval"] => approval(&q("recipe").unwrap_or_default(), &q("env").unwrap_or_default(), q("function").as_deref()),
         ["promotion"] => json!({ "ok": true, "checks": [] }),
@@ -284,6 +285,36 @@ fn backups() -> Value {
         { "id": 11, "env": PROD, "at": now() - 26 * HOUR, "size": 41_220_871, "encrypted": true, "commit": PREV, "job": "j-demo-9", "path": "~/.condx/backups/my-app-prod.zip.age" },
         { "id": 10, "env": "local", "at": now() - 3 * 24 * HOUR, "size": 2_904_118, "encrypted": false, "commit": PREV, "job": "j-demo-10", "path": "~/.condx/backups/local.zip" },
     ])
+}
+
+fn frontend() -> Value {
+    let dep = |id: &str, state: &str, target: Value, branch: &str, commit: &str, msg: &str, ago: i64| {
+        json!({ "url": format!("https://my-app-{id}-ada.vercel.app"), "state": state, "target": target, "createdAt": now() - ago, "commit": commit, "message": msg, "branch": branch, "creator": "ada" })
+    };
+    let mut prod = dep("k2h8", "READY", json!("production"), "main", "a4f2c91e7b3d", "feat: task comments with mentions", 3 * HOUR);
+    prod["behindMain"] = json!(0);
+    prod["convex"] = json!({ "status": "ok", "site": "https://my-app.com", "found": ["https://brave-fox-456.convex.cloud"], "expectedEnv": "my-app-prod", "expectedUrl": "https://brave-fox-456.convex.cloud", "matches": [{ "url": "https://brave-fox-456.convex.cloud", "env": "my-app-prod" }] });
+    prod["skew"] = json!({ "frontend": "a4f2c91e", "convex": "7c1e93b5", "frontendAhead": 2, "convexAhead": 0, "status": "frontend-ahead" });
+    let mut latest = dep("p9q1", "READY", Value::Null, "feat/task-labels", "e81b0c4a99", "feat: labels on tasks", 25 * 60_000);
+    latest["convex"] = json!({ "status": "ok", "site": latest["url"], "found": ["https://happy-otter-123.convex.cloud"], "expectedEnv": "my-app-dev", "expectedUrl": "https://happy-otter-123.convex.cloud", "matches": [{ "url": "https://happy-otter-123.convex.cloud", "env": "my-app-dev" }] });
+    let mut failed = dep("m3z7", "ERROR", Value::Null, "fix/date-picker", "51d0aa2c3e", "fix: date picker in Safari", 50 * 60_000);
+    failed["resolved"] = json!(false);
+    failed["log"] = json!({ "tail": "Running \"vite build\"\nvite v6.0.7 building for production...\ntransforming...\n✓ 812 modules transformed.\nsrc/components/DatePicker.tsx (41:18): \"formatISO\" is not exported by \"node_modules/date-fns/index.js\"\nerror during build:\nRollupError: \"formatISO\" is not exported by \"node_modules/date-fns/index.js\"\nError: Command \"vite build\" exited with 1" });
+    json!({
+        "project": PROJECT,
+        "vercelProject": "my-app",
+        "linked": true,
+        "checkedAt": now() - 12_000,
+        "production": prod,
+        "building": [dep("r4t6", "BUILDING", Value::Null, "feat/search", "0b7d2e19f4", "feat: search tasks", 40_000)],
+        "lastFailed": failed.clone(),
+        "previews": [
+            latest,
+            failed,
+            dep("c5v8", "READY", Value::Null, "dev", "9f3a7d21bc", "chore: bump convex", 5 * HOUR),
+            dep("x2n4", "READY", Value::Null, "feat/dark-mode", "3e6c1f8a20", "feat: dark mode", 2 * 24 * HOUR),
+        ],
+    })
 }
 
 fn git() -> Value {

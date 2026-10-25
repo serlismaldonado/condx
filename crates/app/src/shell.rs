@@ -85,7 +85,7 @@ fn groups(app: &DevtoolApp) -> Vec<NavGroup> {
         id: "proyecto",
         label: t!("Project"),
         icon: IconName::GitBranch,
-        items: vec![item(Page::Workflows, t!("Workflows"), IconName::Rocket), item(Page::Repo, t!("Git & CI"), IconName::GitBranch), terminal],
+        items: vec![item(Page::Workflows, t!("Workflows"), IconName::Rocket), item(Page::Frontend, t!("Frontend"), IconName::Globe), item(Page::Repo, t!("Git & CI"), IconName::GitBranch), terminal],
     });
     // Guía y Configuración van como íconos en la barra de abajo (render_footer).
     list

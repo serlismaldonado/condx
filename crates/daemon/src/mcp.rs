@@ -64,6 +64,7 @@ pub fn tools() -> Vec<Value> {
         tool("get_deployer", "Devbox deployer: phase (idle, syncing, error), image and latest log lines.", json!({}), &[]),
         tool("get_containers", "Docker containers (name, image, state, compose service).", json!({}), &[]),
         tool("get_vercel", "Vercel frontend: production deploy, latest preview, in progress and latest failed.", json!({}), &[]),
+        tool("get_frontend", "A project's frontend on Vercel: production, previews (latest per branch), building, the latest failed deploy with the end of its build log, which Convex deployment production and the latest preview point to (read from the published site) and the production frontend's commit against Convex production's.", json!({ "project": { "type": "string", "description": "Project name (see list_projects); optional" } }), &[]),
         // Trabajos (F2). Aprobar no está: solo desde la app.
         tool("list_recipes", "Available recipes: what they do, which environments they run on, what approval they need, which arguments they take and whether they run on other projects' environments (projects).", json!({}), &[]),
         tool(
@@ -213,6 +214,10 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
         "get_deployer" => probe(state, "deployer"),
         "get_containers" => probe(state, "docker"),
         "get_vercel" => probe(state, "vercel"),
+        "get_frontend" => match crate::projects::get(state, args["project"].as_str()) {
+            Ok(p) => crate::frontend::report(state, &p, false).await,
+            Err(e) => json!({ "error": e.to_string() }),
+        },
         "list_recipes" => json!(recipes::all()
             .iter()
             .map(|r| json!({

@@ -361,6 +361,23 @@ async fn get_git(AxState(state): AxState<Shared>, Query(q): Query<ProjectQuery>)
 }
 
 #[derive(serde::Deserialize)]
+struct FrontendQuery {
+    project: Option<String>,
+    /// Sin reutilizar el informe anterior (el botón «Refrescar»).
+    #[serde(default)]
+    fresh: bool,
+}
+
+/// La vista Frontend: producción, previews, en curso, el último fallido con su log y si el
+/// frontend y Convex coinciden (ver frontend.rs).
+async fn get_frontend(AxState(state): AxState<Shared>, Query(q): Query<FrontendQuery>) -> Response {
+    match crate::projects::get(&state, q.project.as_deref()) {
+        Ok(p) => Json(crate::frontend::report(&state, &p, q.fresh).await).into_response(),
+        Err(e) => fail(StatusCode::NOT_FOUND, e),
+    }
+}
+
+#[derive(serde::Deserialize)]
 struct ProjectQuery {
     project: Option<String>,
 }
@@ -892,6 +909,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/environments/{name}/keys", get(get_keys).post(post_keys).delete(delete_keys))
         .route("/api/environments/{name}/functions", get(get_functions))
         .route("/api/git", get(get_git))
+        .route("/api/frontend", get(get_frontend))
         .route("/api/projects", get(get_projects).post(post_project))
         .route("/api/projects/discover", get(get_discover))
         .route("/api/doctor", get(get_doctor))

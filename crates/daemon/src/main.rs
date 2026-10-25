@@ -20,6 +20,7 @@ mod recipes;
 mod native;
 mod procs;
 mod projects;
+mod frontend;
 mod functions;
 mod gitinfo;
 mod schema;

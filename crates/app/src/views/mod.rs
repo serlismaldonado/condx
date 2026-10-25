@@ -13,6 +13,7 @@ pub mod local;
 pub mod live;
 pub mod overview;
 pub mod palette;
+pub mod frontend;
 pub mod repo;
 pub mod schema;
 pub mod schema_diff;

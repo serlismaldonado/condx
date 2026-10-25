@@ -212,7 +212,8 @@ pub fn render(app: &mut DevtoolApp, cx: &mut Context<DevtoolApp>) -> Option<AnyE
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Sin `super::*`: trae el `test` de gpui y tapa el de la biblioteca estándar.
+    use super::{page_of, tab_of, TABS};
 
     #[test]
     fn cada_pagina_y_pestana_tiene_su_clave() {

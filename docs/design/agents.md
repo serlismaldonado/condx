@@ -1,6 +1,6 @@
 # Design: agents that respond to incidents
 
-Status: Mac done (A0, A2-A5) and A0b on the phone (2026-10-25, local). Next: A1 (push), A6 (keys for devices). Builds on Condx Cloud (`cloud.md`, phone approvals).
+Status: Mac done (A0, A2-A5), A0b on the phone and A1 with ntfy (2026-10-25, local). Next: A6 (keys for devices); push inside Condx and the QR camera when nsh releases its host channel. Builds on Condx Cloud (`cloud.md`, phone approvals).
 
 ## 1. Goal
 
@@ -154,13 +154,25 @@ always a proposal: it waits for your approval whatever the level.
   already in `resultFor` isn't applied again, also after a restart.
 - A panic in a sync pass no longer stops the sync thread: it's reported and the session reopens.
 
+## 6.5 Notifications (A1)
+
+- Why ntfy: push inside the Condx app needs nsh's host channel (the native app around nsh gives the
+  app its push token and the camera). It exists on nsh's `main` but not in the released 0.2.0, and
+  only on the TSX side; and APNs and FCM need an Apple Developer account and a Firebase project.
+  ntfy works today on both phones without either.
+- Messages are short and carry no evidence (title, source, environment; the agent's first line of
+  cause), redacted. On ntfy.sh the server sees them and whoever knows the topic can read them: the
+  app suggests a random topic, and a self-hosted server is supported (https, or on this Mac).
+- The daemon sends them (not the cloud): it's the one that detects incidents, so when the Mac is
+  off there's nothing new to tell.
+
 ## 7. Phases
 
 | Phase | What | Done when |
 | --- | --- | --- |
 | A0 | Incidents in the daemon and the Mac app; providers with encrypted keys and autonomy in Settings | a failed job opens one incident that groups repeats and resolves on its own; a key is saved encrypted and never comes back |
 | **A0b** ✅ | Incidents on the phone (Condx Cloud scope), ignore and assign from there (signed) | done: scope `incidents`; the phone diagnoses, prepares a fix, deploys it with an enabled workflow (slide to confirm), discards it, writes to the agent, ignores and resolves, each a signed request the daemon verifies and applies once (also across restarts, through `resultFor`) |
-| A1 | Push notifications (with the QR camera: needs a native host app around nsh) | the phone rings for a new incident |
+| **A1** ✅ (ntfy) | Notifications to the phone | done with **ntfy**: the daemon posts to the person's topic (ntfy.sh or their own server) on a new incident (at most every 30 min per incident), an agent that finishes and an approval that waits; Settings → Notifications with a random topic, an optional token (Keychain) and a test button. Push inside the Condx app and the QR camera wait for nsh's host channel (on `main`, not in 0.2.0, TSX side only) |
 | **A2** ✅ | Agent host with pi durable, diagnose only; the conversation in the Mac app (the phone in A0b) | done: `agent-host/` (Node, pi durable 1.4.0, SQLite), `agent_host.rs`; a failed job opens an incident, the agent starts on its own (autonomy "diagnose"), reads the repo and Condx, and its diagnosis lands in the incident; runs survive a host restart; budget and agents-at-once enforced by the daemon |
 | **A3** ✅ | Fix mode: worktree, checks offline, commit on `condx/fix-…` | done: the daemon makes a worktree from the incident's commit (sharing `node_modules`), the agent edits there and runs the project's checks inside `sandbox-exec` (no network, writes only in the worktree, no reading `~/.condx`, `~/.ssh`… or the Keychain; only the scripts of the base commit), and the daemon commits as "Condx agent" when it ends; the user's checkout never changes. "Discard" removes the branch and the worktree |
 | A4 (Mac) ✅ | Run an enabled workflow with the fix's commit from the incident | done: the workflow asks for its own approvals; suggested workflows start turned off |

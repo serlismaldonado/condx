@@ -463,6 +463,12 @@ fn finish(state: &Shared, mut run: Value, status: &str, answer: Option<String>, 
     let _ = state.store.save_agent_run(&run);
     if let Some(inc) = run["incident"].as_str() {
         set_incident_agent(state, inc, &run);
+        // Detenido por la persona: no hace falta avisarle.
+        if status != "aborted" {
+            if let Ok(Some(incident)) = state.store.incident(inc) {
+                crate::notify::agent_finished(state, &run, &incident);
+            }
+        }
     }
     tracing::info!("agent {} {status}", run["id"].as_str().unwrap_or("?"));
 }

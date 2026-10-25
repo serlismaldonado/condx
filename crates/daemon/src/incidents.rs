@@ -314,6 +314,26 @@ pub async fn tick(state: &Shared) -> Vec<Value> {
     apply(state, &scan, &settings, now)
 }
 
+/// Un incidente que vuelve no avisa otra vez antes de esto (uno que va y viene no llena el teléfono).
+const NOTIFY_AGAIN_MS: i64 = 30 * 60_000;
+
+/// Avisa de los recién abiertos, salvo los que avisaron hace poco; guarda cuándo (`notifiedAt`).
+/// Devuelve los que avisó.
+pub fn notify_opened(state: &Shared, opened: &[Value], now: i64) -> Vec<String> {
+    let mut sent = vec![];
+    for inc in opened {
+        if inc["notifiedAt"].as_i64().is_some_and(|at| now - at < NOTIFY_AGAIN_MS) {
+            continue;
+        }
+        crate::notify::incident_opened(state, inc);
+        let mut v = inc.clone();
+        v["notifiedAt"] = json!(now);
+        let _ = state.store.save_incident(&v);
+        sent.extend(inc["id"].as_str().map(str::to_string));
+    }
+    sent
+}
+
 pub fn spawn(state: &Shared) {
     let state = state.clone();
     tokio::spawn(async move {
@@ -322,6 +342,7 @@ pub fn spawn(state: &Shared) {
         loop {
             every.tick().await;
             let opened = tick(&state).await;
+            notify_opened(&state, &opened, now_ms());
             crate::agent_host::auto_start(&state, &opened).await;
         }
     });
@@ -484,4 +505,23 @@ mod tests {
         let inc = &list(&st, Some("resolved"), None, 10)[0];
         assert_eq!(inc["resolvedBy"], "auto");
     }
+
+    #[test]
+    fn un_incidente_que_va_y_viene_no_avisa_cada_vez() {
+        let st = crate::state::test_state();
+        let convex = Signal { occurrence: None, source: "convex", ..sig("convex:dev", None) };
+        let settings = crate::agents::Settings::default();
+        let opened = apply(&st, &Scan { signals: vec![convex.clone()], observed: vec!["convex:dev".into()] }, &settings, 0);
+        assert_eq!(notify_opened(&st, &opened, 0).len(), 1);
+        // Se resuelve y vuelve a los 2 minutos: es el mismo episodio, sin otro aviso.
+        apply(&st, &Scan { signals: vec![], observed: vec!["convex:dev".into()] }, &settings, 60_000);
+        let back = apply(&st, &Scan { signals: vec![convex.clone()], observed: vec!["convex:dev".into()] }, &settings, 120_000);
+        assert_eq!(back.len(), 1, "reopened");
+        assert!(notify_opened(&st, &back, 120_000).is_empty());
+        // Pasada la pausa, sí.
+        apply(&st, &Scan { signals: vec![], observed: vec!["convex:dev".into()] }, &settings, 200_000);
+        let later = apply(&st, &Scan { signals: vec![convex], observed: vec!["convex:dev".into()] }, &settings, 200_000 + NOTIFY_AGAIN_MS);
+        assert_eq!(notify_opened(&st, &later, 200_000 + NOTIFY_AGAIN_MS).len(), 1);
+    }
 }
+

@@ -90,6 +90,8 @@ async fn el_token_de_agentes_no_aprueba_ni_toca_reglas_ni_claves() {
         (Method::POST, "/api/agents/providers", json!({ "kind": "anthropic", "apiKey": "sk-x" })),
         (Method::DELETE, "/api/agents/providers/anthropic", json!({})),
         (Method::POST, "/api/agents/import-pi", json!({})),
+        (Method::POST, "/api/notify", json!({ "enabled": true, "topic": "condx-x" })),
+        (Method::POST, "/api/notify/test", json!({})),
         (Method::POST, "/api/agents/templates", json!({ "name": "x" })),
         (Method::POST, "/api/agents/templates/reset", json!({})),
         (Method::DELETE, "/api/agents/templates/generic", json!({})),

@@ -91,6 +91,7 @@ pub fn get(path: &str) -> Result<Value> {
         }),
         ["agents"] => with(|s| s.agents.clone()),
         ["agent-runs", _] => demo_run(),
+        ["notify"] => json!({ "settings": { "enabled": true, "server": "https://ntfy.sh", "topic": "condx-8f2k1q9x7m3p0w4z5r6t", "incidents": true, "agents": true, "approvals": true }, "hasToken": false, "suggestedTopic": "condx-a1b2c3d4e5f6g7h8i9j0" }),
         ["deployments"] => deployments(&q("env").unwrap_or_default()),
         ["approval"] => approval(&q("recipe").unwrap_or_default(), &q("env").unwrap_or_default(), q("function").as_deref()),
         ["promotion"] => json!({ "ok": true, "checks": [] }),

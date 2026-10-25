@@ -275,6 +275,9 @@ pub struct DevtoolApp {
     pub agents_import: Option<Load>,
     /// La plantilla de agente que se está editando (borrador; `id` vacío = nueva).
     pub template_edit: Option<Value>,
+    /// Configuración → Notificaciones (`/api/notify`) y el resultado de guardar o probar.
+    pub notify_cfg: Option<Value>,
+    pub notify_result: Option<Result<String, String>>,
     pub live_json_open: bool,
     /// Pestaña y modo del esquema de cada entorno (los de `env_tab`/`schema_mode` son del abierto).
     pub env_tabs: HashMap<String, EnvTab>,
@@ -440,6 +443,8 @@ impl DevtoolApp {
             agent_kind: "anthropic".into(),
             agents_import: None,
             template_edit: None,
+            notify_cfg: None,
+            notify_result: None,
             live_json_open: false,
             env_tabs: HashMap::new(),
             schema_modes: HashMap::new(),
@@ -748,6 +753,7 @@ impl DevtoolApp {
                 self.go(page, cx);
                 self.load_policy(cx);
                 self.load_agents(cx);
+                self.load_notify(cx);
                 self.get("/api/mcp".into(), |app, res| {
                     if let Load::Ready(v) = res {
                         app.mcp_status = Some(v);

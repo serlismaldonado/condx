@@ -21,6 +21,7 @@ mod policy;
 mod probes;
 mod recipes;
 mod native;
+mod notify;
 mod procs;
 mod projects;
 mod frontend;
@@ -133,6 +134,7 @@ fn serve() -> Result<()> {
         probes::spawn_all(&state);
         incidents::spawn(&state);
         agent_host::spawn_poller(&state);
+        notify::spawn(&state);
         jobs::recover(&state);
         workflows::recover(&state);
         if let Err(e) = projects::ensure_default(&state) {

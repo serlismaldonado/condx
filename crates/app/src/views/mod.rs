@@ -16,6 +16,7 @@ pub mod palette;
 pub mod agent_settings;
 pub mod frontend;
 pub mod incidents;
+pub mod notify_settings;
 pub mod repo;
 pub mod schema;
 pub mod schema_diff;

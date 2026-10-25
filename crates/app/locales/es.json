@@ -785,5 +785,17 @@
   "no limit": "sin límite",
   "up to a fix": "hasta un arreglo",
   "with “{m}”": "con «{m}»",
-  "What happens when something breaks. Diagnose and Fix start an agent on their own; a fix stays on its own branch and nothing is deployed without your approval.": "Qué pasa cuando algo se rompe. Diagnosticar y Arreglar arrancan un agente solos; un arreglo queda en su propia rama y nada se despliega sin tu aprobación."
+  "What happens when something breaks. Diagnose and Fix start an agent on their own; a fix stays on its own branch and nothing is deployed without your approval.": "Qué pasa cuando algo se rompe. Diagnosticar y Arreglar arrancan un agente solos; un arreglo queda en su propia rama y nada se despliega sin tu aprobación.",
+  "Sent. It should be on your phone now.": "Enviada. Ya debería estar en tu teléfono.",
+  "Notifications on your phone": "Notificaciones en el teléfono",
+  "Topic": "Tema",
+  "Token saved (type to replace it)": "Token guardado (escribe para cambiarlo)",
+  "Optional: the server's access token": "Opcional: el token de acceso del servidor",
+  "Agents done": "Agentes que terminan",
+  "Install ntfy (free, iOS and Android), subscribe to this topic, and Condx tells you when something breaks, when an agent finishes and when something waits for your approval. Messages are short and carry no logs; on ntfy.sh anyone who knows the topic can read it, so keep it random (or use your own server).": "Instala ntfy (gratis, iOS y Android), suscríbete a este tema y Condx te avisa cuando algo se rompe, cuando un agente termina y cuando algo espera tu aprobación. Los mensajes son cortos y no llevan logs; en ntfy.sh cualquiera que sepa el tema puede leerlo, así que déjalo al azar (o usa tu propio servidor).",
+  "Server": "Servidor",
+  "Random": "Al azar",
+  "Token": "Token",
+  "Tell me about": "Avisarme de",
+  "Send a test": "Enviar una prueba"
 }

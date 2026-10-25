@@ -501,6 +501,45 @@ async fn delete_agent_provider(AxState(state): AxState<Shared>, Extension(client
     }
 }
 
+/// Notificaciones con ntfy (notify.rs): la configuración, sin el token.
+async fn get_notify(AxState(state): AxState<Shared>) -> Response {
+    let st = state.clone();
+    match tokio::task::spawn_blocking(move || crate::notify::json(&st)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, anyhow::anyhow!(e.to_string())),
+    }
+}
+
+async fn post_notify(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let st = state.clone();
+    match tokio::task::spawn_blocking(move || crate::notify::save(&st, &body)).await {
+        Ok(Ok(s)) => Json(json!(s)).into_response(),
+        Ok(Err(e)) => fail(StatusCode::BAD_REQUEST, e),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, anyhow::anyhow!(e.to_string())),
+    }
+}
+
+/// Una notificación de prueba, ahora (y el error si no llega).
+async fn post_notify_test(AxState(state): AxState<Shared>, Extension(client): Extension<Client>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let s = crate::notify::settings(&state);
+    let res = tokio::task::spawn_blocking(move || {
+        let token = crate::secrets::get(crate::notify::TOKEN_ACCOUNT).ok().flatten();
+        crate::notify::send_to(&s, token.as_deref(), &crate::notify::Message { title: "Condx: test notification".into(), body: "Notifications from this Mac reach this phone.".into(), tags: "white_check_mark", priority: 3 })
+    })
+    .await;
+    match res {
+        Ok(Ok(())) => Json(json!({ "sent": true })).into_response(),
+        Ok(Err(e)) => fail(StatusCode::BAD_REQUEST, e),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, anyhow::anyhow!(e.to_string())),
+    }
+}
+
 /// Una corrida de agente con su transcripción (si el host la tiene).
 async fn get_agent_run(AxState(state): AxState<Shared>, Path(id): Path<String>) -> Response {
     match crate::agent_host::get(&state, &id).await {
@@ -1073,6 +1112,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agents/templates/reset", post(post_agent_templates_reset))
         .route("/api/agents/templates/{id}", delete(delete_agent_template))
         .route("/api/agent-runs/{id}", get(get_agent_run))
+        .route("/api/notify", get(get_notify).post(post_notify))
+        .route("/api/notify/test", post(post_notify_test))
         .route("/api/agent-runs/{id}/{action}", post(post_agent_run_action))
         .route("/api/projects", get(get_projects).post(post_project))
         .route("/api/projects/discover", get(get_discover))

@@ -60,6 +60,10 @@ So the port is: types, `planOp`, sets and view (pure, ~250 lines in TS), an outb
 SQLite the daemon already uses, and a transport on the official `convex` Rust crate (a subscription
 for the doorbell, a query for `pull`, a mutation for `push`).
 
+The engine is **sans-IO**: it never awaits the network. The daemon asks it for the next push or pull,
+makes the call without holding it, and hands back the result (`next_push`/`push_done`,
+`next_pull`/`pull_done`). A slow call never blocks writes, and tests control every interleaving.
+
 ### 3.2 Same behaviour in both languages
 
 - The TS test kit (`src/testing`) generates convergence sequences. We export cases as **JSON
@@ -122,7 +126,7 @@ If any check fails, the daemon writes back `rejectedReason` and does nothing.
 | Phase | What | Done when |
 | --- | --- | --- |
 | **C0** ✅ | Clone the library, this doc, Rust `localfirst-core`: types, `planOp`, sets, view, with the TS tests ported and shared JSON fixtures | done 2026-10-25: 400 shared cases match (`condx-localfirst`, branch `condx`) |
-| C1 | Reduced engine in Rust: SQLite outbox and replica, cursors, backoff; a fake transport and the contract tests | the convergence sequences converge in Rust |
+| **C1** ✅ | Reduced engine in Rust: SQLite outbox and replica, cursors, backoff; a fake transport and the contract tests | done 2026-10-25: sans-IO engine; 6000 seeds × 100 steps converge on memory and SQLite, with calls in flight across steps |
 | C2 | Condx Cloud backend (Convex project): tables, doorbell/pull/push for Condx scopes, auth | push/pull tested with convex-test |
 | C3 | Daemon publishes `env`, `jobs`, `approvals` (one-way mirror) through the Rust transport | the web view shows the daemon live |
 | C4 | **Approve from the phone**: requests, the daemon's checks, Touch ID for production, pairing by QR | an approval from the phone runs a job on the Mac; a stale one is refused |

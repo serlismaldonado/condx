@@ -4,7 +4,7 @@
 
 use gpui_kit::*;
 
-actions!(condx_nav, [SelectPrev, SelectNext]);
+actions!(condx_nav, [SelectPrev, SelectNext, OpenPalette]);
 
 /// Contexto de teclas de la barra lateral.
 pub const SIDEBAR: &str = "CondxSidebar";
@@ -17,6 +17,8 @@ pub fn bind_keys(cx: &mut App) {
         keys.push(KeyBinding::new("up", SelectPrev, Some(context)));
         keys.push(KeyBinding::new("down", SelectNext, Some(context)));
     }
+    // La paleta de comandos, desde cualquier lugar de la ventana.
+    keys.push(KeyBinding::new("secondary-k", OpenPalette, None));
     cx.bind_keys(keys);
 }
 

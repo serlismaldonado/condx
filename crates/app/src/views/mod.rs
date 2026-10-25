@@ -10,6 +10,7 @@ pub mod keys;
 pub mod local;
 pub mod live;
 pub mod overview;
+pub mod palette;
 pub mod repo;
 pub mod schema;
 pub mod settings;

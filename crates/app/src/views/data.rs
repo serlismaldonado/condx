@@ -226,6 +226,19 @@ impl DataView {
         cx.notify();
     }
 
+    /// Los nombres de las tablas ya cargadas (para la paleta de comandos).
+    pub fn table_names(&self) -> Vec<String> {
+        let Some(Load::Ready(v)) = &self.tables else { return vec![] };
+        Self::ordered(v).into_iter().filter_map(|x| x["name"].as_str().map(str::to_string)).collect()
+    }
+
+    /// Abre una tabla desde fuera (la paleta de comandos).
+    pub fn show_table(&mut self, table: String, cx: &mut Context<Self>) {
+        if self.page.as_ref().map(|p| p.table.as_str()) != Some(table.as_str()) {
+            self.open_table(table, cx);
+        }
+    }
+
     /// Abre una tabla: borra lo que se veía de la anterior y lee su primera página.
     fn open_table(&mut self, table: String, cx: &mut Context<Self>) {
         self.rules = (vec![], false);

@@ -142,6 +142,10 @@ pub struct DevtoolApp {
     pub discover: Option<Load>,
     /// Chequeo del primer arranque (GET /api/doctor) y la descarga del backend local.
     pub doctor: Option<Load>,
+    /// La paleta de comandos (cmd-K) y lo último que se corrió en ella.
+    pub palette_open: bool,
+    pub palette_recent: Vec<SharedString>,
+    pub palette_view: Option<Entity<views::palette::PaletteView>>,
     pub backend_download: Option<Load>,
     pub service_logs: HashMap<String, String>,
     pub log_tab: usize,
@@ -318,6 +322,9 @@ impl DevtoolApp {
             project,
             discover: None,
             doctor: None,
+            palette_open: false,
+            palette_recent: vec![],
+            palette_view: None,
             backend_download: None,
             service_logs: HashMap::new(),
             log_tab: 0,
@@ -1210,7 +1217,12 @@ impl Render for DevtoolApp {
             Page::Settings => views::settings::render(self, window, cx).into_any_element(),
         };
         let focus = self.focus.clone();
-        ely_core::primitives::FocusScope::new(&focus).root().size_full().child(crate::shell::render(self, content, cx))
+        let palette = views::palette::render(self, cx);
+        div()
+            .size_full()
+            .on_action(cx.listener(|this, _: &crate::nav::OpenPalette, _, cx| views::palette::open(this, cx)))
+            .child(ely_core::primitives::FocusScope::new(&focus).root().size_full().child(crate::shell::render(self, content, cx)))
+            .children(palette)
     }
 }
 

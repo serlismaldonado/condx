@@ -143,14 +143,14 @@ fn load_token() -> Option<String> {
     std::fs::read_to_string(token_path()).ok().map(|t| t.trim().to_string()).filter(|t| t.len() >= 32)
 }
 
-fn random_hex(bytes: usize) -> Result<String> {
+pub(crate) fn random_hex(bytes: usize) -> Result<String> {
     use std::io::Read;
     let mut buf = vec![0u8; bytes];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn write_private(path: &std::path::Path, text: &str) -> Result<()> {
+pub(crate) fn write_private(path: &std::path::Path, text: &str) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(path)?;
@@ -982,9 +982,9 @@ fn decide_from_phone(state: &Shared, daemon_id: &str, job_id: &str, job: &Value,
 
 // ── El hilo de sincronización ───────────────────────────────────────────
 
-type CloudEngine = Engine<sqlite::SqliteReplicaStore, sqlite::SqliteOutboxStore>;
+pub(crate) type CloudEngine = Engine<sqlite::SqliteReplicaStore, sqlite::SqliteOutboxStore>;
 
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
+pub(crate) fn block_on<F: std::future::Future>(future: F) -> F::Output {
     // El transporte HTTP es bloqueante (ureq): sus futures terminan en la primera vuelta.
     let mut future = std::pin::pin!(future);
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());

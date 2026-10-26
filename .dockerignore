@@ -1,0 +1,11 @@
+# La imagen del sitio en la nube (deploy/site/Dockerfile) solo necesita el código del daemon y el
+# host de agentes: sin compilados, dependencias de Node ni el resto del repo.
+target
+target-*
+**/node_modules
+.git
+site
+docs
+assets
+cloud
+packages

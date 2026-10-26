@@ -247,6 +247,10 @@ pub async fn request(state: &Shared, recipe_name: &str, env_name: &str, args: &V
         (NEW_ENV.to_string(), recipe.approval_for(NEW_ENV))
     } else {
         let env = state.store.environment(env_name)?.ok_or_else(|| anyhow!("Environment “{env_name}” doesn't exist"))?;
+        // Producción solo se toca desde la Mac (con la persona y Touch ID), nunca desde el sitio en la nube.
+        if crate::site::is_cloud() && env.kind == devtool_core::EnvKind::CloudProd {
+            bail!("production is only changed from the Mac");
+        }
         let kind = env.kind.as_str().to_string();
         (kind, approval_for(state, recipe, &env, args).await.0)
     };

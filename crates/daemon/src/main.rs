@@ -36,6 +36,7 @@ mod mail;
 mod schema;
 mod seed;
 mod secrets;
+mod site;
 mod services;
 mod state;
 mod store;
@@ -81,6 +82,9 @@ Usage:
   condxd cloud link --url <URL> [--name N] [--site URL]   links to Condx Cloud (reads an admin or deploy key from stdin, once)
   condxd cloud site <https://…> | --clear     custom domain for the QR, /pair, /ingest and /files
   condxd cloud status | unlink
+  condxd serve --site cloud   the cloud site (Linux): no production, secrets in files
+  condxd site pair <the QR’s text or link> [--url U] [--name N]   pairs the cloud site like a phone
+  condxd site status | unpair
 
 Files: ~/.condx/daemon/{config.json,token,devd.sqlite3,devd.log}
 ";
@@ -89,7 +93,16 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let sub = args.first().map(String::as_str).unwrap_or("serve");
     match sub {
-        "serve" => serve(),
+        "serve" => {
+            // `serve --site cloud`: el sitio en la nube (Linux, sin producción ni Llavero).
+            if let Some(site) = flag(&args, "--site") {
+                if site != "cloud" {
+                    bail!("--site cloud is the only site");
+                }
+                std::env::set_var("CONDX_SITE", "cloud");
+            }
+            serve()
+        }
         "mcp" => mcp_stdio(),
         "status" => status(),
         "env" => env_cmd(&args[1..]),
@@ -97,12 +110,40 @@ fn main() -> Result<()> {
         "install" => launchd(true),
         "secret" => secret_cmd(&args[1..]),
         "cloud" => cloud_cmd(&args[1..]),
+        "site" => site_cmd(&args[1..]),
         "uninstall" => launchd(false),
         "-h" | "--help" | "help" => {
             print!("{HELP}");
             Ok(())
         }
         other => bail!("unknown subcommand: {other}\n\n{HELP}"),
+    }
+}
+
+/// El sitio en la nube: emparejarlo con la Mac, ver su estado u olvidarlo.
+fn site_cmd(args: &[String]) -> Result<()> {
+    match args.first().map(String::as_str) {
+        Some("pair") => {
+            let text = args.get(1).filter(|a| !a.starts_with("--")).context("pass the QR's text or link (Condx → Settings → Condx Cloud → Pair a phone)")?;
+            if site::load().is_some() {
+                bail!("this site is already paired (condxd site unpair first)");
+            }
+            let name = flag(args, "--name").unwrap_or_else(|| "Cloud site".into());
+            let id = site::pair(text, flag(args, "--url").as_deref(), &name)?;
+            println!("Claimed. Confirm “{}” on the Mac (Condx → Settings → Condx Cloud); fingerprint {}.", id.name, site::fingerprint(&id));
+            Ok(())
+        }
+        Some("status") => {
+            let id = site::load().context("not paired (condxd site pair \"<the QR's text>\")")?;
+            println!("{} · {} · fingerprint {} · {}", id.name, id.url, site::fingerprint(&id), site::status(&id)?);
+            Ok(())
+        }
+        Some("unpair") => {
+            let _ = std::fs::remove_file(config::home().join("site.json"));
+            println!("Forgotten here. Remove it on the Mac too (Condx → Settings → Condx Cloud).");
+            Ok(())
+        }
+        _ => bail!("use: condxd site pair \"<the QR's text>\" | status | unpair"),
     }
 }
 
@@ -148,8 +189,11 @@ fn serve() -> Result<()> {
         agent_host::spawn_poller(&state);
         notify::spawn(&state);
         mail::spawn(&state);
-        update::spawn(&state);
-        update::reopen_after_update(&state);
+        // El sitio en la nube no se actualiza solo (es una imagen) ni tiene una app que reabrir.
+        if !site::is_cloud() {
+            update::spawn(&state);
+            update::reopen_after_update(&state);
+        }
         events::spawn(&state);
         jobs::recover(&state);
         workflows::recover(&state);
@@ -161,7 +205,12 @@ fn serve() -> Result<()> {
         tokio::task::spawn_blocking(move || projects::ensure_all_envs(&st));
         procs::adopt_all(&state);
         jobs::spawn_scheduler(&state);
-        cloud::spawn(state.clone());
+        // La Mac se vincula a Condx Cloud como el daemon; el sitio, como un dispositivo emparejado.
+        if site::is_cloud() {
+            site::spawn(state.clone());
+        } else {
+            cloud::spawn(state.clone());
+        }
         let listener = tokio::net::TcpListener::from_std(listener)?;
         match &state.config.repo {
             Some(repo) => tracing::info!("condxd at http://{addr} · heskala-erp at {}", repo.display()),
@@ -341,6 +390,9 @@ fn env_cmd(args: &[String]) -> Result<()> {
         Some("add") => {
             let name = args.get(1).filter(|n| !n.starts_with("--")).context("missing name")?;
             let kind = flag(args, "--kind").and_then(|k| EnvKind::parse(&k)).context("--kind devbox|throwaway|cloud-dev|cloud-prod")?;
+            if kind == EnvKind::CloudProd && site::is_cloud() {
+                bail!("the cloud site has no production environment (production is only changed from the Mac)");
+            }
             let deployment = flag(args, "--deployment").map(|d| d.trim_start_matches("prod:").trim_start_matches("dev:").to_string());
             let url = flag(args, "--url").or_else(|| deployment.as_ref().map(|d| format!("https://{d}.convex.cloud")));
             let site_url = flag(args, "--site-url").or_else(|| deployment.as_ref().map(|d| format!("https://{d}.convex.site")));

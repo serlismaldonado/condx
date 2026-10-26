@@ -17,6 +17,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@ear
 
 import { Host, type StartRun } from "./host.ts";
 import { runChecks } from "./tools.ts";
+import { type EmailRequest, renderEmail } from "./email.ts";
 import { type ProviderConfig, Providers } from "./providers.ts";
 
 interface Config {
@@ -95,6 +96,8 @@ async function main(): Promise<void> {
         if (!fauxModel) await providers.set((await body(req)).providers ?? []);
         return send(res, 200, { ok: true });
       }
+      // Un correo de Condx (react-email) a partir de markdown: el daemon lo manda por AgentMail.
+      if (req.method === "POST" && url.pathname === "/email") return send(res, 200, await renderEmail((await body(req)) as EmailRequest));
       // Los chequeos de un worktree de arreglo (el daemon verifica lo que el agente dice).
       if (req.method === "POST" && url.pathname === "/checks") {
         const b = (await body(req)) as { cwd?: string; scripts?: string[] };

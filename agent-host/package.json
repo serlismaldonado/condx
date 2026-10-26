@@ -8,10 +8,14 @@
   "dependencies": {
     "@earendil-works/chord": "1.4.0",
     "@earendil-works/pi-ai": "1.4.0",
-    "@earendil-works/pi-durable": "1.4.0"
+    "@earendil-works/pi-durable": "1.4.0",
+    "@react-email/components": "1.0.12",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
   },
   "devDependencies": {
     "@types/node": "22.19.1",
+    "@types/react": "19.1.12",
     "typescript": "5.9.3"
   },
   "scripts": {

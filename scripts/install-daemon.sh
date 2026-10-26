@@ -18,5 +18,11 @@ else
 fi
 mv "$BIN/condxd.new" "$BIN/condxd"
 rsync -a --delete agent-host/src/ "$HOME/.condx/daemon/agent-host/src/"
+# Las dependencias del host de agentes: si cambió el lock, se instalan de nuevo (sin las de desarrollo).
+HOST="$HOME/.condx/daemon/agent-host"
+if ! cmp -s agent-host/package-lock.json "$HOST/package-lock.json"; then
+  cp agent-host/package.json agent-host/package-lock.json "$HOST/"
+  (cd "$HOST" && npm ci --omit=dev --silent) && echo "Dependencias del host de agentes instaladas."
+fi
 launchctl kickstart -k "gui/$(id -u)/dev.condx.daemon"
 echo "Daemon instalado y reiniciado."

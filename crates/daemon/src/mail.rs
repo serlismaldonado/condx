@@ -116,14 +116,44 @@ impl Client {
         Ok(())
     }
 
-    fn reply(&self, id: &str, text: &str) -> Result<()> {
-        self.call("POST", &format!("/messages/{id}/reply"), Some(json!({ "text": text })))?;
+    fn reply(&self, id: &str, body: &Body) -> Result<()> {
+        self.call("POST", &format!("/messages/{id}/reply"), Some(body.json(json!({}))))?;
         Ok(())
     }
 
-    fn send(&self, to: &str, subject: &str, text: &str) -> Result<()> {
-        self.call("POST", "/messages/send", Some(json!({ "to": [to], "subject": subject, "text": text })))?;
+    fn send(&self, to: &str, subject: &str, body: &Body) -> Result<()> {
+        self.call("POST", "/messages/send", Some(body.json(json!({ "to": [to], "subject": subject }))))?;
         Ok(())
+    }
+}
+
+/// Lo que va en un correo: el texto siempre; el HTML (react-email) si el host pudo armarlo.
+struct Body {
+    text: String,
+    html: Option<String>,
+}
+
+impl Body {
+    fn json(&self, mut base: Value) -> Value {
+        base["text"] = json!(self.text);
+        if let Some(h) = &self.html {
+            base["html"] = json!(h);
+        }
+        base
+    }
+}
+
+/// El correo con el estilo de Condx (react-email, en el host de agentes, `POST /email`); si no se
+/// puede, solo el texto.
+fn compose(state: &Shared, markdown: &str, title: &str) -> Body {
+    let footer = "Responde este correo para seguir la conversación. Aprobar y desplegar se hace en la app de Condx.";
+    match state.agent_host.call(state, "POST", "/email", Some(json!({ "markdown": markdown, "title": title, "footer": footer }))) {
+        Ok(v) if v["html"].is_string() => Body { text: v["text"].as_str().filter(|t| !t.trim().is_empty()).unwrap_or(markdown).to_string(), html: v["html"].as_str().map(str::to_string) },
+        Ok(_) => Body { text: markdown.to_string(), html: None },
+        Err(e) => {
+            tracing::warn!("mail: sending without format (the agent host couldn't render it): {e:#}");
+            Body { text: markdown.to_string(), html: None }
+        }
     }
 }
 
@@ -263,9 +293,11 @@ pub fn reply_to_run(state: &Shared, run: &Value) {
     if text.is_empty() {
         return;
     }
+    let who = run["role"].as_str().and_then(|r| crate::roles::get(state, r)).map(|r| r.name).unwrap_or_else(|| "Agent".to_string());
     let st = state.clone();
     std::thread::spawn(move || {
-        if let Err(e) = Client::new(&st).and_then(|c| c.reply(&id, &text)) {
+        let body = compose(&st, &text, &format!("{who} · respuesta a tu correo"));
+        if let Err(e) = Client::new(&st).and_then(|c| c.reply(&id, &body)) {
             tracing::warn!("mail: couldn't reply by email: {e:#}");
         }
     });
@@ -277,7 +309,8 @@ pub fn notify(state: &Shared, subject: &str, body: &str) {
     let Some(to) = s.allow.first().cloned().filter(|_| s.enabled && s.notify != "off") else { return };
     let (subject, body, st) = (subject.to_string(), body.to_string(), state.clone());
     std::thread::spawn(move || {
-        if let Err(e) = Client::new(&st).and_then(|c| c.send(&to, &subject, &body)) {
+        let mail = compose(&st, &body, &subject);
+        if let Err(e) = Client::new(&st).and_then(|c| c.send(&to, &subject, &mail)) {
             tracing::warn!("mail: notification not sent: {e:#}");
         }
     });
@@ -343,6 +376,14 @@ mod tests {
         assert!(modes("always", true, true));
         assert!(!modes("off", true, false));
         assert!(!modes("always", false, false));
+    }
+
+    #[test]
+    fn el_html_va_junto_al_texto_si_hay() {
+        let b = Body { text: "hola".into(), html: Some("<p>hola</p>".into()) };
+        assert_eq!(b.json(json!({ "to": ["a@b.co"] })), json!({ "to": ["a@b.co"], "text": "hola", "html": "<p>hola</p>" }));
+        let t = Body { text: "hola".into(), html: None };
+        assert_eq!(t.json(json!({})), json!({ "text": "hola" }));
     }
 
     #[test]

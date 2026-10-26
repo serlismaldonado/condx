@@ -373,20 +373,35 @@ fn clone_project(state: &Shared, name: &str, url: &str, branch: &str) -> Result<
     let dir = home().join("projects").join(name);
     if !dir.join(".git").exists() {
         std::fs::create_dir_all(dir.parent().unwrap())?;
-        let mut cmd = std::process::Command::new("git");
-        // El token va en un encabezado de esta orden, no en el remoto guardado.
-        // El token del dueño del repo (`github-token:<dueño>`), o el general.
-        let owner = url.trim_start_matches("https://github.com/").split('/').next().unwrap_or_default();
-        let token = crate::secrets::get(&format!("github-token:{owner}")).ok().flatten().or_else(|| crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT).ok().flatten());
-        if let Some(token) = token {
-            use base64::Engine as _;
-            let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{}", token.trim()));
-            cmd.args(["-c", &format!("http.extraHeader=Authorization: Basic {basic}")]);
-        }
-        let out = cmd.args(["clone", "--quiet", "--branch", branch, url]).arg(&dir).output().context("couldn't run git")?;
-        if !out.status.success() {
+        // Primero el token del dueño del repo (`github-token:<dueño>`), después los demás (un repo
+        // movido a una organización redirige y necesita el de la organización) y al final sin token
+        // (los públicos).
+        let owner = url.trim_start_matches("https://github.com/").split('/').next().unwrap_or_default().to_string();
+        let first = format!("github-token:{owner}");
+        let mut accounts = crate::secrets::accounts_with_prefix("github-token");
+        accounts.retain(|a| *a != first);
+        accounts.insert(0, first);
+        let mut tokens: Vec<Option<String>> = accounts.iter().filter_map(|a| crate::secrets::get(a).ok().flatten()).map(Some).collect();
+        tokens.push(None);
+        let mut last = String::new();
+        for token in tokens {
+            let mut cmd = std::process::Command::new("git");
+            // El token va en un encabezado de esta orden, no en el remoto guardado.
+            if let Some(token) = &token {
+                use base64::Engine as _;
+                let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{}", token.trim()));
+                cmd.args(["-c", &format!("http.extraHeader=Authorization: Basic {basic}")]);
+            }
+            let out = cmd.env("GIT_TERMINAL_PROMPT", "0").args(["clone", "--quiet", "--branch", branch, url]).arg(&dir).output().context("couldn't run git")?;
+            if out.status.success() {
+                last.clear();
+                break;
+            }
             let _ = std::fs::remove_dir_all(&dir);
-            bail!("git clone failed: {}", devtool_core::redact(&String::from_utf8_lossy(&out.stderr)).chars().take(300).collect::<String>());
+            last = devtool_core::redact(&String::from_utf8_lossy(&out.stderr)).chars().take(300).collect();
+        }
+        if !last.is_empty() {
+            bail!("git clone failed with every GitHub token (they need Contents: read on the repo): {last}");
         }
     }
     crate::projects::register(state, &dir, Some(name))?;

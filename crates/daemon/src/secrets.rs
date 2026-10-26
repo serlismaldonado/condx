@@ -250,6 +250,11 @@ pub fn check_deploy_key(env: &devtool_core::Environment, key: &str) -> Result<St
 }
 
 /// Valida el nombre de una cuenta que el usuario puede escribir con el CLI.
+/// Las cuentas guardadas con este prefijo (p. ej. los tokens de GitHub por dueño), sin sus valores.
+pub fn accounts_with_prefix(prefix: &str) -> Vec<String> {
+    store().map(|path| file_map(&path).into_iter().filter(|(k, v)| k.starts_with(prefix) && v.is_string()).map(|(k, _)| k).collect()).unwrap_or_default()
+}
+
 pub fn writable_account(account: &str) -> Result<()> {
     // Un token de GitHub por dueño (`github-token:<usuario u organización>`): uno fine-grained sirve
     // para un solo dueño.

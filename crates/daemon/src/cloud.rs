@@ -38,6 +38,13 @@ const APPROVAL_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status"
 const INCIDENT_FIELDS: &[&str] = &[
     "title", "source", "project", "env", "status", "count", "firstSeen", "lastSeen", "error", "log", "commit", "branch", "url", "agent", "workflows", "result", "resultFor",
 ];
+/// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
+/// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
+/// último mensaje que mandó el teléfono.
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "result", "resultFor"];
+/// Cada cuánto se vuelven a armar los hilos (cada uno lee las conversaciones de sus agentes).
+const THREADS_EVERY_MS: i64 = 8_000;
+
 /// Lo que el teléfono ve de un proveedor: sus datos y su clave cifrada para la Mac y los teléfonos de
 /// confianza (`sealed`, age armado). Nunca la clave en claro.
 const KEY_FIELDS: &[&str] = &["kind", "label", "baseUrl", "model", "keyHint", "sealed", "recipients", "updatedAt"];
@@ -225,6 +232,7 @@ fn owned(scope: &str) -> &'static [&'static str] {
         Some("jobs") => JOB_FIELDS,
         Some("incidents") => INCIDENT_FIELDS,
         Some("keys") => KEY_FIELDS,
+        Some("threads") => THREAD_FIELDS,
         _ => APPROVAL_FIELDS,
     }
 }
@@ -524,9 +532,23 @@ pub struct PhoneRequest {
 /// Verifica el pedido de una fila de incidente: firma de un teléfono de confianza, para este daemon
 /// e incidente, y reciente. Puro (para las pruebas).
 pub fn verify_request(daemon_id: &str, incident_id: &str, row: &Values, devices: &[TrustedDevice], now: i64) -> Result<PhoneRequest, String> {
+    verify_signed(row, devices, now, REQUESTS, |request, request_id, at, arg| request_message(daemon_id, incident_id, request, request_id, at, arg))
+}
+
+/// Lo que firma el teléfono para escribir en un hilo (otro prefijo: una firma de incidente no
+/// sirve en un hilo ni al revés).
+pub fn thread_request_message(daemon_id: &str, thread_id: &str, request_id: &str, at: i64, arg: &str) -> String {
+    format!("condx-thread:v1|{daemon_id}|{thread_id}|message|{request_id}|{at}|{arg}")
+}
+
+pub fn verify_thread_request(daemon_id: &str, thread_id: &str, row: &Values, devices: &[TrustedDevice], now: i64) -> Result<PhoneRequest, String> {
+    verify_signed(row, devices, now, &["message"], |_, request_id, at, arg| thread_request_message(daemon_id, thread_id, request_id, at, arg))
+}
+
+fn verify_signed(row: &Values, devices: &[TrustedDevice], now: i64, allowed: &[&str], message: impl Fn(&str, &str, i64, &str) -> String) -> Result<PhoneRequest, String> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     let request = row.get("request").and_then(Value::as_str).ok_or("no request")?;
-    if !REQUESTS.contains(&request) {
+    if !allowed.contains(&request) {
         return Err("unknown request".into());
     }
     let request_id = row.get("requestId").and_then(Value::as_str).ok_or("no request id")?;
@@ -541,7 +563,7 @@ pub fn verify_request(daemon_id: &str, incident_id: &str, row: &Values, devices:
     let sig = Signature::from_slice(&sig).map_err(|_| "bad signature")?;
     let bytes: [u8; 32] = unhex(key).and_then(|b| b.try_into().ok()).ok_or("bad key")?;
     let vk = VerifyingKey::from_bytes(&bytes).map_err(|_| "bad key")?;
-    vk.verify(request_message(daemon_id, incident_id, request, request_id, at, arg).as_bytes(), &sig).map_err(|_| "signature doesn't match".to_string())?;
+    vk.verify(message(request, request_id, at, arg).as_bytes(), &sig).map_err(|_| "signature doesn't match".to_string())?;
     Ok(PhoneRequest { request: request.into(), arg: arg.into(), request_id: request_id.into(), device: device.clone() })
 }
 
@@ -652,6 +674,78 @@ fn process_requests(state: &Shared, s: &mut Session) {
     }
 }
 
+/// Los hilos recientes, compactos para el teléfono: los últimos 40 mensajes con textos recortados.
+async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
+    let mut out = IndexMap::new();
+    let list = crate::threads::list(state).ok().and_then(|v| v["runs"].as_array().cloned()).unwrap_or_default();
+    for t in list.into_iter().take(15) {
+        let Some(id) = t["id"].as_str().map(str::to_string) else { continue };
+        let Ok(th) = crate::threads::get(state, &id).await else { continue };
+        let cut = |s: &str, n: usize| -> String { if s.chars().count() > n { format!("{}…", s.chars().take(n).collect::<String>()) } else { s.to_string() } };
+        let items: Vec<Value> = if th["thread"] == true {
+            th["items"].as_array().cloned().unwrap_or_default().iter().rev().take(40).rev().map(|it| {
+                let mut text = devtool_core::redact(it["text"].as_str().unwrap_or_default());
+                if let Some(ev) = it["event"].as_object() {
+                    let title = ev.get("title").and_then(Value::as_str).unwrap_or("");
+                    text = match ev.get("count").and_then(Value::as_i64).filter(|c| *c > 1) {
+                        Some(c) => format!("{title} · {c}×"),
+                        None => title.to_string(),
+                    };
+                }
+                if let Some(res) = it["result"].as_object() {
+                    let fields: Vec<String> = res.iter().map(|(k, v)| format!("{k}: {}", v.as_str().unwrap_or_default())).collect();
+                    text = format!("{text}\n{}", fields.join("\n"));
+                }
+                json!({ "kind": it["kind"], "author": it["author"], "to": it["to"], "at": it["at"], "status": it["status"], "job": it["job"], "text": cut(text.trim(), 700) })
+            }).collect()
+        } else {
+            let msgs: Vec<Value> = th["transcript"].as_array().cloned().unwrap_or_default().into_iter().filter(|x| x["role"] != "tool").collect();
+            msgs[msgs.len().saturating_sub(30)..].iter().filter_map(|x| {
+                let text: String = x["text"].as_str()?.lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n");
+                (!text.trim().is_empty()).then(|| json!({ "kind": if x["role"] == "user" { "user" } else { "reply" }, "author": "Agent", "at": x["at"], "text": cut(text.trim(), 700) }))
+            }).collect()
+        };
+        let participants: Vec<Value> = th["participants"].as_array().cloned().unwrap_or_default().iter().map(|p| json!({ "node": p["node"], "name": p["name"] })).collect();
+        let mut row = Values::new();
+        row.insert("title".into(), json!(t["title"]));
+        row.insert("kind".into(), json!(t["kind"]));
+        row.insert("status".into(), json!(th["status"]));
+        row.insert("updatedAt".into(), json!(items.last().and_then(|i| i["at"].as_i64()).unwrap_or(t["startedAt"].as_i64().unwrap_or(0))));
+        row.insert("items".into(), json!(serde_json::to_string(&items).unwrap_or_default()));
+        row.insert("participants".into(), json!(serde_json::to_string(&participants).unwrap_or_default()));
+        row.insert("waitingAnswer".into(), json!(th["waitingAnswer"] == true));
+        out.insert(id, row);
+    }
+    out
+}
+
+/// Los mensajes nuevos de los teléfonos en los hilos: verificar la firma y mandarlos (cada uno una vez).
+fn process_thread_requests(state: &Shared, s: &mut Session) {
+    let scope = format!("threads:{}", s.link.daemon_id);
+    let devices = trusted_devices();
+    for row in s.engine.rows(&scope) {
+        let Some(request_id) = row.row.values.get("requestId").and_then(Value::as_str).map(str::to_string) else { continue };
+        let answered = row.row.values.get("resultFor").and_then(Value::as_str) == Some(request_id.as_str());
+        if row.pending || answered || !s.seen.insert(format!("{}:{request_id}", row.row.id)) {
+            continue;
+        }
+        let id = row.row.id.clone();
+        let result = match verify_thread_request(&s.link.daemon_id, &id, &row.row.values, &devices, now_ms()) {
+            Ok(r) => {
+                let _rt = s.rt.enter();
+                match s.rt.block_on(crate::threads::message(state, &id, &r.arg)) {
+                    Ok(v) => format!("sent to {}", v["to"].as_str().unwrap_or("the thread")),
+                    Err(e) => format!("rejected: {e:#}"),
+                }
+            }
+            Err(e) => format!("rejected: {e}"),
+        };
+        tracing::info!("cloud: phone message on thread {id}: {result}");
+        s.thread_results.insert(id, (request_id, result));
+        s.threads_built.0 = 0;
+    }
+}
+
 /// Las decisiones nuevas de los teléfonos: verificar y, si corresponde, decidir el trabajo.
 fn process_decisions(state: &Shared, s: &mut Session) {
     let scope = format!("approvals:{}", s.link.daemon_id);
@@ -730,6 +824,9 @@ struct Session {
     /// El alcance de eventos del SDK (`events:<daemonId>`): lo escribe la nube (ingest.ts), el
     /// daemon lo lee y borra lo que ya convirtió en evento. Va aparte del diff de los demás.
     events_scope: String,
+    /// Los hilos ya armados (cuándo, y sus filas) y el resultado del último mensaje del teléfono en cada uno.
+    threads_built: (i64, IndexMap<String, Values>),
+    thread_results: IndexMap<String, (String, String)>,
 }
 
 fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<Session> {
@@ -741,7 +838,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         format!("{prefix}-{}-{n}", now_ms())
     })
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let scopes: Vec<String> = ["env", "jobs", "approvals", "incidents", "keys"].iter().map(|k| format!("{k}:{}", link.daemon_id)).collect();
+    let scopes: Vec<String> = ["env", "jobs", "approvals", "incidents", "keys", "threads"].iter().map(|k| format!("{k}:{}", link.daemon_id)).collect();
     for s in &scopes {
         engine.enable_scope(s, None).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
@@ -754,7 +851,12 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope })
+    let thread_results: IndexMap<String, (String, String)> = engine
+        .rows(&format!("threads:{}", link.daemon_id))
+        .into_iter()
+        .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
+        .collect();
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -800,6 +902,19 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     }
     want.insert(format!("incidents:{}", s.link.daemon_id), rows);
     want.insert(format!("keys:{}", s.link.daemon_id), key_rows(state, &trusted_devices(), &mut s.sealed));
+    // Los hilos (cada tanto: armarlos lee las conversaciones de los agentes).
+    if now_ms() - s.threads_built.0 > THREADS_EVERY_MS {
+        let _rt = s.rt.enter();
+        s.threads_built = (now_ms(), s.rt.block_on(thread_rows(state)));
+    }
+    let mut trows = s.threads_built.1.clone();
+    for (id, (rid, result)) in &s.thread_results {
+        if let Some(row) = trows.get_mut(id) {
+            row.insert("result".into(), Value::String(result.clone()));
+            row.insert("resultFor".into(), Value::String(rid.clone()));
+        }
+    }
+    want.insert(format!("threads:{}", s.link.daemon_id), trows);
     let jobs_status: IndexMap<String, Value> = jobs.iter().filter_map(|j| Some((j["id"].as_str()?.to_string(), j["status"].clone()))).collect();
     let now = now_ms();
     for scope in &s.scopes {
@@ -822,6 +937,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let report = block_on(sync_once(&mut s.engine, &s.transport, now_ms, 200)).map_err(|e| anyhow::anyhow!("{e}"))?;
     process_decisions(state, s);
     process_requests(state, s);
+    process_thread_requests(state, s);
     process_events(state, s);
     let st = s.engine.sync_status();
     let proposals: Vec<Value> = s.results.iter().filter(|(_, r)| r.as_str() == NEEDS_MAC).map(|(j, _)| json!(j)).collect();
@@ -1013,6 +1129,9 @@ mod tests {
         let mut tampered = row("deploy", "w-dev", now, "inc-1");
         tampered.insert("requestArg".into(), json!("w-prod"));
         assert_eq!(verify_request("mac-1", "inc-1", &tampered, devices, now), Err("signature doesn't match".into()));
+        // Una firma de incidente no sirve en un hilo (otro prefijo), y en un hilo solo hay mensajes.
+        let as_thread = row("message", "look at lib/dates.js | and tests", now, "inc-1");
+        assert_eq!(verify_thread_request("mac-1", "inc-1", &as_thread, devices, now), Err("signature doesn't match".into()));
     }
 
     #[test]

@@ -10,12 +10,12 @@ import { ConvexError } from "convex/values";
 import type { QueryCtx } from "./_generated/server";
 import type { Op } from "localfirst/server";
 
-export const SCOPE_KINDS = ["env", "jobs", "approvals", "runs", "workflows", "incidents", "keys", "events"] as const;
+export const SCOPE_KINDS = ["env", "jobs", "approvals", "runs", "workflows", "incidents", "keys", "events", "threads"] as const;
 export type ScopeKind = (typeof SCOPE_KINDS)[number];
 
 /** Lo que un teléfono puede leer. */
 /** `keys`: las claves de los proveedores, cifradas por el daemon para cada teléfono (solo se leen). */
-const DEVICE_READS: readonly ScopeKind[] = ["env", "jobs", "approvals", "incidents", "keys"];
+const DEVICE_READS: readonly ScopeKind[] = ["env", "jobs", "approvals", "incidents", "keys", "threads"];
 /** Los únicos campos que un teléfono escribe en `approvals`. */
 export const DECISION_FIELDS = ["decision", "decidedAt", "deviceKey", "signature", "confirmText"] as const;
 /** Los únicos campos que un teléfono escribe en `incidents`: un pedido firmado. */
@@ -81,6 +81,8 @@ export function writeDenied(principal: Principal, op: Op): string | null {
   if (!parsed || parsed.daemonId !== principal.daemonId) return "No access to this scope";
   if (principal.kind === "daemon") return null;
   if (parsed.kind === "incidents") return requestDenied(principal, op);
+  // En un hilo, el teléfono solo escribe mensajes (firmados; el daemon verifica y decide a quién van).
+  if (parsed.kind === "threads") return requestDenied(principal, op) ?? (op.set?.request === "message" ? null : "A phone can only send messages in a thread");
   if (parsed.kind !== "approvals" || op.kind !== "patch") return "A phone can only decide on approvals";
   if (op.sets && Object.keys(op.sets).length > 0) return "A phone can only decide on approvals";
   const set = op.set ?? {};

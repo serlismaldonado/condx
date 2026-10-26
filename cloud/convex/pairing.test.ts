@@ -117,7 +117,7 @@ describe("lo que puede un teléfono", () => {
 
   test("lee entornos, trabajos, aprobaciones e incidentes; nada más", async () => {
     const t = await withApproval();
-    for (const kind of ["env", "jobs", "approvals", "incidents", "keys"]) {
+    for (const kind of ["env", "jobs", "approvals", "incidents", "keys", "threads"]) {
       expect(await t.query(api.sync.pull, { token: PHONE.token, scope: `${kind}:${A.daemonId}`, cursor: null, protocolVersion: PV })).toMatchObject({ status: "ok" });
     }
     for (const scope of [`runs:${A.daemonId}`, `workflows:${A.daemonId}`, `approvals:${B.daemonId}`, `env:${B.daemonId}`]) {
@@ -231,3 +231,23 @@ describe("claves cifradas para el teléfono", () => {
   });
 });
 
+describe("mensajes en hilos", () => {
+  const THREADS = `threads:${A.daemonId}`;
+  const request = (extra: Record<string, unknown> = {}) => ({ request: "message", requestArg: "@risk why high?", requestId: "a1b2c3d4e5f60718", requestedAt: Date.now(), deviceKey: PHONE.publicKey, signature: SIG, ...extra });
+
+  test("un teléfono escribe en un hilo de su daemon; nada más", async () => {
+    const t = await setup();
+    await pairPhone(t);
+    await push(t, group(op({ kind: "create", rowId: "r1", set: { title: "Fix an error", status: "running" } }, THREADS)), A.token);
+    expect(await push(t, group(op({ kind: "patch", rowId: "r1", set: request() }, THREADS)), PHONE.token)).toMatchObject({ status: "ok" });
+    const pull = await t.query(api.sync.pull, { token: PHONE.token, scope: THREADS, cursor: null, protocolVersion: PV });
+    expect(pull.rows![0].values).toMatchObject({ title: "Fix an error", request: "message" });
+    for (const bad of [
+      op({ kind: "patch", rowId: "r1", set: request({ request: "fix" }) }, THREADS),
+      op({ kind: "patch", rowId: "r1", set: { ...request(), status: "succeeded" } }, THREADS),
+      op({ kind: "create", rowId: "r2", set: request() }, THREADS),
+    ]) {
+      await expect(push(t, group(bad), PHONE.token)).rejects.toThrow();
+    }
+  });
+});

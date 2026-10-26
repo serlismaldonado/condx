@@ -96,7 +96,9 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
             (NodeKind::Agent, st) => {
                 let role = node.params["agent"].as_str().unwrap_or_default();
                 if st == NodeStatus::Succeeded {
-                    let result: serde_json::Map<String, Value> = nr.outputs.iter().filter(|(k, _)| !matches!(k.as_str(), "report" | "result" | "_retried")).map(|(k, v)| (k.clone(), json!(v))).collect();
+                    // En orden fijo: el hilo (y lo que sube al teléfono) no cambia si nada cambió.
+                    let ordered: std::collections::BTreeMap<&String, &String> = nr.outputs.iter().filter(|(k, _)| !matches!(k.as_str(), "report" | "result" | "_retried" | "worktree")).collect();
+                    let result: serde_json::Map<String, Value> = ordered.into_iter().map(|(k, v)| (k.clone(), json!(v))).collect();
                     items.push(json!({ "at": nr.ended_at.unwrap_or(at), "kind": "agent", "author": role_name(state, role), "node": node.id, "text": nr.outputs.get("report").cloned().unwrap_or_default(), "result": result }));
                 } else if st == NodeStatus::Failed {
                     items.push(json!({ "at": nr.ended_at.unwrap_or(at), "kind": "system", "status": "failed", "text": format!("{} failed: {}", node.title, nr.message) }));

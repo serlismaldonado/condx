@@ -98,7 +98,7 @@ pub fn defaults() -> Vec<Role> {
                 "fixer",
                 "Fixer",
                 Mode::Write,
-                "You fix the error described in your inputs, in your own worktree: the smallest change that fixes the cause, then the project's checks.",
+                "You make the change this flow needs, in your own worktree: fix the error the earlier agents found (their reports are in your inputs), or do the task the event describes. The smallest change that does it; then run the project's checks with run_check. If the cause isn't in the code, change nothing and say so.",
                 &[("change", "string"), ("files", "list"), ("checks", "string")],
             )
         },

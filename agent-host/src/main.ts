@@ -16,6 +16,7 @@ import { createInterface } from "node:readline";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 
 import { Host, type StartRun } from "./host.ts";
+import { runChecks } from "./tools.ts";
 import { type ProviderConfig, Providers } from "./providers.ts";
 
 interface Config {
@@ -92,6 +93,12 @@ async function main(): Promise<void> {
       if (req.method === "POST" && url.pathname === "/providers") {
         if (!fauxModel) await providers.set((await body(req)).providers ?? []);
         return send(res, 200, { ok: true });
+      }
+      // Los chequeos de un worktree de arreglo (el daemon verifica lo que el agente dice).
+      if (req.method === "POST" && url.pathname === "/checks") {
+        const b = (await body(req)) as { cwd?: string; scripts?: string[] };
+        if (!b.cwd || !b.cwd.includes("/worktrees/")) return send(res, 400, { error: "checks only run in a fix worktree" });
+        return send(res, 200, { results: await runChecks(b.cwd, b.scripts && b.scripts.length ? b.scripts : undefined) });
       }
       if (parts[0] === "runs") {
         if (req.method === "POST" && parts.length === 1) return send(res, 200, await host.start((await body(req)) as StartRun));

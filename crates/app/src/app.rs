@@ -307,6 +307,8 @@ pub struct DevtoolApp {
     pub chat_error: Option<String>,
     pub chat_input: Option<Entity<gpui_kit::component::input::TextareaState>>,
     pub chat_clear: bool,
+    /// En un chat nuevo: pedir una tarea (la hacen los flujos) en vez de preguntar.
+    pub chat_task: bool,
     pub chat_placeholder: &'static str,
     /// Para bajar a lo último cuando llegan mensajes nuevos.
     pub chat_scroll: ScrollHandle,
@@ -506,6 +508,7 @@ impl DevtoolApp {
             chat_error: None,
             chat_input: None,
             chat_clear: false,
+            chat_task: false,
             chat_placeholder: "",
             chat_scroll: ScrollHandle::new(),
             chat_len: 0,

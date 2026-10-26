@@ -423,15 +423,12 @@ pub async fn start_chat(state: &Shared, text: &str, project: Option<&str>, by: &
 
 /// Un agente de un rol para un nodo de un flujo (o un hilo): idempotente por `run_id` (si ya
 /// existe, la devuelve). Error con «already running» si no hay lugar: quien llama espera.
-pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str, text: &str, project: Option<&str>, flow: &str) -> Result<Value> {
+pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str, text: &str, project: Option<&str>, flow: &str, base: Option<&str>) -> Result<Value> {
     if let Some(r) = state.store.agent_run(run_id)? {
         return Ok(r);
     }
     if !role.enabled {
         bail!("the agent “{}” is turned off", role.name);
-    }
-    if role.mode == crate::roles::Mode::Write {
-        bail!("“{}” writes code: write agents run in fix flows (not yet)", role.name);
     }
     let settings = crate::agents::settings(state);
     let provider_id = role.provider.clone().filter(|p| !p.is_empty()).or_else(|| settings.default_provider.clone()).context("choose a default provider in Settings → Agents first")?;
@@ -452,14 +449,27 @@ pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str,
         bail!("{} agent(s) already running (the limit is {})", running.len(), settings.max_concurrent);
     }
     let repo = crate::projects::get(state, project).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir());
-    let body = json!({ "runId": run_id, "mode": "task", "providerId": provider_id, "model": model, "cwd": repo.display().to_string(), "text": text, "tools": role.tools });
+    // Un agente que escribe trabaja en su worktree (rama condx/fix-…), como el modo arreglo.
+    let write = role.mode == crate::roles::Mode::Write;
+    let (cwd, branch, base) = if write {
+        let (r, id) = (repo.clone(), run_id.to_string());
+        let hint = json!({ "evidence": { "commit": base } });
+        let worktrees = crate::config::home().join("worktrees");
+        let (dir, branch, base) = tokio::task::spawn_blocking(move || prepare_worktree(&r, &worktrees, &id, &hint)).await.map_err(|e| anyhow!(e.to_string()))??;
+        (dir, Some(branch), Some(base))
+    } else {
+        (repo, None, None)
+    };
+    let mode = if write { "fix" } else { "task" };
+    let body = json!({ "runId": run_id, "mode": mode, "providerId": provider_id, "model": model, "cwd": cwd.display().to_string(), "text": text, "tools": role.tools });
     let st = state.clone();
     let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/runs", Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
     let run = json!({
-        "id": run_id, "kind": "flow", "title": format!("{} · {flow}", role.name), "role": role.id, "incident": null, "project": project, "mode": "task",
+        "id": run_id, "kind": "flow", "title": format!("{} · {flow}", role.name), "role": role.id, "incident": null, "project": project, "mode": mode,
         "provider": provider_id, "model": model, "by": format!("flow “{flow}”"),
         "status": "running", "startedAt": now_ms(), "endedAt": null, "answer": null, "error": null,
         "usage": { "total": 0 }, "conversationId": res["conversationId"],
+        "worktree": write.then(|| cwd.display().to_string()), "branch": branch, "base": base, "fix": null,
         "limits": { "maxTokens": role.max_tokens, "maxMinutes": role.max_minutes },
     });
     state.store.save_agent_run(&run)?;
@@ -563,7 +573,8 @@ fn finish(state: &Shared, mut run: Value, status: &str, answer: Option<String>, 
     run["answer"] = json!(answer);
     run["error"] = json!(error.filter(|_| status != "done"));
     if run["mode"] == "fix" && matches!(status, "done" | "stopped" | "aborted") {
-        let incident = run["incident"].as_str().and_then(|i| state.store.incident(i).ok().flatten()).unwrap_or(Value::Null);
+        // Un agente de flujo no tiene incidente: el commit lleva el nombre de su flujo.
+        let incident = run["incident"].as_str().and_then(|i| state.store.incident(i).ok().flatten()).unwrap_or_else(|| json!({ "title": run["title"], "id": run["id"] }));
         run["fix"] = commit_fix(&run, &incident);
     }
     let _ = state.store.save_agent_run(&run);

@@ -291,6 +291,11 @@ pub fn problems(w: &Workflow, envs: &HashSet<String>, recipe_exists: impl Fn(&st
                 match s(n, "check").as_str() {
                     "recent-backup" | "env-reachable" | "schema-safe" => env_ok(&mut out),
                     "ci-green" => {}
+                    "fix-checks" => {
+                        if s(n, "node").is_empty() {
+                            out.push(format!("“{t}”: which agent's change to check"));
+                        }
+                    }
                     other => out.push(format!("“{t}”: unknown check “{other}”")),
                 }
             }
@@ -471,6 +476,59 @@ pub fn templates(project: &str, is_default: bool, envs: &[(String, String)]) -> 
         crate::events::Trigger { source: "frontend-error".into(), ..Default::default() },
     ];
     out.push(urgent);
+    // El ciclo completo: revisa, mide el riesgo y avisa; si hace falta arreglarlo ya, un agente lo
+    // arregla en su rama, otro lo revisa, corren los chequeos y, con tu aprobación, va a cloud dev.
+    // (Para dejarlo en automático, quita el nodo de aprobación.)
+    let mut fix = flow(
+        "Fix an error",
+        "Triage, risk and a notice; if it needs a fix now, an agent fixes it on its own branch, another reviews it, the project's checks run, and after your approval it's deployed to cloud dev.",
+        {
+            let mut n = vec![
+                node("triage", NodeKind::Agent, "Triage", 0., 0., json!({ "agent": "triage" })),
+                node("risk", NodeKind::Agent, "Risk", 380., 0., json!({ "agent": "risk" })),
+                node("notify", NodeKind::Notify, "Reviewed", 760., -140., json!({ "message": "Reviewed: {node.triage.summary} · risk {node.risk.risk} · fix now: {node.risk.immediate_fix}" })),
+                node("fixer", NodeKind::Agent, "Fixer", 760., 140., json!({ "agent": "fixer" })),
+                node("review", NodeKind::Agent, "Reviewer", 1140., 140., json!({ "agent": "reviewer" })),
+                node("checks", NodeKind::Check, "Project checks", 1520., 140., json!({ "check": "fix-checks", "node": "fixer" })),
+            ];
+            if dev.is_empty() {
+                n.push(node("ready", NodeKind::Notify, "Fix ready", 1900., 140., json!({ "message": "Fix ready on {node.fixer.branch} ({node.checks.summary}). Review it and deploy it from Condx.", "priority": "high" })));
+            } else {
+                n.push(node("approve", NodeKind::Approval, "Approve the deploy", 1900., 140., json!({ "env": dev, "level": "simple", "message": "Deploy the fix {node.fixer.commit} to cloud dev?" })));
+                n.push(node("deploy", NodeKind::Recipe, "Deploy to cloud dev", 2280., 140., json!({ "recipe": "deploy-cloud", "env": dev, "args": { "commit": "{node.fixer.commit}" } })));
+                n.push(node("done", NodeKind::Notify, "Deployed", 2660., 140., json!({ "message": "Fix {node.fixer.branch} deployed to cloud dev" })));
+            }
+            n
+        },
+    );
+    fix.edges = vec![("triage".into(), "risk".into()), ("risk".into(), "notify".into()), ("risk".into(), "fixer".into()), ("fixer".into(), "review".into()), ("review".into(), "checks".into())];
+    if dev.is_empty() {
+        fix.edges.push(("checks".into(), "ready".into()));
+    } else {
+        fix.edges.extend([("checks".into(), "approve".into()), ("approve".into(), "deploy".into()), ("deploy".into(), "done".into())]);
+    }
+    fix.conditions.insert(edge_key("risk", "fixer"), "risk.immediate_fix == true".into());
+    fix.conditions.insert(edge_key("fixer", "review"), "fixer.changes == true".into());
+    fix.conditions.insert(edge_key("review", "checks"), "review.verdict == approve".into());
+    fix.triggers = vec![
+        crate::events::Trigger { source: "convex-error".into(), ..Default::default() },
+        crate::events::Trigger { source: "frontend-error".into(), ..Default::default() },
+    ];
+    out.push(fix);
+    // Una tarea pedida desde el chat: un agente la hace en su rama, otro la revisa, los chequeos.
+    let mut task = flow(
+        "Do a task",
+        "A task you ask for in Agents → New task: an agent does it on its own branch, another reviews it, the project's checks run, and you get the branch to merge.",
+        vec![
+            node("fixer", NodeKind::Agent, "Do it", 0., 0., json!({ "agent": "fixer", "instructions": "The event is a task the developer asked for: do it." })),
+            node("review", NodeKind::Agent, "Reviewer", 380., 0., json!({ "agent": "reviewer" })),
+            node("checks", NodeKind::Check, "Project checks", 760., 0., json!({ "check": "fix-checks", "node": "fixer" })),
+            node("ready", NodeKind::Notify, "Ready", 1140., 0., json!({ "message": "Task ready on {node.fixer.branch}: {node.fixer.change} ({node.checks.summary})" })),
+        ],
+    );
+    task.conditions.insert(edge_key("fixer", "review"), "fixer.changes == true".into());
+    task.triggers = vec![crate::events::Trigger { source: "task".into(), ..Default::default() }];
+    out.push(task);
     out.push(Workflow { id: String::new(), project: project.into(), name: "Example: check, approve and run".into(), description: "A starting point for building your own.".into(), nodes, edges, enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 });
     out.push(Workflow { id: String::new(), project: project.into(), name: "Blank".into(), description: String::new(), nodes: vec![], edges: vec![], enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 });
     out
@@ -883,6 +941,23 @@ async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut
             }
             Ok(format!("waited {minutes} min"))
         }
+        NodeKind::Check if s("check") == "fix-checks" => {
+            // Los chequeos del proyecto en el worktree del agente que escribió (sin red, en el sandbox).
+            let fixer = s("node");
+            let worktree = run.nodes.iter().find(|n| n.id == fixer).and_then(|n| n.outputs.get("worktree").cloned()).filter(|w| !w.is_empty()).ok_or_else(|| anyhow!("“{fixer}” left no worktree to check"))?;
+            let st = state.clone();
+            let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/checks", Some(json!({ "cwd": worktree })))).await.map_err(|e| anyhow!(e.to_string()))??;
+            let results = res["results"].as_array().cloned().unwrap_or_default();
+            let summary = if results.is_empty() { "no typecheck, lint or test scripts".to_string() } else { results.iter().map(|r| format!("{} {}", ui_mark(r["ok"] == true), r["script"].as_str().unwrap_or("?"))).collect::<Vec<_>>().join(" · ") };
+            let passed = results.iter().all(|r| r["ok"] == true);
+            run.nodes[i].outputs.insert("passed".into(), passed.to_string());
+            run.nodes[i].outputs.insert("summary".into(), summary.clone());
+            if let Some(failed) = results.iter().find(|r| r["ok"] != true) {
+                run.nodes[i].outputs.insert("report".into(), failed["tail"].as_str().unwrap_or_default().to_string());
+                bail!("checks failed: {summary}");
+            }
+            Ok(summary)
+        }
         NodeKind::Check => check(state, &run.project, &s("check"), &s("env"), p["hours"].as_f64().unwrap_or(24.)).await,
         NodeKind::Notify => {
             let msg = substitute(&s("message"), run);
@@ -920,7 +995,9 @@ async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut
             if run.nodes[i].job.is_none() {
                 let text = agent_task(run, node, &role);
                 loop {
-                    match crate::agent_host::start_role(state, &role, &agent_run, &text, Some(&run.project), &run.workflow_name).await {
+                    // Desde qué commit trabaja un agente que escribe: el del evento, si lo trae, o el de la corrida.
+                    let base = run.event.as_ref().and_then(|e| e["evidence"]["commit"].as_str().or(e["commit"].as_str())).map(str::to_string).unwrap_or_else(|| run.commit.clone());
+                    match crate::agent_host::start_role(state, &role, &agent_run, &text, Some(&run.project), &run.workflow_name, Some(&base)).await {
                         Ok(_) => break,
                         // Otros agentes ocupan los lugares: espera su turno.
                         Err(e) if e.to_string().contains("already running") => {
@@ -941,6 +1018,10 @@ async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut
             follow_agent(state, run, i, &agent_run, &role, cancel).await
         }
     }
+}
+
+fn ui_mark(ok: bool) -> &'static str {
+    if ok { "✓" } else { "✗" }
 }
 
 fn answer_key(run: &str, node: &str) -> String {
@@ -993,14 +1074,32 @@ async fn follow_agent(state: &Shared, run: &mut Run, i: usize, agent_run: &str, 
             "done" => {
                 let answer = r["answer"].as_str().unwrap_or_default().to_string();
                 let report = answer.split("```json").next().unwrap_or(&answer).trim().to_string();
+                // Lo que dejó un agente que escribe: su rama y el commit que hizo el daemon.
+                let fix = r["fix"].clone();
+                if role.mode == crate::roles::Mode::Write {
+                    if let Some(e) = fix["error"].as_str() {
+                        bail!("{}: couldn't save the change: {e}", role.name);
+                    }
+                }
+                let add_fix = |out: &mut HashMap<String, String>| {
+                    if role.mode == crate::roles::Mode::Write {
+                        out.insert("changes".into(), (fix["changes"] == true).to_string());
+                        out.insert("branch".into(), r["branch"].as_str().unwrap_or_default().to_string());
+                        out.insert("commit".into(), fix["commit"].as_str().unwrap_or_default().to_string());
+                        out.insert("stat".into(), fix["stat"].as_str().unwrap_or_default().to_string());
+                        out.insert("worktree".into(), r["worktree"].as_str().unwrap_or_default().to_string());
+                    }
+                };
                 if role.output.is_empty() {
                     run.nodes[i].outputs = crate::roles::outputs(&json!({}), &report);
+                    add_fix(&mut run.nodes[i].outputs);
                     return Ok(format!("{}: {}", role.name, first_line(&report)));
                 }
                 let checked = crate::roles::extract_json(&answer).ok_or_else(|| anyhow!("no JSON result")).and_then(|v| crate::roles::validate(role, &v));
                 match checked {
                     Ok(result) => {
                         run.nodes[i].outputs = crate::roles::outputs(&result, &report);
+                        add_fix(&mut run.nodes[i].outputs);
                         let first = role.output.keys().next().and_then(|k| run.nodes[i].outputs.get(k)).cloned().unwrap_or_default();
                         return Ok(format!("{}: {}", role.name, first_line(&first)));
                     }

@@ -578,6 +578,22 @@ async fn post_notify_test(AxState(state): AxState<Shared>, Extension(client): Ex
 }
 
 /// Una corrida de agente con su transcripción (si el host la tiene).
+/// Una tarea para los agentes (la empiezan los flujos con disparador «task»): solo la app.
+async fn post_task(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let text = body["text"].as_str().unwrap_or_default().to_string();
+    let project = body["project"].as_str().map(str::to_string);
+    let res = tokio::task::spawn_blocking(move || crate::events::from_task(&text, project.as_deref()).and_then(|ev| crate::events::record(&state, ev))).await;
+    match res {
+        Ok(Ok(ev)) if ev["status"] == "unmatched" => fail(StatusCode::BAD_REQUEST, "no flow starts on tasks: create one in Workflows (the suggested “Do a task”) and turn it on"),
+        Ok(Ok(ev)) => Json(ev).into_response(),
+        Ok(Err(e)) => fail(StatusCode::BAD_REQUEST, e),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
 async fn get_sdk() -> Response {
     match tokio::task::spawn_blocking(crate::cloud::sdk_keys).await {
         Ok(Ok(v)) => Json(v).into_response(),
@@ -1230,6 +1246,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agents/roles/{id}", delete(delete_agent_role))
         .route("/api/agent-runs", get(get_agent_runs))
         .route("/api/threads", get(get_threads))
+        .route("/api/tasks", post(post_task))
         .route("/api/sdk", get(get_sdk))
         .route("/api/sdk/keys", post(post_sdk_key))
         .route("/api/sdk/keys/{key}", delete(delete_sdk_key))

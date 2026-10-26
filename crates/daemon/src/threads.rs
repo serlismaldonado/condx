@@ -210,7 +210,7 @@ async fn send(state: &Shared, run: &Run, node: &str, role: &str, agent_run: &str
         // El Explicador del hilo: nace con todo lo que pasó en la corrida.
         let r = crate::roles::get(state, role).ok_or_else(|| anyhow!("there's no Explainer agent (restore the built-in agents)"))?;
         let task = format!("{}\n\nThe developer asks: {text}", context(run));
-        crate::agent_host::start_role(state, &r, agent_run, &task, Some(&run.project), &run.workflow_name).await?;
+        crate::agent_host::start_role(state, &r, agent_run, &task, Some(&run.project), &run.workflow_name, None).await?;
     } else {
         bail!("that agent hasn't started yet");
     }

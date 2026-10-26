@@ -173,6 +173,7 @@ pub fn post(path: &str, body: Value) -> Result<Value> {
             json!({ "id": "run-demo-1", "status": "done" })
         }),
         ["agent-chats"] => demo_chat(),
+        ["tasks"] => json!({ "id": "ev-demo-task", "status": "running", "runs": ["r-w-triage"] }),
         ["threads", _, "message"] => json!({ "to": "explainer" }),
         ["agent-runs", "chat-demo-1", _] => demo_chat(),
         ["agent-runs", _, _] => demo_run(),

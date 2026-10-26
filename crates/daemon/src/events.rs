@@ -15,7 +15,7 @@ use crate::state::Shared;
 use crate::store::now_ms;
 
 /// Las fuentes que un disparador puede elegir.
-pub const SOURCES: &[&str] = &["frontend-error", "convex-error", "user-report", "mcp", "incident"];
+pub const SOURCES: &[&str] = &["frontend-error", "convex-error", "user-report", "mcp", "incident", "task"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -213,6 +213,15 @@ pub fn from_mcp(args: &Value, client: &str) -> Result<Value> {
         "reportedBy": client,
         "fingerprint": args["fingerprint"].as_str().map(|f| format!("mcp:{f}")).unwrap_or_else(|| format!("mcp:{}", title.to_lowercase())),
     }))
+}
+
+/// Una tarea que la persona pide desde el chat («agrega el campo X a Y»): cada una, su propio evento.
+pub fn from_task(text: &str, project: Option<&str>) -> Result<Value> {
+    let t = text.trim();
+    if t.is_empty() {
+        bail!("describe the task");
+    }
+    Ok(json!({ "source": "task", "project": project, "title": first_line(t, 120), "message": t.chars().take(4000).collect::<String>(), "fingerprint": format!("task:{}", now_ms()) }))
 }
 
 /// Un incidente recién abierto → evento (los flujos con disparador `incident`).

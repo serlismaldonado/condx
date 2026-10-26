@@ -607,8 +607,16 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
             }
             "check" => {
                 body = body
-                    .child(row(t!("Check"), select(format!("wf-ck-{id}"), vec![("env-reachable".into(), t!("The environment responds").into()), ("recent-backup".into(), t!("There's a recent backup").into()), ("ci-green".into(), t!("CI is green").into()), ("schema-safe".into(), t!("The local schema is safe to deploy here").into())], s("check"), "check").into_any_element(), cx))
-                    .child(row(t!("Environment"), select(format!("wf-ev-{id}"), env_choices.clone(), s("env"), "env").into_any_element(), cx));
+                    .child(row(t!("Check"), select(format!("wf-ck-{id}"), vec![("env-reachable".into(), t!("The environment responds").into()), ("recent-backup".into(), t!("There's a recent backup").into()), ("ci-green".into(), t!("CI is green").into()), ("schema-safe".into(), t!("The local schema is safe to deploy here").into()), ("fix-checks".into(), t!("An agent's change passes the project's checks").into())], s("check"), "check").into_any_element(), cx));
+                if s("check") == "fix-checks" {
+                    // Qué agente (de los que escriben) dejó el cambio a verificar.
+                    let writers: Vec<(String, String)> = app_now.wf_draft.as_ref().and_then(|d| d["nodes"].as_array().cloned()).unwrap_or_default().iter().filter(|n| n["kind"] == "agent").filter_map(|n| Some((n["id"].as_str()?.to_string(), n["title"].as_str().unwrap_or_default().to_string()))).collect();
+                    body = body
+                        .child(row(t!("Agent's change"), select(format!("wf-ckn-{id}"), writers, s("node"), "node").into_any_element(), cx))
+                        .child(ui::muted(t!("Runs its typecheck, lint and test scripts in that agent's worktree, offline, in the sandbox: it doesn't take the agent's word for it."), cx).text_xs());
+                } else {
+                    body = body.child(row(t!("Environment"), select(format!("wf-ev-{id}"), env_choices.clone(), s("env"), "env").into_any_element(), cx));
+                }
                 if s("check") == "recent-backup" {
                     body = body.child(row(t!("Within the last (hours)"), Input::new(&hours).small().into_any_element(), cx));
                 }

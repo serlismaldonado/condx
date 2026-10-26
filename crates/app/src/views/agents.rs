@@ -52,6 +52,8 @@ impl DevtoolApp {
         self.chat_error = None;
         let (path, body) = match self.chat_open.clone() {
             Some(id) => (format!("/api/threads/{id}/message"), json!({ "text": text })),
+            // Una tarea: la hacen los flujos que empiezan con «task» (p. ej. «Do a task»).
+            None if self.chat_task => ("/api/tasks".to_string(), json!({ "text": text, "project": self.project })),
             None => ("/api/agent-chats".to_string(), json!({ "text": text, "project": self.project })),
         };
         self.post(path, body, |app, res, cx| {
@@ -60,7 +62,8 @@ impl DevtoolApp {
                 Load::Ready(run) => {
                     app.chat_clear = true;
                     if app.chat_open.is_none() {
-                        app.chat_open = run["id"].as_str().map(str::to_string);
+                        // Un chat devuelve su corrida; una tarea, el evento con las corridas que empezó.
+                        app.chat_open = run["runs"].as_array().and_then(|r| r.first()).and_then(|r| r.as_str()).or(run["id"].as_str().filter(|_| run["runs"].is_null())).map(str::to_string);
                     }
                     app.load_chat(cx);
                     app.load_chats(cx);
@@ -225,9 +228,17 @@ fn conversation(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devt
                 v_flex()
                     .gap_2()
                     .pt(px(48.))
-                    .child(div().text_size(px(18.)).text_color(t.fg).child(t!("Ask the agent about your project")))
-                    .child(ui::muted(t!("It reads your code and what Condx knows: environments, jobs and their logs, incidents, workflows. It only reads; it can't change files, deploy or approve."), cx))
-                    .child(examples(cx)),
+                    .child(h_flex().gap_1().child(mode_button("chat-mode-chat", t!("Ask"), !app.chat_task, false, cx)).child(mode_button("chat-mode-task", t!("Give a task"), app.chat_task, true, cx)))
+                    .child(div().text_size(px(18.)).text_color(t.fg).child(if app.chat_task { t!("Give the agents a task") } else { t!("Ask the agent about your project") }))
+                    .child(ui::muted(
+                        if app.chat_task {
+                            t!("Describe a change (\"add a notes field to orders\"): the flows that start on tasks (Workflows → “Do a task”) run it: an agent does it on its own branch, another reviews it, the checks run. You follow it in its thread.")
+                        } else {
+                            t!("It reads your code and what Condx knows: environments, jobs and their logs, incidents, workflows. It only reads; it can't change files, deploy or approve.")
+                        },
+                        cx,
+                    ))
+                    .when(!app.chat_task, |d| d.child(examples(cx))),
             );
             if !has_provider && app.agents.is_some() {
                 msgs = msgs.child(
@@ -256,7 +267,8 @@ fn conversation(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devt
         }
     }
 
-    let composer = composer(app, running, has_provider, t!("Message the agent…  (Enter sends, Shift+Enter adds a line)"), window, cx);
+    let placeholder = if app.chat_open.is_none() && app.chat_task { t!("Describe the task…  (Enter sends, Shift+Enter adds a line)") } else { t!("Message the agent…  (Enter sends, Shift+Enter adds a line)") };
+    let composer = composer(app, running, has_provider, placeholder, window, cx);
 
     v_flex()
         .size_full()
@@ -300,7 +312,16 @@ fn composer(app: &mut DevtoolApp, running: bool, has_provider: bool, placeholder
         .border_color(t.card_border)
         .when_some(app.chat_error.clone(), |d, e| d.child(ui::status_tag(Health::Bad, e)))
         .child(h_flex().gap_2().items_end().child(div().flex_1().min_w_0().child(Textarea::new(&input))).child(ui::brand(send, cx)))
-        .child(ui::muted(if running { t!("While it works, what you write redirects it.") } else { t!("It only reads. Today's token budget and the agents-at-once limit apply (Settings → Agents).") }, cx).text_xs())
+        .child(ui::muted(
+            if running {
+                t!("While it works, what you write redirects it.")
+            } else if app.chat_open.is_none() && app.chat_task {
+                t!("Agents that write do it on their own branch; nothing is deployed without your approval.")
+            } else {
+                t!("It only reads. Today's token budget and the agents-at-once limit apply (Settings → Agents).")
+            },
+            cx,
+        ).text_xs())
 }
 
 /// El hilo de una corrida de flujo: el evento, cada paso, las tarjetas de los agentes, las
@@ -473,6 +494,14 @@ fn thread_item(i: usize, item: &Value, cx: &mut Context<DevtoolApp>) -> AnyEleme
             h_flex().gap_2().items_center().child(ui::dot(health, cx)).child(ui::muted(text, cx).text_xs()).into_any_element()
         }
     }
+}
+
+fn mode_button(id: &'static str, label: &'static str, selected: bool, task: bool, cx: &mut Context<DevtoolApp>) -> AnyElement {
+    let b = Button::new(id).small().label(label).on_click(cx.listener(move |this, _, _, cx| {
+        this.chat_task = task;
+        cx.notify();
+    }));
+    if selected { ui::brand(b, cx).into_any_element() } else { b.outline().into_any_element() }
 }
 
 /// Preguntas de ejemplo: un clic las deja escritas.

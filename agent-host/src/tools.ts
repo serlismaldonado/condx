@@ -241,25 +241,40 @@ export const runCheckTool = defineTool({
     const root = await repo(api, context);
     const scripts = await baseScripts(root);
     if (!(args.script in scripts)) throw new ToolError(`no script “${args.script}”. Available: ${Object.keys(scripts).join(", ") || "none"}`);
-    const pm = packageManager(root);
-    const home = process.env.HOME ?? "/nonexistent";
-    const tmp = join(process.env.TMPDIR ?? "/private/tmp", `condx-check-${process.pid}`);
-    await mkdir(tmp, { recursive: true });
-    const profile = sandboxProfile(root, home, tmp);
-    const out = await new Promise<string>((ok) => {
-      execFile(
-        "/usr/bin/sandbox-exec",
-        ["-p", profile, pm, "run", args.script],
-        { cwd: root, timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, TMPDIR: tmp, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" } },
-        (err, stdout, stderr) => {
-          const code = err ? ((err as { code?: number | string }).code ?? "error") : 0;
-          const tail = `${stdout}\n${stderr}`.trim().split("\n").slice(-150).join("\n");
-          ok(`exit ${code}\n${tail}`);
-        },
-      );
-    });
-    return text(clip(out));
+    const r = await runScript(root, args.script);
+    return text(clip(`exit ${r.code}\n${r.tail}`));
   },
 });
+
+/** Corre un script del package.json (el de antes de los cambios) en `root`, sin red, en el sandbox. */
+export async function runScript(root: string, script: string): Promise<{ code: number | string; tail: string }> {
+  const pm = packageManager(root);
+  const home = process.env.HOME ?? "/nonexistent";
+  const tmp = join(process.env.TMPDIR ?? "/private/tmp", `condx-check-${process.pid}`);
+  await mkdir(tmp, { recursive: true });
+  const profile = sandboxProfile(root, home, tmp);
+  return await new Promise((ok) => {
+    execFile(
+      "/usr/bin/sandbox-exec",
+      ["-p", profile, pm, "run", script],
+      { cwd: root, timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, TMPDIR: tmp, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" } },
+      (err, stdout, stderr) => {
+        const code = err ? ((err as { code?: number | string }).code ?? "error") : 0;
+        ok({ code, tail: `${stdout}\n${stderr}`.trim().split("\n").slice(-60).join("\n") });
+      },
+    );
+  });
+}
+
+/** Los chequeos de un worktree (los que el proyecto tenga de estos, en orden): para verificar un arreglo sin creerle al agente. */
+export async function runChecks(root: string, wanted = ["typecheck", "lint", "test"]): Promise<{ script: string; ok: boolean; code: number | string; tail: string }[]> {
+  const scripts = await baseScripts(root);
+  const out = [];
+  for (const s of wanted.filter((w) => w in scripts)) {
+    const r = await runScript(root, s);
+    out.push({ script: s, ok: r.code === 0, ...r });
+  }
+  return out;
+}
 
 export const FIX_TOOLS = [...READ_TOOLS, editFileTool, writeFileTool, runCheckTool];

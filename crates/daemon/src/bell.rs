@@ -87,7 +87,7 @@ async fn listen(me: &Inner, url: &str, token: &str, scopes: &[String], protocol:
         };
         match next {
             Some(convex::FunctionResult::Value(v)) => {
-                *me.latest.lock().unwrap() = Some(serde_json::Value::from(v));
+                *me.latest.lock().unwrap() = Some(integers(serde_json::Value::from(v)));
                 me.live.store(true, Ordering::Relaxed);
                 *me.rang.lock().unwrap() = true;
                 me.ring.notify_all();
@@ -95,5 +95,29 @@ async fn listen(me: &Inner, url: &str, token: &str, scopes: &[String], protocol:
             Some(other) => return Err(format!("doorbell: {other:?}")),
             None => return Err("doorbell: the subscription ended".into()),
         }
+    }
+}
+
+/// Convex manda los números como float (`5.0`); las versiones del timbre son enteras.
+fn integers(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Number(n) => match n.as_f64() {
+            Some(f) if n.is_f64() && f.fract() == 0.0 && f.abs() < 9e15 => serde_json::Value::from(f as i64),
+            _ => serde_json::Value::Number(n),
+        },
+        serde_json::Value::Array(a) => serde_json::Value::Array(a.into_iter().map(integers).collect()),
+        serde_json::Value::Object(o) => serde_json::Value::Object(o.into_iter().map(|(k, v)| (k, integers(v))).collect()),
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn las_versiones_vuelven_a_ser_enteras() {
+        let v = super::integers(serde_json::json!({ "status": "ok", "versions": { "a": 5.0, "b": "denied" } }));
+        assert_eq!(v, serde_json::json!({ "status": "ok", "versions": { "a": 5, "b": "denied" } }));
+        let parsed: localfirst_core::types::DoorbellVersions = serde_json::from_value(v["versions"].clone()).unwrap();
+        assert_eq!(parsed.len(), 2);
     }
 }

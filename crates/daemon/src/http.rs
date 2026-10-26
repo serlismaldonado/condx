@@ -579,6 +579,18 @@ async fn post_mail(AxState(state): AxState<Shared>, Extension(client): Extension
     }
 }
 
+async fn post_mail_test(AxState(state): AxState<Shared>, Extension(client): Extension<Client>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let st = state.clone();
+    match tokio::task::spawn_blocking(move || crate::mail::send_test(&st)).await {
+        Ok(Ok(via)) => Json(json!({ "sent": true, "via": via })).into_response(),
+        Ok(Err(e)) => fail(StatusCode::BAD_REQUEST, e),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, anyhow::anyhow!(e.to_string())),
+    }
+}
+
 async fn get_notify(AxState(state): AxState<Shared>) -> Response {
     let st = state.clone();
     match tokio::task::spawn_blocking(move || crate::notify::json(&st)).await {
@@ -1336,6 +1348,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agent-runs/{id}", get(get_agent_run))
         .route("/api/notify", get(get_notify).post(post_notify))
         .route("/api/mail", get(get_mail).post(post_mail))
+        .route("/api/mail/test", post(post_mail_test))
         .route("/api/update", get(get_update))
         .route("/api/update/check", post(post_update_check))
         .route("/api/notify/test", post(post_notify_test))

@@ -376,6 +376,14 @@ fn send_notice(state: &Shared, to: &str, subject: &str, markdown: &str) -> Resul
     Ok(())
 }
 
+/// Un aviso de prueba ya (sin esperar a juntar otros): por dónde salió.
+pub fn send_test(state: &Shared) -> Result<String> {
+    let s = settings(state);
+    let to = s.allow.first().cloned().ok_or_else(|| anyhow!("say who can write to the agents first"))?;
+    send_notice(state, &to, "Condx: test notice", "Notices from this Mac arrive by email. Reply to this one and the agent gets it.")?;
+    Ok(sent(state).first().and_then(|m| m["via"].as_str()).unwrap_or("?").to_string())
+}
+
 fn resend_api() -> String {
     std::env::var("CONDX_RESEND_API").unwrap_or_else(|_| "https://api.resend.com".into())
 }

@@ -561,7 +561,8 @@ async fn post_update_check(AxState(state): AxState<Shared>, Extension(client): E
 
 /// El correo de respaldo (AgentMail): ajustes y si hay key (nunca su valor).
 async fn get_mail(AxState(state): AxState<Shared>) -> Response {
-    Json(json!({ "settings": crate::mail::settings(&state), "hasKey": crate::secrets::exists(crate::mail::KEY_ACCOUNT) })).into_response()
+    let sent: Vec<Value> = crate::mail::sent(&state).into_iter().take(20).map(|m| json!({ "at": m["at"], "subject": m["subject"], "via": m["via"] })).collect();
+    Json(json!({ "settings": crate::mail::settings(&state), "hasKey": crate::secrets::exists(crate::mail::KEY_ACCOUNT), "hasResendKey": crate::secrets::exists(crate::mail::RESEND_ACCOUNT), "sent": sent })).into_response()
 }
 
 async fn post_mail(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Json(body): Json<Value>) -> Response {

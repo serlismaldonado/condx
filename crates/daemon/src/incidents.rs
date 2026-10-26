@@ -193,11 +193,34 @@ fn tail_of(text: &str) -> String {
     tail
 }
 
-/// Convex de cada entorno de la nube que no responde.
+/// Si el error es de la red de esta Mac (sin DNS, sin conexión) y no del deployment.
+fn local_network_error(error: &str) -> bool {
+    let e = error.to_lowercase();
+    ["dns", "lookup", "resolve", "nodename nor servname", "name or service not known", "no address associated", "network is unreachable", "network is down", "internet connection appears to be offline"]
+        .iter()
+        .any(|k| e.contains(k))
+}
+
+/// Convex de cada entorno de la nube que no responde. Si la Mac se quedó sin red (un error de DNS, o
+/// todos los de la nube fallan a la vez) no es un incidente de Convex: no se abre ninguno.
 fn scan_convex(state: &Shared, scan: &mut Scan) {
+    let cloud: Vec<(devtool_core::Environment, Value)> = state
+        .store
+        .environments()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.convex_url.is_some() && matches!(e.kind, devtool_core::EnvKind::CloudDev | devtool_core::EnvKind::CloudProd))
+        .filter_map(|e| state.probe(&format!("convex:{}", e.name)).map(|p| (e, p)))
+        .collect();
+    let failing = cloud.iter().filter(|(_, p)| p["ok"] != true).count();
+    let all_down = cloud.len() >= 2 && failing == cloud.len();
     for env in state.store.environments().unwrap_or_default() {
         let Some(p) = state.probe(&format!("convex:{}", env.name)) else { continue };
         let fp = format!("convex:{}", env.name);
+        // Sin red en la Mac no se sabe nada del deployment: ni se abre ni se cierra su incidente.
+        if p["ok"] != true && (all_down || local_network_error(p["error"].as_str().unwrap_or(""))) {
+            continue;
+        }
         scan.observed.push(fp.clone());
         // Un devbox o un desechable apagado no es un incidente: solo los de la nube.
         if p["ok"] == true || env.convex_url.is_none() || !matches!(env.kind, devtool_core::EnvKind::CloudDev | devtool_core::EnvKind::CloudProd) {
@@ -419,6 +442,13 @@ pub fn list(state: &Shared, status: Option<&str>, project: Option<&str>, limit: 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sin_red_en_la_mac_no_es_un_incidente_de_convex() {
+        assert!(local_network_error("error sending request: dns error: failed to lookup address information: nodename nor servname provided"));
+        assert!(local_network_error("No address associated with hostname"));
+        assert!(!local_network_error("HTTP 503 from the deployment"));
+    }
+
     use super::*;
 
     fn sig(fp: &str, occ: Option<&str>) -> Signal {

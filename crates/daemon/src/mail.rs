@@ -6,7 +6,10 @@
 //   devuelve correos que fallan SPF/DKIM (salvo que se pidan), y uno de un remitente no permitido se
 //   marca y se ignora sin contestar (sin rebotes a quien falsificó el remitente).
 // - Sale: los avisos de ntfy también van por correo cuando ntfy está apagado o falla (`fallback`) o
-//   siempre (`always`).
+//   siempre (`always`). Lo que llega en un minuto sale en un solo correo. Los avisos no piden respuesta:
+//   con una key de Resend (`resend-key`) y un remitente (`resendFrom`) salen por Resend (AgentMail
+//   tiene un cupo chico para enviar); responder igual llega al buzón (Reply-To) y el agente ve qué se
+//   había mandado (cada envío queda en `meta:mail-sent`). Las respuestas de un chat van por AgentMail.
 // - El correo pide, nunca aprueba: llega al agente del chat, que solo lee (sin aprobar ni desplegar).
 //
 // La API key es un secreto del daemon (`agentmail-key`); los ajustes, una fila de la base.
@@ -20,6 +23,12 @@ use serde_json::{json, Value};
 use crate::state::Shared;
 
 pub const KEY_ACCOUNT: &str = "agentmail-key";
+pub const RESEND_ACCOUNT: &str = "resend-key";
+const SENT_KEY: &str = "meta:mail-sent";
+/// Los avisos que llegan en este rato salen juntos (una caída que abre cinco incidentes, un correo).
+const DIGEST: Duration = Duration::from_secs(60);
+static PENDING: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+static FLUSHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const SETTINGS_KEY: &str = "meta:mail";
 const THREADS_KEY: &str = "meta:mail-threads";
 const DONE: &str = "condx-done";
@@ -36,11 +45,13 @@ pub struct Settings {
     pub notify: String,
     /// Desde cuándo se leen correos (al encenderlo): lo que ya estaba en el buzón no se toca.
     pub since: i64,
+    /// El remitente de los avisos por Resend («Condx <condx@dominio-verificado>»); vacío: por AgentMail.
+    pub resend_from: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { enabled: false, inbox: "heskala@agentmail.to".into(), allow: vec![], notify: "fallback".into(), since: 0 }
+        Self { enabled: false, inbox: "heskala@agentmail.to".into(), allow: vec![], notify: "fallback".into(), since: 0, resend_from: String::new() }
     }
 }
 
@@ -249,7 +260,9 @@ pub async fn process_inbox(state: &Shared) -> Result<usize> {
         let text = text_of(&full);
         let subject = full["subject"].as_str().unwrap_or("").to_string();
         let thread = full["thread_id"].as_str().unwrap_or(&id).to_string();
-        let ask = format!("Email from {} — {subject}\n\n{text}\n\n(Sent by email: investigate and answer. Approvals and deploys are done in the Condx app.)", address(&from));
+        // Si contesta un aviso de Condx, el agente ve qué se le había mandado.
+        let context = answered_notice(state, &subject).map(|n| format!("\n\n(This answers a notice Condx sent by email:)\n{}", n["text"].as_str().unwrap_or(""))).unwrap_or_default();
+        let ask = format!("Email from {} — {subject}\n\n{text}{context}\n\n(Sent by email: investigate and answer. Approvals and deploys are done in the Condx app.)", address(&from));
         let mut map = threads(state);
         let chat = match map.get(&thread).and_then(Value::as_str).map(str::to_string) {
             // El hilo de correo ya tiene su chat: sigue ahí (si no hay lugar, espera en la cola).
@@ -303,17 +316,93 @@ pub fn reply_to_run(state: &Shared, run: &Value) {
     });
 }
 
-/// Un aviso por correo al primero de la lista (si está encendido).
+/// Un aviso por correo al primero de la lista (si está encendido). Espera un minuto por si llegan más:
+/// salen todos en un correo.
 pub fn notify(state: &Shared, subject: &str, body: &str) {
     let s = settings(state);
-    let Some(to) = s.allow.first().cloned().filter(|_| s.enabled && s.notify != "off") else { return };
-    let (subject, body, st) = (subject.to_string(), body.to_string(), state.clone());
+    if !s.enabled || s.notify == "off" || s.allow.is_empty() {
+        return;
+    }
+    PENDING.lock().unwrap().push((subject.to_string(), body.to_string()));
+    if FLUSHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let st = state.clone();
     std::thread::spawn(move || {
-        let mail = compose(&st, &body, &subject);
-        if let Err(e) = Client::new(&st).and_then(|c| c.send(&to, &subject, &mail)) {
+        std::thread::sleep(DIGEST);
+        FLUSHING.store(false, std::sync::atomic::Ordering::SeqCst);
+        let items = std::mem::take(&mut *PENDING.lock().unwrap());
+        let Some((subject, body)) = digest(&items) else { return };
+        let Some(to) = settings(&st).allow.first().cloned() else { return };
+        if let Err(e) = send_notice(&st, &to, &subject, &body) {
             tracing::warn!("mail: notification not sent: {e:#}");
         }
     });
+}
+
+/// Varios avisos en uno: el asunto dice cuántos y el primero; el cuerpo, cada uno con su título.
+fn digest(items: &[(String, String)]) -> Option<(String, String)> {
+    match items {
+        [] => None,
+        [(subject, body)] => Some((subject.clone(), body.clone())),
+        [(first, _), ..] => Some((
+            format!("{} Condx notices: {first}", items.len()),
+            items.iter().map(|(t, b)| if b.trim().is_empty() { format!("**{t}**") } else { format!("**{t}**\n\n{b}") }).collect::<Vec<_>>().join("\n\n---\n\n"),
+        )),
+    }
+}
+
+/// Un aviso (no pide respuesta): por Resend si hay key y remitente, si no por AgentMail. Queda anotado
+/// para que el agente sepa qué se mandó si alguien contesta.
+fn send_notice(state: &Shared, to: &str, subject: &str, markdown: &str) -> Result<()> {
+    let s = settings(state);
+    let mail = compose(state, markdown, subject);
+    let resend = crate::secrets::get(RESEND_ACCOUNT).ok().flatten().filter(|k| !k.trim().is_empty() && !s.resend_from.trim().is_empty());
+    let via = match resend {
+        Some(key) => {
+            let body = mail.json(json!({ "from": s.resend_from.trim(), "to": [to], "subject": subject, "reply_to": s.inbox }));
+            match ureq::post(&format!("{}/emails", resend_api())).timeout(Duration::from_secs(20)).set("Authorization", &format!("Bearer {}", key.trim())).send_json(body) {
+                Ok(_) => "resend",
+                Err(ureq::Error::Status(code, r)) => bail!("Resend answered {code}: {}", devtool_core::redact(&r.into_string().unwrap_or_default()).chars().take(200).collect::<String>()),
+                Err(e) => bail!("couldn't reach Resend: {e}"),
+            }
+        }
+        None => {
+            Client::new(state)?.send(to, subject, &mail)?;
+            "agentmail"
+        }
+    };
+    record_sent(state, json!({ "at": crate::store::now_ms(), "to": to, "subject": subject, "text": markdown.chars().take(4000).collect::<String>(), "via": via }));
+    Ok(())
+}
+
+fn resend_api() -> String {
+    std::env::var("CONDX_RESEND_API").unwrap_or_else(|_| "https://api.resend.com".into())
+}
+
+/// Los avisos mandados (los 50 últimos, el más nuevo primero).
+pub fn sent(state: &Shared) -> Vec<Value> {
+    state.store.probes().ok().and_then(|l| l.into_iter().find(|(k, _)| k == SENT_KEY)).and_then(|(_, v)| v.as_array().cloned()).unwrap_or_default()
+}
+
+fn record_sent(state: &Shared, item: Value) {
+    let mut list = sent(state);
+    list.insert(0, item);
+    list.truncate(50);
+    let _ = state.store.save_probe(SENT_KEY, &Value::Array(list));
+}
+
+/// El aviso que se está contestando (por el asunto, sin «Re:»), para dárselo al agente.
+fn answered_notice(state: &Shared, subject: &str) -> Option<Value> {
+    let mut s = subject.trim();
+    loop {
+        let lower = s.to_lowercase();
+        match ["re:", "fwd:", "fw:", "rv:"].iter().find(|p| lower.starts_with(*p)) {
+            Some(p) => s = s[p.len()..].trim_start(),
+            None => break,
+        }
+    }
+    sent(state).into_iter().find(|m| m["subject"].as_str() == Some(s))
 }
 
 /// Si los avisos van también por correo: siempre, o cuando ntfy no salió.
@@ -376,6 +465,15 @@ mod tests {
         assert!(modes("always", true, true));
         assert!(!modes("off", true, false));
         assert!(!modes("always", false, false));
+    }
+
+    #[test]
+    fn varios_avisos_salen_en_un_correo() {
+        assert_eq!(digest(&[]), None);
+        assert_eq!(digest(&[("A".into(), "a".into())]), Some(("A".into(), "a".into())));
+        let (subject, body) = digest(&[("Incident: dev".into(), "convex".into()), ("Incident: prod".into(), String::new())]).unwrap();
+        assert_eq!(subject, "2 Condx notices: Incident: dev");
+        assert_eq!(body, "**Incident: dev**\n\nconvex\n\n---\n\n**Incident: prod**");
     }
 
     #[test]

@@ -382,8 +382,20 @@ fn env_cmd(args: &[String]) -> Result<()> {
 fn secret_cmd(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("set") => {
-            let account = args.get(1).context("missing account (prod-deploy-key, dev-deploy-key, github-token or agentmail-key)")?;
+            let account = args.get(1).context("missing account (prod-deploy-key, dev-deploy-key, github-token, agentmail-key or resend-key)")?;
             secrets::writable_account(account)?;
+            if account == mail::RESEND_ACCOUNT {
+                eprintln!("Paste the Resend API key (sending access is enough) and press Enter (it isn't shown):");
+                let mut value = String::new();
+                std::io::stdin().read_line(&mut value)?;
+                let value = value.trim();
+                if !value.starts_with("re_") || value.contains(char::is_whitespace) {
+                    bail!("that doesn't look like a Resend API key (re_…)");
+                }
+                secrets::set(account, value)?;
+                eprintln!("Saved. Notices go through Resend once the sender is set (resendFrom in POST /api/mail).");
+                return Ok(());
+            }
             if account == mail::KEY_ACCOUNT {
                 eprintln!("Paste the AgentMail API key and press Enter (it isn't shown):");
                 let mut value = String::new();
@@ -428,7 +440,7 @@ fn secret_cmd(args: &[String]) -> Result<()> {
             println!("Borrada.");
         }
         Some("status") | None => {
-            for account in [secrets::PROD_DEPLOY_KEY, secrets::DEV_DEPLOY_KEY, secrets::BACKUP_KEY, gitflow::TOKEN_ACCOUNT, mail::KEY_ACCOUNT] {
+            for account in [secrets::PROD_DEPLOY_KEY, secrets::DEV_DEPLOY_KEY, secrets::BACKUP_KEY, gitflow::TOKEN_ACCOUNT, mail::KEY_ACCOUNT, mail::RESEND_ACCOUNT] {
                 println!("{account:<16} {}", if secrets::exists(account) { "stored" } else { "missing" });
             }
         }

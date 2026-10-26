@@ -336,7 +336,9 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         let id = p["id"].as_str().unwrap_or_default().to_string();
         let is_default = default_provider.as_deref() == Some(id.as_str());
         let kind = kinds.iter().find(|k| k["id"] == p["kind"]).and_then(|k| k["label"].as_str()).unwrap_or("?").to_string();
-        let detail = [Some(kind), p["model"].as_str().map(str::to_string), p["baseUrl"].as_str().map(str::to_string), p["keyHint"].as_str().map(|h| t!("key {h}", h = h).to_string())]
+        // Todos sus modelos (el primero es el predeterminado).
+        let models = p["models"].as_array().map(|l| l.iter().filter_map(|m| m.as_str()).collect::<Vec<_>>().join(", ")).filter(|m| !m.is_empty()).or_else(|| p["model"].as_str().map(str::to_string));
+        let detail = [Some(kind), models, p["baseUrl"].as_str().map(str::to_string), p["keyHint"].as_str().map(|h| t!("key {h}", h = h).to_string())]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
@@ -415,7 +417,8 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         .child(kind_buttons)
         .child(ui::kv(t!("Name"), Input::new(&label).small(), cx))
         .when_some(url, |c, url| c.child(ui::kv(t!("Base URL"), Input::new(&url).small(), cx)))
-        .child(ui::kv(t!("Model"), Input::new(&model).small(), cx))
+        .child(ui::kv(t!("Models"), Input::new(&model).small(), cx))
+        .child(ui::muted(t!("Several at once, separated by commas: the first one is the default; each agent can use another."), cx).text_xs())
         .when(kind["needsKey"] != false, |c| c.child(ui::kv(if needs_url { t!("API key (optional)") } else { t!("API key") }, Input::new(&key).small(), cx)))
         // Claude Code: sin clave; usa la sesión de `claude` de esta Mac (tu plan).
         .when(kind["needsKey"] == false, |c| c.child(ui::muted(t!("No API key: agents run `claude -p` with this Mac's Claude Code login (your plan). Model: sonnet, opus or a full model id."), cx).text_xs()))

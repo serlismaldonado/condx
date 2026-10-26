@@ -817,7 +817,11 @@ fn apply_keys(state: &Shared, s: &Session) -> Result<usize> {
 fn apply_settings(state: &Shared, s: &Session) -> Result<bool> {
     let Some(row) = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::SETTINGS_ROW) else { return Ok(false) };
     let Some(text) = row.row.values.get("settings").and_then(Value::as_str) else { return Ok(false) };
-    let wanted: Value = serde_json::from_str(text)?;
+    let mut wanted: Value = serde_json::from_str(text)?;
+    // Lo que la Mac suma para los teléfonos (los modelos del proveedor predeterminado) no es configuración.
+    if let Some(o) = wanted.as_object_mut() {
+        o.remove("defaultModels");
+    }
     if serde_json::to_value(crate::agents::settings(state))? != wanted {
         crate::agents::save_settings(state, &wanted)?;
         tracing::info!("site: agent settings copied from the Mac");

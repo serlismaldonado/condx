@@ -435,7 +435,10 @@ pub fn queued_items(state: &Shared, id: &str) -> Vec<Value> {
 /// Un mensaje a un hilo. Si no hay lugar para otro agente (ya trabajan tantos como el límite),
 /// espera en cola y sale solo cuando uno termina, en vez de perderse.
 pub async fn message_with(state: &Shared, id: &str, text: &str, images: &[Value]) -> Result<Value> {
-    match route(state, id, text, images).await {
+    // `[model: …]` al principio: el modelo elegido en el chat para este mensaje.
+    let (model, text) = crate::agents::take_model(text);
+    let text = text.as_str();
+    match crate::agents::MODEL_OVERRIDE.scope(model, route(state, id, text, images)).await {
         Err(e) if crate::agent_host::is_full(&e) => {
             let mut q = queue(state);
             q.push(json!({ "thread": id, "text": text.trim(), "images": images, "at": crate::store::now_ms() }));

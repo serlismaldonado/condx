@@ -436,7 +436,7 @@ pub async fn start_chat(state: &Shared, text: &str, project: Option<&str>, by: &
     let settings = crate::agents::settings(state);
     let provider_id = settings.default_provider.clone().context("choose a default provider in Settings → Agents first")?;
     let provider = state.store.agent_providers()?.into_iter().find(|p| p["id"] == provider_id.as_str()).with_context(|| format!("there's no provider “{provider_id}”"))?;
-    let model = settings.default_model.clone().filter(|m| !m.is_empty()).or_else(|| provider["model"].as_str().map(str::to_string)).filter(|m| !m.is_empty()).context("choose a model for the provider")?;
+    let model = crate::agents::model_override().or_else(|| settings.default_model.clone()).filter(|m| !m.is_empty()).or_else(|| provider["model"].as_str().map(str::to_string)).filter(|m| !m.is_empty()).context("choose a model for the provider")?;
     if settings.daily_token_budget == 0 || usage_today(state) >= settings.daily_token_budget {
         bail!("today's token budget is used up ({} of {})", usage_today(state), settings.daily_token_budget);
     }
@@ -512,9 +512,9 @@ pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str,
     let settings = crate::agents::settings(state);
     let provider_id = role.provider.clone().filter(|p| !p.is_empty()).or_else(|| settings.default_provider.clone()).context("choose a default provider in Settings → Agents first")?;
     let provider = state.store.agent_providers()?.into_iter().find(|p| p["id"] == provider_id.as_str()).with_context(|| format!("there's no provider “{provider_id}”"))?;
-    let model = role
-        .model
-        .clone()
+    // El modelo elegido en el chat para este mensaje gana al del rol.
+    let model = crate::agents::model_override()
+        .or_else(|| role.model.clone())
         .filter(|m| !m.is_empty())
         .or_else(|| if role.provider.as_deref().is_some_and(|p| !p.is_empty()) { None } else { settings.default_model.clone() })
         .or_else(|| provider["model"].as_str().map(str::to_string))

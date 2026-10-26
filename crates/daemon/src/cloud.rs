@@ -1239,7 +1239,8 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
                         if id == NEW_ROW {
                             // Un hilo nuevo: un chat con el agente, que arranca con este mensaje.
                             let by = format!("phone:{}", r.device.name);
-                            match s.rt.block_on(crate::agent_host::start_chat_with(state, &text, None, &by, &p.images)) {
+                            let (model, text) = crate::agents::take_model(&text);
+                            match s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model, crate::agent_host::start_chat_with(state, &text, None, &by, &p.images))) {
                                 Ok(run) => format!("thread {}", run["id"].as_str().unwrap_or("?")),
                                 Err(e) => format!("rejected: {e:#}"),
                             }
@@ -1524,11 +1525,26 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     }
     trows.insert(MAC_ROW.into(), mac_row);
     // El catálogo de agentes (encendidos), para llamarlos a cualquier hilo con @ desde el teléfono.
-    let mut agents: Vec<Value> = crate::roles::list(state).into_iter().filter(|r| r.enabled).map(|r| json!({ "id": r.id, "name": r.name, "logo": crate::agents::logo_for(state, r.provider.as_deref()) })).collect();
+    // Con su modelo y los de su proveedor (el teléfono deja elegir otro para un mensaje).
+    let settings = crate::agents::settings(state);
+    let providers = state.store.agent_providers().unwrap_or_default();
+    let provider_of = |id: Option<&str>| providers.iter().find(|p| Some(p["id"].as_str().unwrap_or("")) == id.filter(|i| !i.is_empty()).or(settings.default_provider.as_deref())).cloned().unwrap_or(Value::Null);
+    let mut agents: Vec<Value> = crate::roles::list(state)
+        .into_iter()
+        .filter(|r| r.enabled)
+        .map(|r| {
+            let p = provider_of(r.provider.as_deref());
+            let own = r.provider.as_deref().is_some_and(|x| !x.is_empty());
+            let model = r.model.clone().filter(|m| !m.is_empty()).or_else(|| if own { None } else { settings.default_model.clone() }).or_else(|| p["model"].as_str().map(str::to_string));
+            json!({ "id": r.id, "name": r.name, "logo": crate::agents::logo_for(state, r.provider.as_deref()), "model": model, "models": crate::agents::models_of(&p) })
+        })
+        .collect();
     // Y los agentes externos conectados por el MCP (Claude Code, Codex…): también se los menciona.
     agents.extend(crate::connections::list().iter().map(|c| json!({ "id": c.handle(), "name": c.name, "logo": c.logo(), "external": true })));
     trows.insert(AGENTS_ROW.into(), obj(json!({ "title": "agents", "participants": serde_json::to_string(&agents).unwrap_or_default() })));
-    trows.insert(SETTINGS_ROW.into(), obj(json!({ "title": "settings", "settings": serde_json::to_string(&crate::agents::settings(state)).unwrap_or_default() })));
+    let mut settings_v = serde_json::to_value(&settings).unwrap_or_default();
+    settings_v["defaultModels"] = json!(crate::agents::models_of(&provider_of(None)));
+    trows.insert(SETTINGS_ROW.into(), obj(json!({ "title": "settings", "settings": settings_v.to_string() })));
     trows.insert(DEVICES_ROW.into(), obj(json!({ "title": "devices", "devices": serde_json::to_string(&trusted_devices()).unwrap_or_default() })));
     if now_ms() - s.catalog_built.0 > 60_000 {
         s.catalog_built = (now_ms(), catalog(state));

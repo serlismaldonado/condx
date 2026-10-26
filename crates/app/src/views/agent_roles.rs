@@ -197,6 +197,26 @@ fn editor(app: &mut DevtoolApp, data: &Value, providers: &Value, window: &mut Wi
         let logo = p["logo"].as_str().unwrap_or("").to_string();
         provs = provs.child(h_flex().gap_1().items_center().children(crate::logos::badge(&logo, 18., cx)).child(set(ui::txt(&p["label"]).to_string(), format!("role-prov-{id}"), draft["provider"] == id.as_str(), "provider", json!(id), cx)));
     }
+    // Los modelos del proveedor del agente (el suyo o el predeterminado): elegir uno lo pone en el campo.
+    let default_provider = app.agents.as_ref().and_then(|a| a["settings"]["defaultProvider"].as_str().map(str::to_string)).unwrap_or_default();
+    let prov_id = draft["provider"].as_str().filter(|p| !p.is_empty()).map(str::to_string).unwrap_or(default_provider);
+    let prov = providers.as_array().and_then(|ps| ps.iter().find(|p| p["id"] == prov_id.as_str()).cloned()).unwrap_or(Value::Null);
+    let mut model_list: Vec<String> = prov["models"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(str::to_string)).collect();
+    if model_list.is_empty() {
+        model_list.extend(prov["model"].as_str().map(str::to_string));
+    }
+    let typed = model.read(cx).value().trim().to_string();
+    let mut model_chips = h_flex().gap_1().flex_wrap();
+    for m in model_list {
+        let pick = m.clone();
+        let b = Button::new(SharedString::from(format!("role-model-{m}"))).xsmall().label(m.clone()).on_click(cx.listener(move |this, _, window, cx| {
+            if let Some(input) = this.inputs.get("role-model").cloned() {
+                input.update(cx, |s, cx| s.set_value(pick.clone(), window, cx));
+            }
+            cx.notify();
+        }));
+        model_chips = model_chips.child(ui::brand_if(typed == m, b, cx));
+    }
     let mut tools = h_flex().gap_1().flex_wrap();
     for tool in data["tools"].as_array().cloned().unwrap_or_default() {
         let tool = tool.as_str().unwrap_or_default();
@@ -225,7 +245,7 @@ fn editor(app: &mut DevtoolApp, data: &Value, providers: &Value, window: &mut Wi
             .child(ui::kv(t!("Result"), Input::new(&output).small(), cx))
             .child(ui::muted(t!("Fields and their type: string, boolean, number, list, or the options separated by | (low|medium|high). Empty: free text."), cx).text_xs())
             .child(ui::kv(t!("Provider"), provs, cx))
-            .child(ui::kv(t!("Model"), Input::new(&model).small(), cx))
+            .child(ui::kv(t!("Model"), v_flex().gap_1().child(model_chips).child(Input::new(&model).small()), cx))
             .child(ui::kv(t!("Tools"), tools, cx))
             .child(ui::muted(t!("None selected: all the tools of its mode."), cx).text_xs())
             .child(ui::kv(t!("Tokens per run"), tokens, cx))

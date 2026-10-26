@@ -108,6 +108,39 @@ pub fn save_settings(state: &Shared, body: &Value) -> Result<Settings> {
     Ok(s)
 }
 
+tokio::task_local! {
+    /// El modelo que la persona eligió para este mensaje (en el chat), si eligió uno.
+    pub static MODEL_OVERRIDE: Option<String>;
+}
+
+/// `[model: opus] hola` → (`opus`, `hola`): el modelo elegido para este mensaje, al principio.
+pub fn take_model(text: &str) -> (Option<String>, String) {
+    let t = text.trim_start();
+    if let Some(rest) = t.strip_prefix("[model:") {
+        if let Some((m, after)) = rest.split_once(']') {
+            let m = m.trim();
+            if !m.is_empty() && m.len() <= 120 && m.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:/@".contains(c)) {
+                return (Some(m.to_string()), after.trim_start().to_string());
+            }
+        }
+    }
+    (None, text.to_string())
+}
+
+/// El modelo elegido para el mensaje que se atiende ahora (ver `MODEL_OVERRIDE`).
+pub fn model_override() -> Option<String> {
+    MODEL_OVERRIDE.try_with(|m| m.clone()).ok().flatten()
+}
+
+/// Los modelos de un proveedor: los que se guardaron (`models`) o el único (`model`).
+pub fn models_of(provider: &Value) -> Vec<String> {
+    let list: Vec<String> = provider["models"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(str::to_string)).filter(|m| !m.is_empty()).collect();
+    if !list.is_empty() {
+        return list;
+    }
+    provider["model"].as_str().filter(|m| !m.is_empty()).map(|m| vec![m.to_string()]).unwrap_or_default()
+}
+
 /// Un tipo de proveedor de pi-ai: id, nombre, si pide URL base y un modelo sugerido.
 pub struct Kind {
     pub id: &'static str,
@@ -270,13 +303,16 @@ pub fn upsert_provider(state: &Shared, body: ProviderBody, seal_to: &dyn Fn(&str
         (None, None) if k.needs_base_url || k.id == CLAUDE_CODE => (Value::Null, Value::Null),
         (None, None) => bail!("{} needs an API key", k.label),
     };
+    let models: Vec<String> = body.model.as_deref().unwrap_or("").split([',', '\n']).map(str::trim).filter(|m| !m.is_empty()).map(str::to_string).collect();
     let now = crate::store::now_ms();
     let p = json!({
         "id": id,
         "kind": k.id,
         "label": label,
         "baseUrl": base_url,
-        "model": body.model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).unwrap_or_else(|| k.model.to_string()),
+        // Varios modelos a la vez (separados por coma o renglón): el primero es el predeterminado.
+        "model": models.first().cloned().unwrap_or_else(|| k.model.to_string()),
+        "models": if models.is_empty() { json!([k.model]) } else { json!(models) },
         "sealedKey": sealed,
         "keyHint": key_hint,
         "createdAt": existing.as_ref().map(|e| e["createdAt"].clone()).unwrap_or(json!(now)),
@@ -598,3 +634,18 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod model_pick_tests {
+    use super::*;
+
+    #[test]
+    fn el_modelo_elegido_va_al_principio_del_mensaje() {
+        assert_eq!(take_model("[model: opus] hola"), (Some("opus".into()), "hola".into()));
+        assert_eq!(take_model("  [model:claude-sonnet-5-5]   @risk mira esto"), (Some("claude-sonnet-5-5".into()), "@risk mira esto".into()));
+        assert_eq!(take_model("hola [model: opus]"), (None, "hola [model: opus]".into()));
+        assert_eq!(take_model("[model: rm -rf] x"), (None, "[model: rm -rf] x".into()));
+        assert_eq!(models_of(&json!({ "model": "a", "models": ["a", "b"] })), vec!["a", "b"]);
+        assert_eq!(models_of(&json!({ "model": "a" })), vec!["a"]);
+    }
+}

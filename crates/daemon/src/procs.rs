@@ -72,7 +72,9 @@ pub fn pid_alive(pid: u32) -> bool {
 pub async fn http_ok(url: String) -> bool {
     tokio::task::spawn_blocking(move || {
         let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build();
-        agent.get(&url).call().is_ok() || (url.contains("://127.0.0.1:") && agent.get(&url.replacen("://127.0.0.1:", "://[::1]:", 1)).call().is_ok())
+        // Cualquier respuesta HTTP cuenta (una página con error 500 igual está levantada).
+        let up = |u: &str| matches!(agent.get(u).call(), Ok(_) | Err(ureq::Error::Status(..)));
+        up(&url) || (url.contains("://127.0.0.1:") && up(&url.replacen("://127.0.0.1:", "://[::1]:", 1)))
     })
     .await
     .unwrap_or(false)

@@ -28,6 +28,7 @@ mod notify;
 mod outcomes;
 mod procs;
 mod projects;
+mod promote;
 mod frontend;
 mod functions;
 mod gitflow;

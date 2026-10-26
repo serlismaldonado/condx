@@ -330,8 +330,14 @@ fn run_services(state: &Shared, s: &mut Session, mac_away: bool) {
         Err(e) => format!("rejected: {e}"),
         Ok(req) => {
             let ask: Value = serde_json::from_str(&req.arg).unwrap_or(Value::Null);
+            let by = format!("phone:{}", req.device.name);
             match ask["service"].as_object() {
-                None => "rejected: the Mac is off; from the cloud site only local services can be started or stopped".into(),
+                // Pasar a producción por fusión: también con la Mac apagada (solo GitHub).
+                None if ask["promote"].is_object() => match crate::projects::get(state, ask["promote"]["project"].as_str()).and_then(|p| crate::promote::merge(&p.repo, &by)) {
+                    Ok(done) => format!("{done} (cloud site)"),
+                    Err(e) => format!("rejected: {e:#}"),
+                },
+                None => "rejected: the Mac is off; from the cloud site only services and passing to production can be asked".into(),
                 Some(svc) => {
                     let name = svc.get("name").and_then(Value::as_str).unwrap_or_default();
                     let action = svc.get("action").and_then(Value::as_str).unwrap_or_default();

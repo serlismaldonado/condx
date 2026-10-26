@@ -162,6 +162,8 @@ pub async fn overview(state: &Shared) -> Value {
             "attention": o["attention"].as_array().into_iter().flatten().take(6).map(|a| clip(a, 200)).collect::<Vec<_>>(),
             "services": services,
             "envs": envs,
+            // Pasar a producción por fusión (dev → main en GitHub): qué entraría y su CI.
+            "promote": crate::promote::preview_cached(&p.repo),
             "target": if cloud { crate::services::cloud_dev(state, &p).ok().map(|e| json!({ "env": e.name, "deployment": e.convex_deployment })).unwrap_or(Value::Null) } else { Value::Null },
         }));
     }
@@ -211,6 +213,13 @@ fn run_request(state: &Shared, s: &Session, row: &Values, devices: &[TrustedDevi
         };
     }
     let _rt = s.rt.enter();
+    // Pasar a producción: fusionar dev en main por GitHub (el despliegue lo hace el repo o Vercel).
+    if let Some(pr) = ask["promote"].as_object() {
+        return match crate::projects::get(state, pr.get("project").and_then(Value::as_str)).and_then(|p| crate::promote::merge(&p.repo, &by)) {
+            Ok(done) => done,
+            Err(e) => format!("rejected: {e:#}"),
+        };
+    }
     // Subir la rama en la que trabaja la Mac (sus commits) para seguir en la nube desde ahí. Las
     // ramas principales no: esas se suben a mano o por un flujo.
     if let Some(h) = ask["handoff"].as_object() {

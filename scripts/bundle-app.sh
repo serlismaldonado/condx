@@ -36,5 +36,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --sign - "$APP" >/dev/null
+# Con la identidad estable (scripts/create-signing-cert.sh) si existe; si no, ad hoc.
+SIGN_ID="${CONDX_SIGN_IDENTITY:-Condx Dev}"
+if security find-identity -v -p codesigning | grep -q "\"$SIGN_ID\""; then
+  codesign --force --sign "$SIGN_ID" "$APP" >/dev/null
+else
+  codesign --force --sign - "$APP" >/dev/null
+fi
 echo "Listo: $APP"

@@ -407,6 +407,20 @@ const LABEL: &str = "dev.condx.daemon";
 /// Servicio de antes del renombre: se detiene y se borra al instalar o desinstalar.
 const LEGACY_LABEL: &str = "com.heskala.devd";
 
+/// Firma el binario con la identidad estable (`CONDX_SIGN_IDENTITY`, por defecto «Condx Dev»; la
+/// crea `scripts/create-signing-cert.sh`): así el «Permitir siempre» del Llavero sigue valiendo
+/// después de cada actualización. Sin esa identidad queda la firma ad hoc del compilador.
+fn sign(path: &std::path::Path) {
+    let identity = std::env::var("CONDX_SIGN_IDENTITY").unwrap_or_else(|_| "Condx Dev".into());
+    let found = std::process::Command::new("security").args(["find-identity", "-v", "-p", "codesigning"]).output().map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{identity}\""))).unwrap_or(false);
+    if !found {
+        println!("No “{identity}” signing identity: macOS will ask again for the Keychain after each update (see docs/signing.md).");
+        return;
+    }
+    let ok = std::process::Command::new("codesign").args(["--force", "--sign", &identity, "--identifier", "dev.condx.daemon"]).arg(path).status().map(|s| s.success()).unwrap_or(false);
+    println!("{}", if ok { format!("Signed with “{identity}”.") } else { format!("Couldn't sign with “{identity}”: it keeps the ad hoc signature.") });
+}
+
 fn launchd(install: bool) -> Result<()> {
     let agents = dirs::home_dir().unwrap().join("Library/LaunchAgents");
     let plist = agents.join(format!("{LABEL}.plist"));
@@ -431,6 +445,7 @@ fn launchd(install: bool) -> Result<()> {
     let exe = bin_dir.join("condxd");
     let tmp = bin_dir.join("condxd.new");
     std::fs::copy(std::env::current_exe()?, &tmp)?;
+    sign(&tmp);
     std::fs::rename(&tmp, &exe)?;
     // Nombre viejo como enlace: los MCP ya registrados lo llaman así.
     let legacy = bin_dir.join("heskala-devd");

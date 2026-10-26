@@ -11,6 +11,9 @@
 //   ~/.condx/daemon/bin), así macOS no pide permiso en cada lectura.
 // - Antes el servicio se llamaba `condxd`: si falta en `condx`, se lee del viejo
 //   y se copia (macOS pide permiso una vez, porque el binario cambió).
+// - Pruebas sin Llavero: con `CONDX_KEYCHAIN=file:<ruta>` (o con `CONDX_HOME` y sin
+//   `CONDX_KEYCHAIN`) los secretos van a un archivo JSON 0600. Un daemon de prueba
+//   recompilado no hace que macOS pida la contraseña (y no se traba esperándola).
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -35,6 +38,26 @@ fn service() -> String {
     override_service().unwrap_or_else(|| "condx".into())
 }
 
+/// El archivo de secretos de las pruebas, si corresponde (ver arriba).
+fn test_file() -> Option<PathBuf> {
+    match override_service() {
+        Some(s) => s.strip_prefix("file:").map(PathBuf::from),
+        None => devtool_core::paths::var(&["CONDX_HOME", "HESKALA_DEVD_HOME"]).map(|h| PathBuf::from(h).join("test-secrets.json")),
+    }
+}
+
+fn file_map(path: &Path) -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn file_save(path: &Path, map: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(map)?)?;
+    crate::auth::restrict(path)
+}
+
 fn entry(account: &str) -> Result<keyring::Entry> {
     keyring::Entry::new(&service(), account).map_err(|e| anyhow!("Keychain: {e}"))
 }
@@ -48,6 +71,9 @@ fn read(entry: &keyring::Entry, account: &str) -> Result<Option<String>> {
 }
 
 pub fn get(account: &str) -> Result<Option<String>> {
+    if let Some(path) = test_file() {
+        return Ok(file_map(&path).get(account).and_then(|v| v.as_str()).map(str::to_string));
+    }
     if let Some(v) = read(&entry(account)?, account)? {
         return Ok(Some(v));
     }
@@ -61,10 +87,20 @@ pub fn get(account: &str) -> Result<Option<String>> {
 }
 
 pub fn set(account: &str, value: &str) -> Result<()> {
+    if let Some(path) = test_file() {
+        let mut map = file_map(&path);
+        map.insert(account.into(), value.into());
+        return file_save(&path, &map);
+    }
     entry(account)?.set_password(value).map_err(|e| anyhow!("Keychain ({account}): {e}"))
 }
 
 pub fn delete(account: &str) -> Result<()> {
+    if let Some(path) = test_file() {
+        let mut map = file_map(&path);
+        map.remove(account);
+        return file_save(&path, &map);
+    }
     match entry(account)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(anyhow!("Keychain ({account}): {e}")),
@@ -206,5 +242,19 @@ mod deploy_tests {
         let err = super::check_deploy_key(&dev, "dev:other-dog-2|SECRET").unwrap_err().to_string();
         assert!(!err.contains("SECRET"));
         assert_eq!(super::deploy_account(&dev), "deploy-key:dev");
+    }
+}
+
+#[cfg(test)]
+mod file_tests {
+    #[test]
+    fn las_pruebas_guardan_en_un_archivo_0600() {
+        let path = std::env::temp_dir().join(format!("condx-secrets-test-{}.json", std::process::id()));
+        let map = serde_json::Map::from_iter([("a".to_string(), serde_json::json!("1"))]);
+        super::file_save(&path, &map).unwrap();
+        assert_eq!(super::file_map(&path)["a"], "1");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_file(&path);
     }
 }

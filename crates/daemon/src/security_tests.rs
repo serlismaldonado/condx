@@ -102,6 +102,7 @@ async fn el_token_de_agentes_no_aprueba_ni_toca_reglas_ni_claves() {
         (Method::POST, "/api/agent-runs/run-x/discard", json!({})),
         (Method::POST, "/api/incidents/inc-x/fix", json!({})),
         (Method::POST, "/api/agent-chats", json!({ "text": "hi" })),
+        (Method::POST, "/api/threads/r1/message", json!({ "text": "hi" })),
         (Method::POST, "/api/agents/roles", json!({ "name": "x" })),
         (Method::POST, "/api/agents/roles/reset", json!({})),
         (Method::DELETE, "/api/agents/roles/triage", json!({})),
@@ -182,7 +183,7 @@ async fn el_token_de_los_agentes_solo_lee_por_el_mcp_y_solo_lo_operativo() {
     let host = format!("127.0.0.1:{PORT}");
     let agent = "agent-token-for-tests";
     // Ninguna ruta de la API, ni siquiera las de lectura.
-    for path in ["/api/overview", "/api/environments/dev/documents?table=users", "/api/agents", "/api/incidents", "/api/agent-runs"] {
+    for path in ["/api/overview", "/api/environments/dev/documents?table=users", "/api/agents", "/api/incidents", "/api/agent-runs", "/api/threads"] {
         let (status, res) = call(Method::GET, path, &host, Some(agent), None).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {res}");
     }

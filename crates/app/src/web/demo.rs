@@ -97,6 +97,14 @@ pub fn get(path: &str) -> Result<Value> {
             { "id": "reviewer", "name": "Reviewer", "enabled": true, "mode": "read", "instructions": "You review a fix another agent made.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": { "verdict": "approve|changes", "findings": "list" }, "builtin": true },
             { "id": "explainer", "name": "Explainer", "enabled": true, "mode": "read", "instructions": "You answer the developer's questions.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": {}, "builtin": true },
         ], "tools": ["read_file", "list_files", "search_code", "git_log", "git_show", "condx", "edit_file", "write_file", "run_check"] }),
+        ["threads"] => json!({ "runs": [
+            { "id": "r-w-triage", "kind": "flow", "title": "Triage an error, notify if risky · Uncaught Error in payments:charge", "status": "waiting-answer", "startedAt": now() - 25 * MIN, "usage": 21_840 },
+            { "id": "chat-demo-1", "kind": "chat", "title": "Which functions does the mobile app call?", "incident": null, "mode": "chat", "status": "done", "model": "claude-sonnet-5-5", "startedAt": now() - 40 * MIN, "usage": 9_310 },
+            { "id": "run-demo-1", "kind": "incident", "title": "Vercel deploy of fix/date-picker failed", "incident": "inc-1", "mode": "diagnose", "status": "done", "model": "claude-sonnet-5-5", "startedAt": now() - 45 * MIN, "usage": 18_420 },
+        ] }),
+        ["threads", "r-w-triage"] => demo_thread(),
+        ["threads", "chat-demo-1"] => demo_chat(),
+        ["threads", _] => demo_run(),
         ["agent-runs"] => json!({ "runs": [
             { "id": "chat-demo-1", "kind": "chat", "title": "Which functions does the mobile app call?", "incident": null, "mode": "chat", "status": "done", "model": "claude-sonnet-5-5", "startedAt": now() - 20 * MIN, "usage": 9_310 },
             { "id": "run-demo-1", "kind": "incident", "title": "Vercel deploy of fix/date-picker failed", "incident": "inc-1", "mode": "diagnose", "status": "done", "model": "claude-sonnet-5-5", "startedAt": now() - 45 * MIN, "usage": 18_420 },
@@ -165,6 +173,7 @@ pub fn post(path: &str, body: Value) -> Result<Value> {
             json!({ "id": "run-demo-1", "status": "done" })
         }),
         ["agent-chats"] => demo_chat(),
+        ["threads", _, "message"] => json!({ "to": "explainer" }),
         ["agent-runs", "chat-demo-1", _] => demo_chat(),
         ["agent-runs", _, _] => demo_run(),
         ["incidents", id, action] => with(|s| {
@@ -231,6 +240,30 @@ fn demo_run() -> Value {
             { "role": "assistant", "text": "→ git_show({\"commit\":\"51d0aa2\",\"stat_only\":true})" },
             { "role": "tool", "tool": "git_show", "text": "fix: date picker in Safari\n package.json | 2 +-" },
             { "role": "assistant", "text": demo_answer() },
+        ],
+    })
+}
+
+fn demo_thread() -> Value {
+    let t = now() - 25 * MIN;
+    json!({
+        "id": "r-w-triage", "thread": true, "kind": "flow", "title": "Triage an error, notify if risky", "workflowId": "w-triage", "status": "waiting-answer", "waitingAnswer": true,
+        "event": { "source": "convex-error", "env": DEV, "title": "Uncaught Error in payments:charge" },
+        "usage": { "total": 21_840 },
+        "participants": [
+            { "node": "triage", "role": "triage", "name": "Triage", "run": "r-w-triage-triage", "status": "done" },
+            { "node": "risk", "role": "risk", "name": "Risk", "run": "r-w-triage-risk", "status": "done" },
+            { "node": "explainer", "role": "explainer", "name": "Explainer", "run": "r-w-triage-explainer", "status": null },
+        ],
+        "items": [
+            { "at": t, "kind": "system", "text": "convex-error started it (Triage an error, notify if risky)" },
+            { "at": t, "kind": "event", "event": { "source": "convex-error", "env": DEV, "title": "Uncaught Error in payments:charge", "error": "TypeError: Cannot read properties of null (reading 'last4')\n    at charge (convex/payments.ts:40:22)" } },
+            { "at": t + 60_000, "kind": "agent", "author": "Triage", "node": "triage", "text": "`charge` reads `card.last4` without checking that the user has a saved card (convex/payments.ts:40). It started with commit 51d0aa2, which made the card optional.", "result": { "summary": "payments:charge throws when the card is null", "where": "convex/payments.ts:40", "likely_cause": "missing null check on card", "confidence": "high" } },
+            { "at": t + 120_000, "kind": "agent", "author": "Risk", "node": "risk", "text": "Every checkout without a saved card fails, in production too once 51d0aa2 is promoted.", "result": { "risk": "high", "impact": "checkout fails for users without a saved card", "check": "convex/payments.ts:40; users without cards in prod", "immediate_fix": "true", "reason": "main flow broken" } },
+            { "at": t + 125_000, "kind": "system", "status": "succeeded", "text": "Urgent notice: Risk high: payments:charge throws when the card is null" },
+            { "at": t + 130_000, "kind": "user", "text": "@risk is production affected right now?", "to": "Risk" },
+            { "at": t + 150_000, "kind": "reply", "author": "Risk", "text": "Not yet: prod runs `7c1e93b`, before 51d0aa2. It will be when you promote it, so fix it first." },
+            { "at": t + 160_000, "kind": "question", "node": "ask", "text": "Risk high: payments:charge throws when the card is null. Prepare a fix now?" },
         ],
     })
 }

@@ -578,6 +578,32 @@ async fn post_notify_test(AxState(state): AxState<Shared>, Extension(client): Ex
 }
 
 /// Una corrida de agente con su transcripción (si el host la tiene).
+async fn get_threads(AxState(state): AxState<Shared>) -> Response {
+    match crate::threads::list(&state) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+async fn get_thread(AxState(state): AxState<Shared>, Path(id): Path<String>) -> Response {
+    match crate::threads::get(&state, &id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::NOT_FOUND, e),
+    }
+}
+
+/// Escribir en un hilo (a un agente, a la pregunta que espera, o al Explicador): solo la app.
+async fn post_thread_message(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Path(id): Path<String>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let text = body["text"].as_str().unwrap_or_default().chars().take(4_000).collect::<String>();
+    match crate::threads::message(&state, &id, &text).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
 async fn get_agent_runs(AxState(state): AxState<Shared>) -> Response {
     match crate::agent_host::list(&state) {
         Ok(v) => Json(v).into_response(),
@@ -1171,6 +1197,9 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agents/roles/reset", post(post_agent_roles_reset))
         .route("/api/agents/roles/{id}", delete(delete_agent_role))
         .route("/api/agent-runs", get(get_agent_runs))
+        .route("/api/threads", get(get_threads))
+        .route("/api/threads/{id}", get(get_thread))
+        .route("/api/threads/{id}/message", post(post_thread_message))
         .route("/api/agent-chats", post(post_agent_chat))
         .route("/api/agent-runs/{id}", get(get_agent_run))
         .route("/api/notify", get(get_notify).post(post_notify))

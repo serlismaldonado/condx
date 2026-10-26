@@ -39,6 +39,7 @@ fn kind_label(kind: &str) -> &'static str {
         "check" => t!("Check"),
         "notify" => t!("Notice"),
         "agent" => t!("Agent"),
+        "ask" => t!("Ask me"),
         _ => t!("Node"),
     }
 }
@@ -48,6 +49,7 @@ fn status_label(s: &str) -> &'static str {
         "pending" => t!("pending"),
         "running" => t!("running"),
         "waiting-approval" => t!("waiting for approval"),
+        "waiting-answer" => t!("waiting for your answer"),
         "succeeded" => t!("done"),
         "failed" => t!("failed"),
         "skipped" => t!("skipped"),
@@ -62,7 +64,7 @@ fn status_color(s: &str, cx: &App) -> Hsla {
     match s {
         "succeeded" => t.success,
         "failed" => t.danger,
-        "running" | "waiting-approval" => t.warning,
+        "running" | "waiting-approval" | "waiting-answer" => t.warning,
         "cancelled" | "skipped" => t.muted_foreground,
         _ => Tokens::current(cx).subtle,
     }
@@ -168,6 +170,7 @@ impl DevtoolApp {
             "approval" => json!({ "env": "", "level": "simple", "message": "" }),
             "check" => json!({ "check": "env-reachable", "env": "" }),
             "agent" => json!({ "agent": "", "instructions": "" }),
+            "ask" => json!({ "question": "" }),
             _ => json!({ "message": "" }),
         };
         // Aparece cerca del centro de lo que se ve, corrido un poco por cada nodo.
@@ -325,6 +328,7 @@ fn canvas_el(app: &DevtoolApp, d: Value, run: Option<Value>, cx: &mut Context<De
                         "wait" => t.subtle,
                         "check" => t.muted,
                         "agent" => rgb(0x60a5fa).into(),
+                        "ask" => t.accent,
                         _ => t.accent_ink.opacity(0.6),
                     };
                     window.paint_quad(fill(Bounds::new(r.origin + point(px(1.), px(1.)), size(px(4. * z), px(NODE_H * z - 2.))), stripe));
@@ -483,7 +487,7 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
     let sv = |k: &str| p[k].as_str().map(str::to_string).unwrap_or_else(|| if p[k].is_null() { String::new() } else { p[k].to_string() });
     let title = field(app, format!("wf-{id}-title"), node["title"].as_str().unwrap_or_default().to_string(), window, cx);
     // En un nodo agente, el mismo campo son sus instrucciones para este flujo.
-    let message = field(app, format!("wf-{id}-message"), sv(if node["kind"] == "agent" { "instructions" } else { "message" }), window, cx);
+    let message = field(app, format!("wf-{id}-message"), sv(match node["kind"].as_str() { Some("agent") => "instructions", Some("ask") => "question", _ => "message" }), window, cx);
     let minutes = field(app, format!("wf-{id}-minutes"), sv("minutes"), window, cx);
     let hours = field(app, format!("wf-{id}-hours"), sv("hours"), window, cx);
     // Una entrada por arista que llega aquí, con su condición.
@@ -623,6 +627,11 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
                     .child(row(t!("Instructions for this flow"), Input::new(&message).small().into_any_element(), cx))
                     .child(ui::muted(t!("It reads the event that started the flow and the results of the nodes connected to it."), cx).text_xs());
             }
+            "ask" => {
+                body = body
+                    .child(row(t!("Question"), Input::new(&message).small().into_any_element(), cx))
+                    .child(ui::muted(t!("The run stops here and asks you in its thread (Agents) and on the phone. Your answer is {node.<id>.answer}, for the conditions and agents after it."), cx).text_xs());
+            }
             "notify" => {
                 body = body
                     .child(row(t!("Message"), Input::new(&message).small().into_any_element(), cx))
@@ -714,6 +723,7 @@ pub fn open_node_sheet(app: &mut DevtoolApp, id: String, window: &mut Window, cx
                                         }
                                     }
                                     "agent" => n["params"]["instructions"] = json!(message),
+                                    "ask" => n["params"]["question"] = json!(message),
                                     _ => n["params"]["message"] = json!(message),
                                 }
                             }
@@ -1040,7 +1050,7 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
     };
     let wid = draft["id"].as_str().unwrap_or_default().to_string();
     let run_detail = app.wf_run_sel.as_ref().and_then(|rid| app.wf_runs.iter().find(|r| r["id"] == rid.as_str()).cloned());
-    let active_run = app.wf_runs.iter().find(|r| matches!(r["status"].as_str(), Some("running" | "waiting-approval"))).cloned();
+    let active_run = app.wf_runs.iter().find(|r| matches!(r["status"].as_str(), Some("running" | "waiting-approval" | "waiting-answer"))).cloned();
     let dirty = app.wf_dirty;
     let enabled = draft["enabled"] != false;
 
@@ -1064,6 +1074,7 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
         .child(palette("wf-add-check", "check", t!("Check"), cx))
         .child(palette("wf-add-notify", "notify", t!("Notice"), cx))
         .child(palette("wf-add-agent", "agent", t!("Agent"), cx))
+        .child(palette("wf-add-ask", "ask", t!("Ask me"), cx))
         .child(div().flex_1())
         .when(dirty, |d| {
             d.child(Button::new("wf-discard").xsmall().ghost().label(t!("Discard")).on_click(cx.listener(|this, _, _, cx| {
@@ -1199,7 +1210,18 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
                 this.wf_run_sel = Some(r_sel.clone());
                 cx.notify();
             }));
-        if matches!(st.as_str(), "running" | "waiting-approval") {
+        // Las corridas con agentes tienen su hilo (página Agentes).
+        let has_agents = r["snapshot"]["nodes"].as_array().is_some_and(|l| l.iter().any(|n| matches!(n["kind"].as_str(), Some("agent" | "ask"))));
+        if has_agents {
+            let thread = rid.clone();
+            line = line.child(Button::new(SharedString::from(format!("wf-thread-{rid}"))).xsmall().ghost().label(if st == "waiting-answer" { t!("Answer in its thread") } else { t!("Thread") }).on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.chat_open = Some(thread.clone());
+                this.chat = None;
+                this.open_page(Page::Agents, window, cx);
+            })));
+        }
+        if matches!(st.as_str(), "running" | "waiting-approval" | "waiting-answer") {
             if st == "waiting-approval" {
                 line = line.child(ui::brand(Button::new(SharedString::from(format!("wf-approve-{rid}"))).xsmall().icon(IconName::Check).label(t!("Go approve")).on_click(cx.listener(|this, _, _, cx| {
                     cx.stop_propagation();
@@ -1324,7 +1346,7 @@ fn env_card(e: &Value, cx: &mut Context<DevtoolApp>) -> Div {
     let name = ui::txt(&w["name"]);
     let problems: Vec<String> = e["problems"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(str::to_string)).collect();
     let last = &e["lastRun"];
-    let active = matches!(last["status"].as_str(), Some("running" | "waiting-approval"));
+    let active = matches!(last["status"].as_str(), Some("running" | "waiting-approval" | "waiting-answer"));
 
     // Los pasos en orden, cada uno con el estado que tuvo en la última corrida.
     let titles: std::collections::HashMap<&str, String> = w["nodes"].as_array().into_iter().flatten().filter_map(|n| Some((n["id"].as_str()?, ui::txt(&n["title"]).to_string()))).collect();

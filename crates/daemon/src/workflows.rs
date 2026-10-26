@@ -40,6 +40,9 @@ pub enum NodeKind {
     /// Un agente del catálogo (roles.rs): `{agent, input: [ids de nodos], instructions}`. Su
     /// resultado (validado) son las salidas del nodo.
     Agent,
+    /// Pregunta a la persona en el hilo de la corrida y espera su respuesta: `{question}`. La
+    /// respuesta queda en `{node.<id>.answer}`.
+    Ask,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -107,6 +110,7 @@ pub enum NodeStatus {
     Pending,
     Running,
     WaitingApproval,
+    WaitingAnswer,
     Succeeded,
     Failed,
     Skipped,
@@ -135,6 +139,7 @@ pub struct NodeRun {
 pub enum RunStatus {
     Running,
     WaitingApproval,
+    WaitingAnswer,
     Succeeded,
     Failed,
     Cancelled,
@@ -145,6 +150,7 @@ impl RunStatus {
         match self {
             RunStatus::Running => "running",
             RunStatus::WaitingApproval => "waiting-approval",
+            RunStatus::WaitingAnswer => "waiting-answer",
             RunStatus::Succeeded => "succeeded",
             RunStatus::Failed => "failed",
             RunStatus::Cancelled => "cancelled",
@@ -283,6 +289,11 @@ pub fn problems(w: &Workflow, envs: &HashSet<String>, recipe_exists: impl Fn(&st
             NodeKind::Agent => {
                 if s(n, "agent").is_empty() {
                     out.push(format!("“{t}”: choose an agent"));
+                }
+            }
+            NodeKind::Ask => {
+                if s(n, "question").is_empty() {
+                    out.push(format!("“{t}”: write the question"));
                 }
             }
         }
@@ -576,7 +587,7 @@ pub fn start_with(state: &Shared, workflow_id: &str, commit: &str, by: &str, eve
         bail!("“{}” is turned off: turn it on in Condx (Workflows) to run it", w.name);
     }
     check_daemon(state, &w)?;
-    if state.store.runs(Some(workflow_id), &["running", "waiting-approval"], 1)?.into_iter().next().is_some() {
+    if state.store.runs(Some(workflow_id), &["running", "waiting-approval", "waiting-answer"], 1)?.into_iter().next().is_some() {
         bail!("“{}” already has a run in progress", w.name);
     }
     let order = topo_order(&w)?;
@@ -604,14 +615,14 @@ pub fn start_with(state: &Shared, workflow_id: &str, commit: &str, by: &str, eve
 
 pub fn cancel(state: &Shared, run_id: &str, by: &str) -> Result<Run> {
     let mut run = load_run(state, run_id)?;
-    if !matches!(run.status, RunStatus::Running | RunStatus::WaitingApproval) {
+    if !matches!(run.status, RunStatus::Running | RunStatus::WaitingApproval | RunStatus::WaitingAnswer) {
         bail!("the run already finished");
     }
     if let Some(tx) = cancels().lock().unwrap().get(run_id) {
         let _ = tx.send(true);
     }
     // El trabajo en curso también se cancela (o se rechaza si esperaba aprobación).
-    for nr in run.nodes.iter_mut().filter(|n| matches!(n.status, NodeStatus::Running | NodeStatus::WaitingApproval)) {
+    for nr in run.nodes.iter_mut().filter(|n| matches!(n.status, NodeStatus::Running | NodeStatus::WaitingApproval | NodeStatus::WaitingAnswer)) {
         if let Some(job) = &nr.job {
             let _ = jobs::cancel(state, job, by);
         }
@@ -647,7 +658,7 @@ pub fn retry(state: &Shared, run_id: &str) -> Result<Run> {
 
 /// Al arrancar el daemon: las corridas que quedaron a medias siguen solas.
 pub fn recover(state: &Shared) {
-    for v in state.store.runs(None, &["running", "waiting-approval"], 50).unwrap_or_default() {
+    for v in state.store.runs(None, &["running", "waiting-approval", "waiting-answer"], 50).unwrap_or_default() {
         if let Some(id) = v["id"].as_str() {
             spawn(state, id.to_string());
         }
@@ -667,7 +678,7 @@ fn spawn(state: &Shared, run_id: String) {
 async fn execute(state: &Shared, run_id: &str, mut cancel: watch::Receiver<bool>) {
     loop {
         let Ok(mut run) = load_run(state, run_id) else { return };
-        if !matches!(run.status, RunStatus::Running | RunStatus::WaitingApproval) || *cancel.borrow() {
+        if !matches!(run.status, RunStatus::Running | RunStatus::WaitingApproval | RunStatus::WaitingAnswer) || *cancel.borrow() {
             return;
         }
         let Some(i) = run.nodes.iter().position(|n| !matches!(n.status, NodeStatus::Succeeded | NodeStatus::Skipped | NodeStatus::Failed)) else {
@@ -866,6 +877,27 @@ async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut
             crate::notify::send(state, "flow", crate::notify::Message { title: run.workflow_name.clone(), body: msg.clone(), tags: if high { "rotating_light" } else { "robot" }, priority: if high { 4 } else { 3 } });
             Ok(msg)
         }
+        NodeKind::Ask => {
+            let question = substitute(&s("question"), run);
+            run.nodes[i].outputs.insert("question".into(), question.clone());
+            run.nodes[i].message = question.clone();
+            run.nodes[i].status = NodeStatus::WaitingAnswer;
+            run.status = RunStatus::WaitingAnswer;
+            persist(state, run);
+            crate::notify::send(state, "flow", crate::notify::Message { title: format!("{} asks", run.workflow_name), body: question.clone(), tags: "question", priority: 4 });
+            let key = answer_key(&run.id, &node.id);
+            loop {
+                if let Some(answer) = state.store.probes().ok().and_then(|l| l.into_iter().find(|(k, _)| *k == key)).and_then(|(_, v)| v["text"].as_str().map(str::to_string)) {
+                    run.nodes[i].outputs.insert("answer".into(), answer.clone());
+                    run.status = RunStatus::Running;
+                    return Ok(format!("answered: {}", answer.chars().take(120).collect::<String>()));
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                    _ = cancel.changed() => return Err(anyhow!("cancelada")),
+                }
+            }
+        }
         NodeKind::Agent => {
             let role = crate::roles::get(state, &s("agent")).ok_or_else(|| anyhow!("there's no agent “{}”", s("agent")))?;
             // La corrida del agente se llama como el nodo: si el daemon se reinicia, se sigue esa.
@@ -894,6 +926,19 @@ async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut
             follow_agent(state, run, i, &agent_run, &role, cancel).await
         }
     }
+}
+
+fn answer_key(run: &str, node: &str) -> String {
+    format!("answer:{run}:{node}")
+}
+
+/// La respuesta de la persona a la pregunta que espera la corrida (nodo «preguntar»). `Ok(false)`
+/// si no hay ninguna esperando.
+pub fn answer(state: &Shared, run_id: &str, text: &str) -> Result<bool> {
+    let run = load_run(state, run_id)?;
+    let Some(nr) = run.nodes.iter().find(|n| n.status == NodeStatus::WaitingAnswer) else { return Ok(false) };
+    state.store.save_probe(&answer_key(run_id, &nr.id), &json!({ "text": text.trim(), "at": now_ms() }))?;
+    Ok(true)
 }
 
 /// La tarea de un agente del flujo: su rol, el evento, lo que dejaron los nodos que lee y la forma

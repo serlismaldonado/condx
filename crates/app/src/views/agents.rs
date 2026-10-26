@@ -16,7 +16,7 @@ use crate::ui::{self, Health};
 impl DevtoolApp {
     pub fn load_chats(&mut self, cx: &mut Context<Self>) {
         self.chats_at = ui::now_ms();
-        self.get("/api/agent-runs".into(), |app, res| {
+        self.get("/api/threads".into(), |app, res| {
             if let Load::Ready(v) = res {
                 app.chats = v["runs"].as_array().cloned().unwrap_or_default();
             }
@@ -34,7 +34,7 @@ impl DevtoolApp {
     fn load_chat(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.chat_open.clone() else { return };
         self.chat_at = ui::now_ms();
-        self.get(format!("/api/agent-runs/{id}"), move |app, res| {
+        self.get(format!("/api/threads/{id}"), move |app, res| {
             if app.chat_open.as_deref() == Some(id.as_str()) {
                 app.chat = Some(res);
             }
@@ -51,7 +51,7 @@ impl DevtoolApp {
         self.chat_sending = true;
         self.chat_error = None;
         let (path, body) = match self.chat_open.clone() {
-            Some(id) => (format!("/api/agent-runs/{id}/message"), json!({ "text": text })),
+            Some(id) => (format!("/api/threads/{id}/message"), json!({ "text": text })),
             None => ("/api/agent-chats".to_string(), json!({ "text": text, "project": self.project })),
         };
         self.post(path, body, |app, res, cx| {
@@ -72,7 +72,10 @@ impl DevtoolApp {
     }
 
     fn stop_chat(&mut self, id: String, cx: &mut Context<Self>) {
-        self.post(format!("/api/agent-runs/{id}/abort"), Value::Null, |app, res, cx| match res {
+        // Un hilo de flujo se detiene cancelando su corrida; un chat, deteniendo al agente.
+        let flow = matches!(&self.chat, Some(Load::Ready(r)) if r["thread"] == true);
+        let path = if flow { format!("/api/workflow-runs/{id}/cancel") } else { format!("/api/agent-runs/{id}/abort") };
+        self.post(path, json!({}), |app, res, cx| match res {
             Load::Failed(e) => app.chat_error = Some(e),
             _ => {
                 app.load_chat(cx);
@@ -88,14 +91,14 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
     if app.daemon.is_some() && ui::now_ms() - app.chats_at > 5_000 {
         app.load_chats(cx);
     }
-    let running = matches!(&app.chat, Some(Load::Ready(r)) if r["status"] == "running");
+    let running = matches!(&app.chat, Some(Load::Ready(r)) if matches!(r["status"].as_str(), Some("running" | "waiting-approval" | "waiting-answer")));
     // También si la lista ve otra cosa (un mensaje que llegó desde el teléfono o por otra vía).
     let loaded = match &app.chat {
         Some(Load::Ready(r)) => (r["status"].as_str().map(str::to_string), r["usage"]["total"].as_u64()),
         _ => (None, None),
     };
     let listed = app.chat_open.as_ref().and_then(|id| app.chats.iter().find(|c| c["id"] == id.as_str())).map(|c| (c["status"].as_str().map(str::to_string), c["usage"].as_u64()));
-    let stale = listed.as_ref().is_some_and(|l| l.0.as_deref() == Some("running") || (l.0 != loaded.0 && loaded.0.is_some()));
+    let stale = listed.as_ref().is_some_and(|l| matches!(l.0.as_deref(), Some("running" | "waiting-approval" | "waiting-answer")) || (l.0 != loaded.0 && loaded.0.is_some()));
     if (running || stale) && ui::now_ms() - app.chat_at > 2_000 {
         app.load_chat(cx);
     }
@@ -119,13 +122,17 @@ fn list(app: &mut DevtoolApp, cx: &mut Context<DevtoolApp>) -> Div {
         let id = r["id"].as_str().unwrap_or_default().to_string();
         let selected = app.chat_open.as_deref() == Some(id.as_str());
         let health = match r["status"].as_str() {
-            Some("running") => Health::Warn,
-            Some("done") => Health::Ok,
+            Some("running" | "waiting-approval" | "waiting-answer") => Health::Warn,
+            Some("done" | "succeeded") => Health::Ok,
             Some("failed") => Health::Bad,
             _ => Health::Unknown,
         };
         let sub = [
-            (r["kind"] == "incident").then(|| t!("incident").to_string()),
+            match r["kind"].as_str() {
+                Some("incident") => Some(t!("incident").to_string()),
+                Some("flow") => Some(t!("flow").to_string()),
+                _ => None,
+            },
             r["model"].as_str().map(str::to_string),
             r["startedAt"].as_i64().map(ui::ago),
         ]
@@ -160,6 +167,11 @@ fn conversation(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devt
     let has_provider = app.agents.as_ref().is_some_and(|a| a["settings"]["defaultProvider"].is_string());
     if app.agents.is_none() && app.daemon.is_some() && app.agents_error.is_none() {
         app.load_agents(cx);
+    }
+    if let Some(Load::Ready(r)) = &app.chat {
+        if r["thread"] == true {
+            return thread_view(app, r.clone(), window, cx);
+        }
     }
     let run = match (&app.chat_open, &app.chat) {
         (None, _) => None,
@@ -244,10 +256,22 @@ fn conversation(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devt
         }
     }
 
+    let composer = composer(app, running, has_provider, t!("Message the agent…  (Enter sends, Shift+Enter adds a line)"), window, cx);
+
+    v_flex()
+        .size_full()
+        .children(header)
+        .child(div().id("chat-messages").flex_1().min_h_0().overflow_y_scroll().track_scroll(&app.chat_scroll).child(msgs))
+        .child(composer)
+}
+
+/// Dónde se escribe (el mismo campo en un chat y en un hilo).
+fn composer(app: &mut DevtoolApp, running: bool, has_provider: bool, placeholder: &'static str, window: &mut Window, cx: &mut Context<DevtoolApp>) -> Div {
+    let t = crate::theme::Tokens::current(cx);
     let input = app
         .chat_input
         .get_or_insert_with(|| {
-            let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 8).submit_on_enter(true).placeholder(t!("Message the agent…  (Enter sends, Shift+Enter adds a line)")));
+            let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 8).submit_on_enter(true).placeholder(placeholder));
             cx.subscribe(&state, |this: &mut DevtoolApp, _, ev: &InputEvent, cx| {
                 if let InputEvent::PressEnter { shift: false, .. } = ev {
                     this.send_chat(cx);
@@ -257,13 +281,18 @@ fn conversation(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devt
             state
         })
         .clone();
+    // El texto de ayuda cambia entre un chat y un hilo.
+    if app.chat_placeholder != placeholder {
+        app.chat_placeholder = placeholder;
+        input.update(cx, |s, cx| s.set_placeholder(placeholder, window, cx));
+    }
     // Enviado: se vacía (aquí, que hay ventana).
     if std::mem::take(&mut app.chat_clear) {
         input.update(cx, |s, cx| s.set_value("", window, cx));
     }
     let can_send = has_provider && !app.chat_sending;
     let send = Button::new("chat-send").small().icon(IconName::ArrowUp).label(if running { t!("Redirect") } else { t!("Send") }).disabled(!can_send).on_click(cx.listener(|this, _, _, cx| this.send_chat(cx)));
-    let composer = v_flex()
+    v_flex()
         .gap_1()
         .px_4()
         .py_3()
@@ -271,13 +300,179 @@ fn conversation(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devt
         .border_color(t.card_border)
         .when_some(app.chat_error.clone(), |d, e| d.child(ui::status_tag(Health::Bad, e)))
         .child(h_flex().gap_2().items_end().child(div().flex_1().min_w_0().child(Textarea::new(&input))).child(ui::brand(send, cx)))
-        .child(ui::muted(if running { t!("While it works, what you write redirects it.") } else { t!("It only reads. Today's token budget and the agents-at-once limit apply (Settings → Agents).") }, cx).text_xs());
+        .child(ui::muted(if running { t!("While it works, what you write redirects it.") } else { t!("It only reads. Today's token budget and the agents-at-once limit apply (Settings → Agents).") }, cx).text_xs())
+}
 
+/// El hilo de una corrida de flujo: el evento, cada paso, las tarjetas de los agentes, las
+/// preguntas y aprobaciones que esperan, y lo que se habló con cada agente.
+fn thread_view(app: &mut DevtoolApp, r: Value, window: &mut Window, cx: &mut Context<DevtoolApp>) -> Div {
+    let t = crate::theme::Tokens::current(cx);
+    let status = r["status"].as_str().unwrap_or("").to_string();
+    let running = matches!(status.as_str(), "running" | "waiting-approval" | "waiting-answer");
+    let has_provider = app.agents.as_ref().is_some_and(|a| a["settings"]["defaultProvider"].is_string());
+    let id = r["id"].as_str().unwrap_or_default().to_string();
+    let state = match status.as_str() {
+        "running" => (Health::Warn, t!("Working…").to_string()),
+        "waiting-approval" => (Health::Warn, t!("Waiting for your approval").to_string()),
+        "waiting-answer" => (Health::Warn, t!("Waiting for your answer").to_string()),
+        "succeeded" => (Health::Ok, t!("Done").to_string()),
+        "cancelled" => (Health::Unknown, t!("Cancelled").to_string()),
+        _ => (Health::Bad, t!("Failed").to_string()),
+    };
+    // Los participantes: un clic los menciona en lo que se escribe.
+    let mut people = h_flex().gap_1().flex_wrap().items_center().child(ui::muted(t!("In this thread:"), cx).text_xs());
+    for (i, p) in r["participants"].as_array().cloned().unwrap_or_default().into_iter().enumerate() {
+        let handle = p["node"].as_str().unwrap_or_default().to_string();
+        let st = match p["status"].as_str() {
+            Some("running") => Health::Warn,
+            Some("done") => Health::Ok,
+            Some("failed" | "stopped") => Health::Bad,
+            _ => Health::Unknown,
+        };
+        let started = p["status"].is_string();
+        let mention = format!("@{handle} ");
+        people = people.child(
+            Button::new(SharedString::from(format!("thread-p-{i}")))
+                .xsmall()
+                .ghost()
+                .label(format!("{}{}", ui::txt(&p["name"]), if started { "" } else { " · ask it" }))
+                .when(started, |b| b.icon(match st {
+                    Health::Warn => IconName::Loader,
+                    Health::Ok => IconName::Check,
+                    Health::Bad => IconName::TriangleAlert,
+                    _ => IconName::Info,
+                }))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if let Some(input) = this.chat_input.clone() {
+                        let m = mention.clone();
+                        input.update(cx, |s, cx| s.set_value(m, window, cx));
+                    }
+                })),
+        );
+    }
+    let stop_id = id.clone();
+    let workflow = r["workflowId"].as_str().unwrap_or_default().to_string();
+    let header = h_flex()
+        .gap_3()
+        .items_center()
+        .px_4()
+        .py_2()
+        .border_b_1()
+        .border_color(t.card_border)
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(div().text_size(px(13.)).text_color(t.fg).truncate().child(format!("{} · {}", t!("Flow"), ui::txt(&r["title"]))))
+                .child(h_flex().gap_2().items_center().child(ui::status_tag(state.0, state.1)).child(ui::muted(t!("{n} tokens", n = r["usage"]["total"].as_u64().unwrap_or(0)), cx).text_xs()))
+                .child(people),
+        )
+        .child(Button::new("thread-flow").xsmall().ghost().icon(IconName::ExternalLink).label(t!("Open flow")).on_click(cx.listener(move |this, _, window, cx| {
+            this.wf_selected = Some(workflow.clone());
+            this.wf_draft = None;
+            this.open_page(Page::Workflows, window, cx);
+        })))
+        .when(running, |h| h.child(Button::new("thread-stop").xsmall().danger().outline().label(t!("Cancel run")).on_click(cx.listener(move |this, _, _, cx| this.stop_chat(stop_id.clone(), cx)))));
+
+    let items = r["items"].as_array().cloned().unwrap_or_default();
+    let sig = items.iter().map(|i| i["text"].as_str().map_or(0, str::len) + 1).sum::<usize>();
+    if sig != app.chat_len {
+        app.chat_len = sig;
+        app.chat_scroll.scroll_to_bottom();
+    }
+    let mut msgs = v_flex().gap_3().px_4().py_3().max_w(px(860.));
+    for (i, item) in items.iter().enumerate() {
+        msgs = msgs.child(thread_item(i, item, cx));
+    }
+    let waiting = r["waitingAnswer"] == true;
+    let placeholder = if waiting { t!("Answer the question…  (or @agent to ask one of them)") } else { t!("Write to the agents…  (@risk to ask one; otherwise the Explainer answers)") };
+    let composer = composer(app, false, has_provider, placeholder, window, cx);
     v_flex()
         .size_full()
-        .children(header)
+        .child(header)
         .child(div().id("chat-messages").flex_1().min_h_0().overflow_y_scroll().track_scroll(&app.chat_scroll).child(msgs))
         .child(composer)
+}
+
+fn thread_item(i: usize, item: &Value, cx: &mut Context<DevtoolApp>) -> AnyElement {
+    let t = crate::theme::Tokens::current(cx);
+    let text = item["text"].as_str().unwrap_or_default().to_string();
+    let card = || v_flex().flex_1().min_w_0().gap_1().px_3().py_2().bg(t.card).border_1().border_color(t.card_border);
+    // Una franja de color a la izquierda dice qué es (error, agente, pregunta).
+    let striped = |color: Hsla, inner: Div| h_flex().items_stretch().child(div().w(px(3.)).flex_none().bg(color)).child(inner).into_any_element();
+    match item["kind"].as_str() {
+        Some("event") => {
+            let ev = &item["event"];
+            let mut c = card().child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(ui::status_tag(Health::Bad, ui::txt(&ev["title"]).to_string()))
+                    .child(ui::muted([ev["source"].as_str(), ev["env"].as_str()].into_iter().flatten().collect::<Vec<_>>().join(" · "), cx).text_xs()),
+            );
+            if let Some(e) = ev["error"].as_str().or(ev["message"].as_str()).or(ev["details"].as_str()) {
+                c = c.child(ui::mono(e.chars().take(600).collect::<String>()).text_size(px(11.5)).text_color(t.muted));
+            }
+            striped(rgb(0xe5756e).into(), c)
+        }
+        Some("agent") => {
+            let mut chips = h_flex().gap_1().flex_wrap();
+            let mut fields: Vec<(String, String)> = item["result"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string())).collect()).unwrap_or_default();
+            fields.sort();
+            for (k, v) in fields {
+                chips = chips.child(div().px_1p5().py_0p5().bg(t.ground).border_1().border_color(t.card_border).text_size(px(11.)).text_color(t.muted).child(format!("{k}: {}", v.chars().take(120).collect::<String>())));
+            }
+            striped(
+                rgb(0x60a5fa).into(),
+                card()
+                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.fg).child(ui::txt(&item["author"]).to_string()))
+                    .when(!text.trim().is_empty(), |c| c.child(super::incidents::answer_view(&text, cx)))
+                    .child(chips),
+            )
+        }
+        Some("question") => striped(
+            t.accent_ink,
+            card()
+                .child(h_flex().gap_2().items_center().child(ui::status_tag(if item["answered"] == true { Health::Ok } else { Health::Warn }, if item["answered"] == true { t!("The flow asked") } else { t!("The flow asks you") }.to_string())))
+                .child(div().text_size(px(12.5)).text_color(t.fg).child(text)),
+        ),
+        Some("approval") => {
+            let job = item["job"].as_str().unwrap_or_default().to_string();
+            striped(
+                t.accent_ink,
+                card().child(ui::status_tag(Health::Warn, text)).child(h_flex().child(ui::brand(Button::new(SharedString::from(format!("thread-ap-{i}"))).xsmall().label(t!("Review and approve")), cx).on_click(cx.listener(move |this, _, window, cx| {
+                    let _ = &job;
+                    this.open_page(Page::Approvals, window, cx);
+                })))),
+            )
+        }
+        Some("user") => h_flex()
+            .child(div().flex_1())
+            .child(
+                v_flex()
+                    .max_w(px(560.))
+                    .gap_0p5()
+                    .items_end()
+                    .when_some(item["to"].as_str(), |d, to| d.child(ui::muted(format!("→ {to}"), cx).text_xs()))
+                    .child(div().px_3().py_2().bg(t.card).border_1().border_color(t.card_border).text_size(px(12.5)).text_color(t.fg).child(text)),
+            )
+            .into_any_element(),
+        Some("reply") => v_flex()
+            .gap_0p5()
+            .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(0x60a5fa)).child(ui::txt(&item["author"]).to_string()))
+            .child(super::incidents::answer_view(&text, cx))
+            .into_any_element(),
+        _ => {
+            let health = match item["status"].as_str() {
+                Some("running") => Health::Warn,
+                Some("failed") => Health::Bad,
+                Some("succeeded") => Health::Ok,
+                _ => Health::Unknown,
+            };
+            h_flex().gap_2().items_center().child(ui::dot(health, cx)).child(ui::muted(text, cx).text_xs()).into_any_element()
+        }
+    }
 }
 
 /// Preguntas de ejemplo: un clic las deja escritas.

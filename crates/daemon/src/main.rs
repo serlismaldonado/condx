@@ -36,6 +36,7 @@ mod store;
 mod conditions;
 mod roles;
 mod templates;
+mod threads;
 mod telemetry;
 mod workflows;
 #[cfg(test)]

@@ -384,6 +384,10 @@ fn clone_project(state: &Shared, name: &str, url: &str, branch: &str) -> Result<
         let mut tokens: Vec<Option<String>> = accounts.iter().filter_map(|a| crate::secrets::get(a).ok().flatten()).map(Some).collect();
         tokens.push(None);
         let mut last = String::new();
+        // El nombre actual del repo (uno movido a una organización redirige; la API sigue la
+        // redirección, `git clone` con el token de la organización no).
+        let url = tokens.iter().find_map(|t| canonical_url(url, t.as_deref())).unwrap_or_else(|| url.to_string());
+        let url = url.as_str();
         for token in tokens {
             let mut cmd = std::process::Command::new("git");
             // El token va en un encabezado de esta orden, no en el remoto guardado.
@@ -406,6 +410,18 @@ fn clone_project(state: &Shared, name: &str, url: &str, branch: &str) -> Result<
     }
     crate::projects::register(state, &dir, Some(name))?;
     Ok(())
+}
+
+/// `https://github.com/<dueño>/<repo>.git` tal como lo nombra hoy GitHub (`full_name`), si el token
+/// (o ninguno, para los públicos) lo ve.
+fn canonical_url(url: &str, token: Option<&str>) -> Option<String> {
+    let path = url.trim_start_matches("https://github.com/").trim_end_matches(".git");
+    let mut req = ureq::get(&format!("https://api.github.com/repos/{path}")).timeout(Duration::from_secs(15)).set("Accept", "application/vnd.github+json").set("User-Agent", "condx");
+    if let Some(t) = token {
+        req = req.set("Authorization", &format!("Bearer {}", t.trim()));
+    }
+    let v: Value = req.call().ok()?.into_json().ok()?;
+    v["full_name"].as_str().map(|n| format!("https://github.com/{n}.git"))
 }
 
 /// La conversación hasta ahora (lo de la Mac y lo del sitio), como texto para el agente.

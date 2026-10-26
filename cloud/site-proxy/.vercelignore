@@ -1,0 +1,2 @@
+# Sin esto Vercel usa .gitignore y no sube vercel.json (las reglas del proxy).
+.vercel

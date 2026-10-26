@@ -124,13 +124,28 @@ pub fn send(state: &Shared, kind: &str, m: Message) {
         "flow" => s.flows,
         _ => true,
     };
-    if !s.enabled || !wanted {
+    if !wanted {
         return;
     }
+    // Por correo también: siempre, o cuando ntfy está apagado o falla (`mail.rs`).
+    if !s.enabled {
+        if crate::mail::wants(state, false) {
+            crate::mail::notify(state, &m.title, &m.body);
+        }
+        return;
+    }
+    let st = state.clone();
     std::thread::spawn(move || {
         let token = crate::secrets::get(TOKEN_ACCOUNT).ok().flatten();
-        if let Err(e) = send_to(&s, token.as_deref(), &m) {
-            tracing::warn!("notification not sent: {e:#}");
+        let sent = match send_to(&s, token.as_deref(), &m) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("notification not sent: {e:#}");
+                false
+            }
+        };
+        if crate::mail::wants(&st, sent) {
+            crate::mail::notify(&st, &m.title, &m.body);
         }
     });
 }

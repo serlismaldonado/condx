@@ -31,6 +31,7 @@ mod frontend;
 mod functions;
 mod gitflow;
 mod gitinfo;
+mod mail;
 mod schema;
 mod seed;
 mod secrets;
@@ -144,6 +145,7 @@ fn serve() -> Result<()> {
         incidents::spawn(&state);
         agent_host::spawn_poller(&state);
         notify::spawn(&state);
+        mail::spawn(&state);
         events::spawn(&state);
         jobs::recover(&state);
         workflows::recover(&state);
@@ -376,8 +378,20 @@ fn env_cmd(args: &[String]) -> Result<()> {
 fn secret_cmd(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("set") => {
-            let account = args.get(1).context("missing account (prod-deploy-key, dev-deploy-key or github-token)")?;
+            let account = args.get(1).context("missing account (prod-deploy-key, dev-deploy-key, github-token or agentmail-key)")?;
             secrets::writable_account(account)?;
+            if account == mail::KEY_ACCOUNT {
+                eprintln!("Paste the AgentMail API key and press Enter (it isn't shown):");
+                let mut value = String::new();
+                std::io::stdin().read_line(&mut value)?;
+                let value = value.trim();
+                if value.len() < 16 || value.contains(char::is_whitespace) {
+                    bail!("that doesn't look like an AgentMail API key");
+                }
+                secrets::set(account, value)?;
+                println!("Saved ({account}). Turn email on in Condx (or POST /api/mail).");
+                return Ok(());
+            }
             if account == gitflow::TOKEN_ACCOUNT {
                 // Para el respaldo y los PR de los agentes: mejor uno fine-grained, solo los repos de
                 // los proyectos, con Contents y Pull requests de escritura.
@@ -410,7 +424,7 @@ fn secret_cmd(args: &[String]) -> Result<()> {
             println!("Borrada.");
         }
         Some("status") | None => {
-            for account in [secrets::PROD_DEPLOY_KEY, secrets::DEV_DEPLOY_KEY, secrets::BACKUP_KEY, gitflow::TOKEN_ACCOUNT] {
+            for account in [secrets::PROD_DEPLOY_KEY, secrets::DEV_DEPLOY_KEY, secrets::BACKUP_KEY, gitflow::TOKEN_ACCOUNT, mail::KEY_ACCOUNT] {
                 println!("{account:<16} {}", if secrets::exists(account) { "stored" } else { "missing" });
             }
         }

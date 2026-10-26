@@ -690,6 +690,13 @@ fn finish(state: &Shared, mut run: Value, status: &str, answer: Option<String>, 
     if reply_notice && status != "aborted" {
         crate::notify::agent_replied(state, &run);
     }
+    // Vino por correo: la respuesta sale en ese hilo de correo (una vez).
+    if run["mailReply"].is_string() && status != "aborted" {
+        crate::mail::reply_to_run(state, &run);
+        let mut r = run.clone();
+        r["mailReply"] = Value::Null;
+        let _ = state.store.save_agent_run(&r);
+    }
     tracing::info!("agent {} {status}", run["id"].as_str().unwrap_or("?"));
 }
 

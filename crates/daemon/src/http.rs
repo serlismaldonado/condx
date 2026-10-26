@@ -543,6 +543,25 @@ async fn delete_agent_provider(AxState(state): AxState<Shared>, Extension(client
 }
 
 /// Notificaciones con ntfy (notify.rs): la configuración, sin el token.
+/// El correo de respaldo (AgentMail): ajustes y si hay key (nunca su valor).
+async fn get_mail(AxState(state): AxState<Shared>) -> Response {
+    Json(json!({ "settings": crate::mail::settings(&state), "hasKey": crate::secrets::exists(crate::mail::KEY_ACCOUNT) })).into_response()
+}
+
+async fn post_mail(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let s: crate::mail::Settings = match serde_json::from_value(body) {
+        Ok(s) => s,
+        Err(e) => return fail(StatusCode::BAD_REQUEST, anyhow::anyhow!(e.to_string())),
+    };
+    match crate::mail::save(&state, &s) {
+        Ok(()) => Json(json!(s)).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
 async fn get_notify(AxState(state): AxState<Shared>) -> Response {
     let st = state.clone();
     match tokio::task::spawn_blocking(move || crate::notify::json(&st)).await {
@@ -1299,6 +1318,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agent-chats", post(post_agent_chat))
         .route("/api/agent-runs/{id}", get(get_agent_run))
         .route("/api/notify", get(get_notify).post(post_notify))
+        .route("/api/mail", get(get_mail).post(post_mail))
         .route("/api/notify/test", post(post_notify_test))
         .route("/api/agent-runs/{id}/{action}", post(post_agent_run_action))
         .route("/api/projects", get(get_projects).post(post_project))

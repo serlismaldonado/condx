@@ -1296,7 +1296,48 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
         runs = runs.child(detail);
     }
 
-    let main = v_flex().flex_1().min_w_0().gap_3().p_3().child(toolbar).child(run_bar).child(canvas_box).child(runs);
+    // Qué eventos lo empiezan solo (events.rs del daemon). Cambiarlos es como editar el flujo:
+    // hay que guardar.
+    let triggers: Vec<Value> = draft["triggers"].as_array().cloned().unwrap_or_default();
+    let mut trigger_row = h_flex().gap_1().items_center().flex_wrap().child(ui::muted(t!("Starts by itself on:"), cx));
+    for (source, label) in [("convex-error", t!("Convex errors")), ("frontend-error", t!("Frontend errors")), ("user-report", t!("User reports")), ("mcp", t!("Agents (MCP)")), ("incident", t!("Incidents"))] {
+        let on = triggers.iter().any(|t| t["source"] == source);
+        let b = Button::new(SharedString::from(format!("wf-trig-{source}"))).xsmall().label(label).on_click(cx.listener(move |this, _, _, cx| {
+            this.wf_mutate(|d| {
+                let mut list: Vec<Value> = d["triggers"].as_array().cloned().unwrap_or_default();
+                if on {
+                    list.retain(|t| t["source"] != source);
+                } else {
+                    // El mismo filtro de texto que las demás, si lo hay.
+                    let m = list.first().map(|t| t["match"].clone()).unwrap_or(Value::Null);
+                    list.push(json!({ "source": source, "match": m }));
+                }
+                d["triggers"] = json!(list);
+            });
+            cx.notify();
+        }));
+        trigger_row = trigger_row.child(ui::brand_if(on, b, cx));
+    }
+    if !triggers.is_empty() {
+        let current = triggers.first().and_then(|t| t["match"].as_str()).unwrap_or_default().to_string();
+        let key = format!("wf-trig-match-{}", draft["id"].as_str().unwrap_or("new"));
+        let st = app.inputs.entry(key.clone()).or_insert_with(|| cx.new(|cx| InputState::new(window, cx).placeholder(t!("only if it contains… (optional)")).default_value(current))).clone();
+        trigger_row = trigger_row.child(div().w(px(200.)).child(Input::new(&st).small())).child(Button::new("wf-trig-apply").xsmall().ghost().label(t!("Apply")).on_click(cx.listener(move |this, _, _, cx| {
+            let m = this.inputs.get(&key).map(|s| s.read(cx).value().trim().to_string()).unwrap_or_default();
+            this.wf_mutate(|d| {
+                if let Some(list) = d["triggers"].as_array_mut() {
+                    for t in list {
+                        t["match"] = if m.is_empty() { Value::Null } else { json!(m) };
+                    }
+                }
+            });
+            cx.notify();
+        })));
+    } else {
+        trigger_row = trigger_row.child(ui::muted(t!("nothing: you run it by hand."), cx).text_xs());
+    }
+
+    let main = v_flex().flex_1().min_w_0().gap_3().p_3().child(toolbar).child(run_bar).child(trigger_row).child(canvas_box).child(runs);
     h_flex().size_full().items_stretch().child(side).child(main).into_any_element()
 }
 

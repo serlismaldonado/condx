@@ -586,6 +586,51 @@ fn apply_request(state: &Shared, rt: &tokio::runtime::Handle, incident_id: &str,
     }
 }
 
+/// Lo que mandó el SDK de las apps: la nube agrupa por huella (una fila por error, que suma), así
+/// que el daemon recuerda cuántas veces vio cada fila y solo cuenta lo nuevo (borrar al procesar
+/// perdería una repetición que llega en el medio). Las filas sin cambios hace una semana se borran.
+const EVENTS_SEEN: &str = "meta:cloud-events-seen";
+const EVENT_ROW_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
+
+fn process_events(state: &Shared, s: &mut Session) {
+    let rows = s.engine.rows(&s.events_scope);
+    if rows.is_empty() {
+        return;
+    }
+    let now = now_ms();
+    // De la base (sobrevive a un reinicio: si no, todo volvería a contarse).
+    let mut seen: serde_json::Map<String, Value> = state.store.probes().ok().and_then(|l| l.into_iter().find(|(k, _)| k == EVENTS_SEEN)).and_then(|(_, v)| v["data"].as_object().cloned()).unwrap_or_default();
+    let before = seen.clone();
+    // Un evento puede empezar un flujo (tokio::spawn): este hilo no es del runtime.
+    let _rt = s.rt.enter();
+    let mut live = std::collections::HashSet::new();
+    for r in rows {
+        live.insert(r.row.id.clone());
+        let v = Value::Object(r.row.values.clone().into_iter().collect());
+        let count = v["count"].as_i64().unwrap_or(1);
+        let had = seen.get(&r.row.id).and_then(Value::as_i64).unwrap_or(0);
+        if count > had {
+            let mut ev = crate::events::from_cloud_row(&r.row.id, &v);
+            ev["count"] = json!(count - had);
+            if let Err(e) = crate::events::record(state, ev) {
+                tracing::warn!("cloud: event {}: {e:#}", r.row.id);
+                continue;
+            }
+            seen.insert(r.row.id.clone(), json!(count));
+        }
+        if now - v["lastAt"].as_i64().unwrap_or(now) > EVENT_ROW_TTL_MS {
+            let d = OpDraft { scope: s.events_scope.clone(), kind: Some(OpKind::Delete), row_id: Some(r.row.id.clone()), ..Default::default() };
+            if s.engine.commit(vec![d], now).is_ok() {
+                seen.remove(&r.row.id);
+            }
+        }
+    }
+    seen.retain(|k, _| live.contains(k));
+    if seen != before {
+        state.set_probe(EVENTS_SEEN, true, Value::Object(seen), None);
+    }
+}
+
 /// Los pedidos nuevos de los teléfonos sobre incidentes: verificar y hacer (cada uno una vez).
 fn process_requests(state: &Shared, s: &mut Session) {
     let scope = format!("incidents:{}", s.link.daemon_id);
@@ -682,6 +727,9 @@ struct Session {
     /// Claves ya cifradas por proveedor: (huella de proveedor y destinatarios, texto cifrado). age
     /// cifra distinto cada vez: sin esto cada vuelta subiría un cambio.
     sealed: IndexMap<String, (String, String)>,
+    /// El alcance de eventos del SDK (`events:<daemonId>`): lo escribe la nube (ingest.ts), el
+    /// daemon lo lee y borra lo que ya convirtió en evento. Va aparte del diff de los demás.
+    events_scope: String,
 }
 
 fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<Session> {
@@ -697,6 +745,8 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
     for s in &scopes {
         engine.enable_scope(s, None).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
+    let events_scope = format!("events:{}", link.daemon_id);
+    engine.enable_scope(&events_scope, None).map_err(|e| anyhow::anyhow!("{e}"))?;
     // Los resultados ya publicados (de un proceso anterior) se conservan: así un pedido respondido
     // no se borra ni se vuelve a hacer.
     let incident_results: IndexMap<String, (String, String)> = engine
@@ -704,7 +754,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new() })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -763,7 +813,8 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         }
     }
     let mut error = None;
-    match s.transport.doorbell(&s.scopes, localfirst_core::PROTOCOL_VERSION) {
+    let ring: Vec<String> = s.scopes.iter().cloned().chain(std::iter::once(s.events_scope.clone())).collect();
+    match s.transport.doorbell(&ring, localfirst_core::PROTOCOL_VERSION) {
         Ok(Doorbell::Versions(v)) => s.engine.on_doorbell(&v, now).map_err(|e| anyhow::anyhow!("{e}"))?,
         Ok(Doorbell::UpgradeRequired) => error = Some("Condx Cloud needs a newer Condx".to_string()),
         Err(e) => error = Some(e.to_string()),
@@ -771,6 +822,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let report = block_on(sync_once(&mut s.engine, &s.transport, now_ms, 200)).map_err(|e| anyhow::anyhow!("{e}"))?;
     process_decisions(state, s);
     process_requests(state, s);
+    process_events(state, s);
     let st = s.engine.sync_status();
     let proposals: Vec<Value> = s.results.iter().filter(|(_, r)| r.as_str() == NEEDS_MAC).map(|(j, _)| json!(j)).collect();
     Ok(json!({

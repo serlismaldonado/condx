@@ -96,6 +96,10 @@ pub struct Workflow {
     /// condición, la arista se cumple cuando el nodo de origen terminó.
     #[serde(default)]
     pub conditions: HashMap<String, String>,
+    /// Qué eventos lo empiezan solo (events.rs): un error de Convex, del frontend, un reporte de un
+    /// usuario, un agente externo, un incidente. Sin disparadores, se corre a mano.
+    #[serde(default)]
+    pub triggers: Vec<crate::events::Trigger>,
     #[serde(default)]
     pub updated_at: i64,
 }
@@ -240,6 +244,11 @@ pub fn problems(w: &Workflow, envs: &HashSet<String>, recipe_exists: impl Fn(&st
     if let Err(e) = topo_order(w) {
         out.push(e.to_string());
     }
+    for t in &w.triggers {
+        if let Err(e) = crate::events::check_trigger(t) {
+            out.push(e.to_string());
+        }
+    }
     for (key, cond) in &w.conditions {
         if cond.trim().is_empty() {
             continue;
@@ -361,12 +370,12 @@ pub fn templates(project: &str, is_default: bool, envs: &[(String, String)]) -> 
             node("promote", NodeKind::Recipe, "Promote to production", 1200., 0., json!({ "recipe": "promote-prod", "env": prod, "args": { "commit": "{run.commit}" } })),
         ];
         let edges = chain(&nodes);
-        out.push(Workflow { id: String::new(), project: project.into(), name: "Promotion to production".into(), description: "The usual chain: backup, rehearsal, cloud dev, a 30-minute wait and production.".into(), nodes, edges, enabled: true, conditions: HashMap::new(), updated_at: 0 });
+        out.push(Workflow { id: String::new(), project: project.into(), name: "Promotion to production".into(), description: "The usual chain: backup, rehearsal, cloud dev, a 30-minute wait and production.".into(), nodes, edges, enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 });
     }
     // Los sugeridos (`suggested`): se crean apagados con «Crear los sugeridos».
     let flow = |name: &str, description: &str, nodes: Vec<Node>| {
         let edges = chain(&nodes);
-        Workflow { id: String::new(), project: project.into(), name: name.into(), description: description.into(), nodes, edges, enabled: true, conditions: HashMap::new(), updated_at: 0 }
+        Workflow { id: String::new(), project: project.into(), name: name.into(), description: description.into(), nodes, edges, enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 }
     };
     if !local.is_empty() {
         out.push(flow(
@@ -456,9 +465,14 @@ pub fn templates(project: &str, is_default: bool, envs: &[(String, String)]) -> 
         ],
     );
     urgent.conditions.insert(edge_key("risk", "notify"), "risk.risk >= high".into());
+    // Empieza solo con los errores que manda el SDK de la app (se crea apagado, como los sugeridos).
+    urgent.triggers = vec![
+        crate::events::Trigger { source: "convex-error".into(), ..Default::default() },
+        crate::events::Trigger { source: "frontend-error".into(), ..Default::default() },
+    ];
     out.push(urgent);
-    out.push(Workflow { id: String::new(), project: project.into(), name: "Example: check, approve and run".into(), description: "A starting point for building your own.".into(), nodes, edges, enabled: true, conditions: HashMap::new(), updated_at: 0 });
-    out.push(Workflow { id: String::new(), project: project.into(), name: "Blank".into(), description: String::new(), nodes: vec![], edges: vec![], enabled: true, conditions: HashMap::new(), updated_at: 0 });
+    out.push(Workflow { id: String::new(), project: project.into(), name: "Example: check, approve and run".into(), description: "A starting point for building your own.".into(), nodes, edges, enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 });
+    out.push(Workflow { id: String::new(), project: project.into(), name: "Blank".into(), description: String::new(), nodes: vec![], edges: vec![], enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 });
     out
 }
 
@@ -538,7 +552,7 @@ pub fn get(state: &Shared, id: &str) -> Result<Workflow> {
 
 /// JSON para el repo: sin id ni proyecto (se asignan al importar).
 pub fn export(w: &Workflow) -> Value {
-    json!({ "condxWorkflow": 1, "name": w.name, "description": w.description, "enabled": w.enabled, "nodes": w.nodes, "edges": w.edges, "conditions": w.conditions })
+    json!({ "condxWorkflow": 1, "name": w.name, "description": w.description, "enabled": w.enabled, "nodes": w.nodes, "edges": w.edges, "conditions": w.conditions, "triggers": w.triggers })
 }
 
 pub fn import(project: &str, raw: &Value) -> Result<Workflow> {
@@ -554,6 +568,7 @@ pub fn import(project: &str, raw: &Value) -> Result<Workflow> {
         edges: serde_json::from_value(raw["edges"].clone()).unwrap_or_default(),
         enabled: raw["enabled"].as_bool().unwrap_or(true),
         conditions: serde_json::from_value(raw["conditions"].clone()).unwrap_or_default(),
+        triggers: serde_json::from_value(raw["triggers"].clone()).unwrap_or_default(),
         updated_at: 0,
     })
 }
@@ -1079,7 +1094,7 @@ mod tests {
     use super::*;
 
     fn wf(nodes: Vec<Node>, edges: Vec<(&str, &str)>) -> Workflow {
-        Workflow { id: "w1".into(), project: "p".into(), name: "Prueba".into(), description: String::new(), nodes, edges: edges.into_iter().map(|(a, b)| (a.into(), b.into())).collect(), enabled: true, conditions: HashMap::new(), updated_at: 0 }
+        Workflow { id: "w1".into(), project: "p".into(), name: "Prueba".into(), description: String::new(), nodes, edges: edges.into_iter().map(|(a, b)| (a.into(), b.into())).collect(), enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 }
     }
 
     #[test]

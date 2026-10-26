@@ -119,6 +119,15 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   data TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS agent_runs_by_incident ON agent_runs (incident, started_at);
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL,
+  status TEXT NOT NULL,
+  last_at INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_by_fingerprint ON events (fingerprint, last_at);
+CREATE INDEX IF NOT EXISTS events_by_status ON events (status, last_at);
 ";
 
 impl Store {
@@ -339,6 +348,43 @@ impl Store {
         let mut stmt = conn.prepare("SELECT data FROM agent_providers ORDER BY id")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.filter_map(|r| r.ok()).filter_map(|d| serde_json::from_str(&d).ok()).collect();
         Ok(rows)
+    }
+
+    /// Eventos que disparan flujos (events.rs).
+    pub fn save_event(&self, ev: &Value) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO events (id, fingerprint, status, last_at, data) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET fingerprint = ?2, status = ?3, last_at = ?4, data = ?5",
+            params![ev["id"].as_str().unwrap_or_default(), ev["fingerprint"].as_str().unwrap_or_default(), ev["status"].as_str().unwrap_or_default(), ev["lastAt"].as_i64().unwrap_or(0), ev.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn events(&self, statuses: &[&str], limit: usize) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT status, data FROM events ORDER BY last_at DESC LIMIT 1000")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .filter_map(|r| r.ok())
+            .filter(|(st, _)| statuses.is_empty() || statuses.contains(&st.as_str()))
+            .filter_map(|(_, d)| serde_json::from_str(&d).ok())
+            .take(limit)
+            .collect();
+        Ok(rows)
+    }
+
+    pub fn event(&self, id: &str) -> Result<Option<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let data: Option<String> = conn.query_row("SELECT data FROM events WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        Ok(data.and_then(|d| serde_json::from_str(&d).ok()))
+    }
+
+    /// El evento más reciente con esa huella.
+    pub fn event_by_fingerprint(&self, fingerprint: &str) -> Result<Option<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let data: Option<String> = conn.query_row("SELECT data FROM events WHERE fingerprint = ?1 ORDER BY last_at DESC LIMIT 1", [fingerprint], |r| r.get(0)).optional()?;
+        Ok(data.and_then(|d| serde_json::from_str(&d).ok()))
     }
 
     /// Corridas de agentes (agent_host.rs).

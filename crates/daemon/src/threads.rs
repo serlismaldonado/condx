@@ -75,7 +75,16 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
     let mut participants: Vec<Value> = vec![];
     let title_of = |node: &str| run.snapshot.nodes.iter().find(|n| n.id == node).map(|n| n.title.clone()).unwrap_or_else(|| node.to_string());
     items.push(json!({ "at": run.created_at, "kind": "system", "text": format!("{} started it ({})", run.requested_by, run.workflow_name) }));
-    if let Some(ev) = &run.event {
+    // El evento, con cuántas veces pasó hasta ahora (la tabla de eventos lleva la cuenta).
+    let event = run.event.as_ref().map(|ev| {
+        let mut ev = ev.clone();
+        if let Some(live) = ev["id"].as_str().and_then(|id| state.store.event(id).ok().flatten()) {
+            ev["count"] = live["count"].clone();
+            ev["lastAt"] = live["lastAt"].clone();
+        }
+        ev
+    });
+    if let Some(ev) = &event {
         items.push(json!({ "at": run.created_at, "kind": "event", "event": ev }));
     }
     for nr in &run.nodes {
@@ -150,7 +159,7 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
     items.sort_by_key(|i| i["at"].as_i64().unwrap_or(0));
     let waiting_answer = run.nodes.iter().any(|n| n.status == NodeStatus::WaitingAnswer);
     Ok(json!({
-        "id": run.id, "thread": true, "kind": "flow", "title": run.workflow_name, "workflowId": run.workflow_id, "event": run.event,
+        "id": run.id, "thread": true, "kind": "flow", "title": run.workflow_name, "workflowId": run.workflow_id, "event": event,
         "status": serde_json::to_value(run.status)?, "participants": participants, "items": items, "waitingAnswer": waiting_answer,
         "usage": { "total": usage(state, &run) },
     }))

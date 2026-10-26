@@ -34,6 +34,7 @@ mod services;
 mod state;
 mod store;
 mod conditions;
+mod events;
 mod roles;
 mod templates;
 mod threads;
@@ -138,6 +139,7 @@ fn serve() -> Result<()> {
         incidents::spawn(&state);
         agent_host::spawn_poller(&state);
         notify::spawn(&state);
+        events::spawn(&state);
         jobs::recover(&state);
         workflows::recover(&state);
         if let Err(e) = projects::ensure_default(&state) {

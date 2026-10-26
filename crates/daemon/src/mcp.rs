@@ -137,6 +137,19 @@ pub fn tools() -> Vec<Value> {
             &[],
         ),
         tool("get_errors", "Grouped tab errors (console, window, promises, Convex functions). Redacted.", tab(), &[]),
+        tool(
+            "report_event",
+            "Report something wrong you found (a failing check, a risky change, an error in the app) as a Condx event. Condx groups it by fingerprint and starts the flows the developer set up for MCP events (triage, risk, notify, fix), each in its own thread. It never approves or deploys anything.",
+            json!({
+                "title": { "type": "string", "description": "One line: what's wrong." },
+                "details": { "type": "string", "description": "What you saw: error, log lines, file:line. Redacted, at most 4000 characters." },
+                "severity": { "type": "string", "enum": ["low", "medium", "high", "critical", "unknown"] },
+                "project": { "type": "string" },
+                "env": { "type": "string" },
+                "fingerprint": { "type": "string", "description": "The same fingerprint groups repeats into one event (default: the title)." }
+            }),
+            &["title"],
+        ),
         tool("get_live", "Widgets' live queries: whether visible, last and next request.", tab(), &[]),
         tool("get_offline", "Backend connection, service worker, IndexedDB and localStorage (counts only).", tab(), &[]),
         tool("reset_counters", "Resets the tab's Convex counters and error list.", tab(), &[]),
@@ -322,6 +335,13 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
         "get_report" => hub.command("report", Value::Null, tab).await?,
         "convex_top" => hub.command("top", json!({ "n": args["n"].as_u64().unwrap_or(10) }), tab).await?,
         "get_errors" => hub.command("errors", Value::Null, tab).await?,
+        "report_event" => {
+            need(Scope::JobsRequest)?;
+            let ev = crate::events::from_mcp(args, by)?;
+            let st = state.clone();
+            let saved = tokio::task::spawn_blocking(move || crate::events::record(&st, ev)).await.map_err(|e| anyhow!(e.to_string()))??;
+            json!({ "event": saved["id"], "status": saved["status"], "count": saved["count"], "runs": saved["runs"] })
+        }
         "get_live" => hub.command("live", Value::Null, tab).await?,
         "get_offline" => hub.command("offline", Value::Null, tab).await?,
         "reset_counters" => hub.command("reset", Value::Null, tab).await?,

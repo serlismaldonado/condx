@@ -361,6 +361,12 @@ pub fn spawn(state: &Shared) {
             every.tick().await;
             let opened = tick(&state).await;
             notify_opened(&state, &opened, now_ms());
+            // Los flujos con disparador «incident» también lo ven.
+            for inc in &opened {
+                if let Err(e) = crate::events::record(&state, crate::events::from_incident(inc)) {
+                    tracing::warn!("incident event: {e:#}");
+                }
+            }
             crate::agent_host::auto_start(&state, &opened).await;
         }
     });

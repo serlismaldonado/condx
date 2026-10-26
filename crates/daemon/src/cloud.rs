@@ -696,7 +696,7 @@ async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
                     let fields: Vec<String> = res.iter().map(|(k, v)| format!("{k}: {}", v.as_str().unwrap_or_default())).collect();
                     text = format!("{text}\n{}", fields.join("\n"));
                 }
-                json!({ "kind": it["kind"], "author": it["author"], "to": it["to"], "at": it["at"], "status": it["status"], "job": it["job"], "text": cut(text.trim(), 700) })
+                json!({ "kind": it["kind"], "author": it["author"], "to": it["to"], "at": it["at"], "status": it["status"], "job": it["job"], "source": it["event"]["source"], "answered": it["answered"], "text": cut(text.trim(), 700) })
             }).collect()
         } else {
             let msgs: Vec<Value> = th["transcript"].as_array().cloned().unwrap_or_default().into_iter().filter(|x| x["role"] != "tool").collect();

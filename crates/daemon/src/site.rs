@@ -863,7 +863,9 @@ pub fn spawn(state: Shared) {
                         }
                         // Lo que cambie en la nube despierta enseguida (el timbre en vivo); contestando, el
                         // avance del agente se publica cada segundo y medio.
-                        s.bell.wait(if s.answering.is_empty() { Duration::from_secs(30) } else { Duration::from_millis(1500) });
+                        // Un servicio que se levanta o se acaba de pedir: cada 3 s, para que el teléfono lo vea.
+                        let services_moving = state.services.busy_any() || now_ms() - s.service_asked_at < 90_000;
+                        s.bell.wait(if !s.answering.is_empty() { Duration::from_millis(1500) } else if services_moving { Duration::from_secs(3) } else { Duration::from_secs(30) });
                         Duration::ZERO
                     }
                 };

@@ -110,7 +110,7 @@ fn key(project: &Project, name: &str) -> String {
 }
 
 fn frontend_port(project: &Project) -> u16 {
-    if project.is_default() {
+    if project.is_default() && !crate::site::is_cloud() {
         VITE_PORT
     } else {
         project.frontend_port

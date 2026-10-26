@@ -281,7 +281,8 @@ pub fn deployer_spec(state: &Shared, project: &Project) -> Result<Spec> {
 
 /// Puerto del backend local de un proyecto (el por defecto admite el de pruebas).
 pub fn backend_port(project: &Project) -> u16 {
-    if project.is_default() {
+    // En el sitio en la nube cada proyecto usa sus puertos (el 3000 de la máquina es de boat).
+    if project.is_default() && !crate::site::is_cloud() {
         local_port()
     } else {
         project.backend_port

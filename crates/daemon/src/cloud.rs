@@ -1034,6 +1034,29 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
                 row.insert("phoneResult".into(), Value::String(result.clone()));
             }
         }
+        // Una aprobación que vuelve a esperar (un reintento: `createdAt` nuevo) no arrastra la
+        // decisión ni el resultado de la vez anterior: el teléfono vuelve a mostrar los botones (el
+        // daemon igual rechaza una firma anterior a `createdAt`).
+        let scope = format!("approvals:{}", s.link.daemon_id);
+        let stale: Vec<String> = s
+            .engine
+            .rows(&scope)
+            .into_iter()
+            .filter(|r| {
+                let decided = r.row.values.get("decidedAt").and_then(Value::as_i64);
+                let waiting = rows.get(&r.row.id).filter(|w| w.get("status").and_then(Value::as_str) == Some("waiting-approval")).and_then(|w| w.get("createdAt")).and_then(Value::as_i64);
+                matches!((decided, waiting), (Some(d), Some(c)) if d < c)
+            })
+            .map(|r| r.row.id.clone())
+            .collect();
+        for job in stale {
+            s.results.shift_remove(&job);
+            if let Some(row) = rows.get_mut(&job) {
+                for f in ["decision", "decidedAt", "deviceKey", "signature", "confirmText", "phoneResult"] {
+                    row.insert(f.into(), Value::Null);
+                }
+            }
+        }
     }
     // Incidentes abiertos e ignorados (y los resueltos hace poco), con los flujos de su proyecto.
     let now_inc = now_ms();

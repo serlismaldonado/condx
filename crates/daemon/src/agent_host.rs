@@ -409,6 +409,7 @@ pub async fn start(state: &Shared, incident_id: &str, by: &str, mode: &str) -> R
         "instructions": template.instructions, "tools": template.tools,
     });
     let st = state.clone();
+    let body = with_language(&st, body);
     let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/runs", Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
     let run = json!({
         "id": run_id, "incident": incident_id, "mode": mode, "provider": provider_id, "model": model, "by": by,
@@ -445,6 +446,7 @@ pub async fn start_chat(state: &Shared, text: &str, project: Option<&str>, by: &
     let title: String = text.lines().next().unwrap_or(text).chars().take(80).collect();
     let body = json!({ "runId": run_id, "mode": "chat", "providerId": provider_id, "model": model, "cwd": repo.display().to_string(), "text": text });
     let st = state.clone();
+    let body = with_language(&st, body);
     let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/runs", Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
     let run = json!({
         "id": run_id, "kind": "chat", "title": title, "incident": null, "project": project, "mode": "chat", "provider": provider_id, "model": model, "by": by,
@@ -540,6 +542,7 @@ pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str,
     let mode = if write { "fix" } else { "task" };
     let body = json!({ "runId": run_id, "mode": mode, "providerId": provider_id, "model": model, "cwd": cwd.display().to_string(), "text": text, "tools": role.tools });
     let st = state.clone();
+    let body = with_language(&st, body);
     let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/runs", Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
     let run = json!({
         "id": run_id, "kind": "flow", "title": format!("{} · {flow}", role.name), "role": role.id, "incident": null, "project": project, "mode": mode,
@@ -872,4 +875,13 @@ mod chat_tests {
         assert_eq!((runs[1]["kind"].as_str(), runs[1]["title"].as_str()), (Some("incident"), Some("Seed failed on dev")));
         assert!(runs.iter().all(|r| r.get("transcript").is_none()));
     }
+}
+
+/// El idioma de los agentes (configuración): va con cada corrida y el host lo suma a las instrucciones.
+fn with_language(state: &Shared, mut body: Value) -> Value {
+    let language = crate::agents::settings(state).language;
+    if !language.trim().is_empty() {
+        body["language"] = json!(language.trim());
+    }
+    body
 }

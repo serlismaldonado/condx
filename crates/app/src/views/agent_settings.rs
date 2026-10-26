@@ -434,6 +434,18 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         max_buttons = max_buttons.child(ui::brand_if(max == n, button, cx));
     }
 
+    // En qué idioma contestan los agentes por defecto (vacío: el de quien escribe).
+    let language = settings["language"].as_str().unwrap_or("").to_string();
+    let mut language_buttons = h_flex().gap_1();
+    for (code, label) in [("", t!("Automatic")), ("es", "Español".into()), ("en", "English".into())] {
+        let value = code.to_string();
+        let button = Button::new(SharedString::from(format!("lang-{code}"))).xsmall().label(label).on_click(cx.listener(move |this, _, _, cx| {
+            let value = value.clone();
+            this.save_agent_settings(move |v| v["language"] = json!(value), cx)
+        }));
+        language_buttons = language_buttons.child(ui::brand_if(language == code, button, cx));
+    }
+
     let templates = template_rows(app, &data, cx);
     let editor = template_editor(app, &data, window, cx);
     card.child(ui::section(t!("Autonomy"), cx))
@@ -448,6 +460,7 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         .child(ui::section(t!("Limits"), cx))
         .child(h_flex().gap_3().items_center().child(ui::muted(t!("Tokens per day"), cx).text_xs().w(px(150.))).child(budget_buttons))
         .child(h_flex().gap_3().items_center().child(ui::muted(t!("Agents at once"), cx).text_xs().w(px(150.))).child(max_buttons))
+        .child(h_flex().gap_3().items_center().child(ui::muted(t!("Agents answer in"), cx).text_xs().w(px(150.))).child(language_buttons))
         .child(ui::muted(t!("Used today: {u} of {b} tokens", u = data["usageToday"].as_u64().unwrap_or(0), b = budget), cx).text_xs())
         .child({
             let host = &data["host"];

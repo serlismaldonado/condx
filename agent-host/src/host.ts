@@ -109,6 +109,17 @@ export interface StartRun {
   /** De la plantilla: instrucciones que se suman al prompt y herramientas permitidas (vacío: todas las del modo). */
   instructions?: string;
   tools?: string[];
+  /** En qué idioma contestar por defecto (`es`, `en`…: la configuración de los agentes); sin él, el de quien escribe. */
+  language?: string;
+}
+
+const LANGUAGES: Record<string, string> = { es: "Spanish", en: "English", pt: "Portuguese", fr: "French", de: "German", it: "Italian" };
+
+/** La línea de idioma que se suma a las instrucciones (vacía si no hay idioma configurado). */
+export function languageLine(code?: string): string {
+  const c = (code ?? "").trim().toLowerCase();
+  if (!c) return "";
+  return `Always answer in ${LANGUAGES[c] ?? c}, unless the person explicitly asks for another language. Keep code, identifiers and command output as they are.`;
 }
 
 export interface TranscriptItem {
@@ -187,7 +198,7 @@ export class Host {
     if (!first) throw new Error("empty message");
     // La plantilla puede quitar herramientas del modo, nunca agregar (las de escritura solo existen en arreglo).
     const allowed = req.tools && req.tools.length > 0 ? modeTools[req.mode].filter((t) => req.tools!.includes(t.name)) : undefined;
-    const instructions = req.instructions?.trim() ? req.instructions.trim() : undefined;
+    const instructions = [req.instructions?.trim() ?? "", languageLine(req.language)].filter(Boolean).join("\n\n") || undefined;
     const conversation = await this.#harness.createConversation(
       { ownership: { kind: "ownerless" }, agent: { model, cwd: req.cwd, extensions: [ext], ...(allowed ? { tools: allowed } : {}), ...(instructions ? { instructions } : {}) } },
       ctx,

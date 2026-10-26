@@ -49,6 +49,8 @@ pub struct Settings {
     pub max_concurrent: u32,
     /// La política de Git: respaldo de las ramas y PR antes de desplegar (`gitflow.rs`).
     pub git: crate::gitflow::Policy,
+    /// En qué idioma contestan los agentes por defecto (`es`, `en`, …); vacío: el de quien escribe.
+    pub language: String,
 }
 
 impl Default for Settings {
@@ -60,6 +62,7 @@ impl Default for Settings {
             daily_token_budget: 500_000,
             max_concurrent: 1,
             git: crate::gitflow::Policy::default(),
+            language: String::new(),
         }
     }
 }

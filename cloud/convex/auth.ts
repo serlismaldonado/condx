@@ -105,8 +105,8 @@ export function writeDenied(principal: Principal, op: Op): string | null {
 const SITE_OWN_FIELDS = ["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "result", "resultFor"];
 /** En un hilo de la Mac (o en `_new`), aparte de lo de la Mac: sus respuestas y a qué pedido contestó. */
 const SITE_MAC_FIELDS = ["siteItems", "siteFor", "siteResult"];
-/** Un latido de la Mac más viejo que esto: la Mac está apagada (late cada 5 min). */
-export const MAC_GONE_MS = 12 * 60_000;
+/** Un latido de la Mac más viejo que esto: la Mac está apagada (late cada minuto; al irse en orden avisa con 0). */
+export const MAC_GONE_MS = 3 * 60_000;
 
 /**
  * El sitio en la nube (S5): contesta en los hilos cuando la Mac no está. En los suyos (`site-…`)

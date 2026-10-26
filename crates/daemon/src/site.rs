@@ -38,8 +38,9 @@ pub const BOAT_KEY: &str = "boat-key";
 const IDLE_STOP_MS: i64 = 30 * 60_000;
 /// Con la Mac latiendo (ella atiende), se detiene antes: este rato sin trabajo alcanza.
 const HANDBACK_STOP_MS: i64 = 2 * 60_000;
-/// Un latido de la Mac más viejo que esto: la Mac está apagada (late cada 5 min).
-const MAC_GONE_MS: i64 = 12 * 60_000;
+/// Un latido de la Mac más viejo que esto: la Mac está apagada (late cada minuto; al irse en orden
+/// avisa con 0).
+const MAC_GONE_MS: i64 = 3 * 60_000;
 
 /// Si este daemon corre como sitio en la nube (`serve --site cloud`).
 pub fn is_cloud() -> bool {
@@ -625,8 +626,8 @@ mod tests {
         assert!(!should_stop(now, now - 60_000, None));
         // Media hora sin trabajo: se detiene.
         assert!(should_stop(now, now - IDLE_STOP_MS, None));
-        // La Mac late (hace 3 min) y lleva 2 min sin trabajo: se detiene.
-        assert!(should_stop(now, now - HANDBACK_STOP_MS, Some(now - 3 * 60_000)));
+        // La Mac late (hace 1 min) y lleva 2 min sin trabajo: se detiene.
+        assert!(should_stop(now, now - HANDBACK_STOP_MS, Some(now - 60_000)));
         // El latido es viejo (Mac apagada): espera la media hora.
         assert!(!should_stop(now, now - HANDBACK_STOP_MS, Some(now - MAC_GONE_MS)));
     }

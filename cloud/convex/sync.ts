@@ -10,7 +10,7 @@ import { ConvexError, v } from "convex/values";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { applySetDelta, planOp, PROTOCOL_VERSION, type Op, type OpResult, type Row } from "localfirst/server";
-import { canAccess, principalFromToken, reviewFields, siteWriteDenied, writeDenied } from "./auth";
+import { canAccess, daemonFromToken, principalFromToken, reviewFields, siteWriteDenied, writeDenied } from "./auth";
 import { wakeIfMacGone } from "./boat";
 
 /** Versión mínima del protocolo que se acepta (§5.3 bis). */
@@ -159,6 +159,25 @@ export const push = mutation({
     // Un teléfono dejó trabajo: si la Mac no está, se despierta al sitio en la nube (`boat.ts`).
     if (principal.kind === "device" && !principal.site) await wakeIfMacGone(ctx, principal.daemonId);
     return { status: "ok", results };
+  },
+});
+
+/**
+ * La Mac se va (el daemon se detiene o la Mac se apaga en orden): su latido queda en 0 y el sitio en
+ * la nube y los teléfonos lo ven al instante, sin esperar a que venza.
+ */
+export const goodbye = mutation({
+  args: { token: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { token }) => {
+    const daemon = await daemonFromToken(ctx, token);
+    const op: Op = { opId: `goodbye-${Date.now()}`, scope: `threads:${daemon.daemonId}`, kind: "patch", rowId: "_mac", set: { aliveAt: 0 }, fieldsVersion: 0, madeAt: Date.now() };
+    try {
+      await applyOp(ctx, daemon.key, op);
+    } catch {
+      // Sin fila `_mac` todavía: no hay nada que avisar.
+    }
+    return null;
   },
 });
 

@@ -33,8 +33,25 @@ const BUSY_FOR_MS: i64 = 30_000;
 /// no anda.
 const SAFETY_RING_MS: i64 = 60_000;
 const FALLBACK_RING_MS: i64 = 15_000;
-/// Cada cuánto publica la Mac que sigue encendida (el teléfono la da por apagada a los 12 min).
-const HEARTBEAT_MS: i64 = 5 * 60_000;
+/// Cada cuánto publica la Mac que sigue encendida (la nube, el sitio y el teléfono la dan por apagada
+/// a los 3 min; al irse en orden avisa enseguida con `goodbye`).
+const HEARTBEAT_MS: i64 = 60_000;
+
+/// El daemon se va en orden (lo detienen o la Mac se apaga): Condx Cloud deja su latido en 0 y el sitio
+/// en la nube toma los hilos enseguida. No en un reinicio (actualización, reinstalar): vuelve en segundos.
+pub fn goodbye() -> Result<()> {
+    let restarting = home().join("restarting");
+    let fresh = std::fs::metadata(&restarting).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|e| e.as_secs() < 120));
+    let _ = std::fs::remove_file(&restarting);
+    if fresh {
+        return Ok(());
+    }
+    let (Some(link), Some(token)) = (load_link(), load_token()) else { return Ok(()) };
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(4)).build();
+    agent.post(&format!("{}/api/mutation", link.url)).send_json(json!({ "path": "sync:goodbye", "args": { "token": token }, "format": "json" }))?;
+    tracing::info!("cloud: said goodbye (the cloud site takes over)");
+    Ok(())
+}
 const RECENT_JOBS: usize = 50;
 /// Campos que el daemon escribe en cada alcance (los demás son de otros: el teléfono).
 /// Sin la hora de la última revisión: cambiaba cada 30 s y nadie la lee (cuatro escrituras por vuelta).

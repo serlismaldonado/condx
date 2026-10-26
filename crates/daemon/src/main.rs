@@ -227,6 +227,23 @@ fn serve() -> Result<()> {
         } else {
             cloud::spawn(state.clone());
         }
+        // Detenido en orden (launchd al apagar la Mac o al detenerlo): se despide de Condx Cloud.
+        if !site::is_cloud() {
+            tokio::spawn(async {
+                let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) else { return };
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), tokio::task::spawn_blocking(|| {
+                    if let Err(e) = cloud::goodbye() {
+                        tracing::warn!("cloud: couldn't say goodbye: {e:#}");
+                    }
+                }))
+                .await;
+                std::process::exit(0);
+            });
+        }
         let listener = tokio::net::TcpListener::from_std(listener)?;
         match &state.config.repo {
             Some(repo) => tracing::info!("condxd at http://{addr} · heskala-erp at {}", repo.display()),

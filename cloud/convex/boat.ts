@@ -1,6 +1,6 @@
 // El sitio en la nube en boat (docs/design/cloud-site.md, S1): detenido no cobra, y lo despierta
 // Condx Cloud cuando un teléfono deja trabajo y la Mac no está (su latido, `aliveAt` en la fila
-// `_mac` de los hilos, tiene más de 12 min). Va por eventos: una llamada solo cuando llega algo.
+// `_mac` de los hilos, tiene más de 3 min o es 0). Va por eventos: una llamada solo cuando llega algo.
 //
 // Se configura con dos variables del deployment: `BOAT_API_KEY` (una key de boat solo de esa
 // máquina: `sandbox.read,sandbox.stop,sandbox.resume`) y `BOAT_SANDBOX_ID`. Sin ellas no hace nada.
@@ -9,8 +9,8 @@ import { v } from "convex/values";
 import { internalAction, internalMutation, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 
-/** Un latido más viejo que esto: la Mac está apagada (late cada 5 min). */
-const MAC_GONE_MS = 12 * 60_000;
+/** Un latido más viejo que esto: la Mac está apagada (late cada minuto; al irse en orden avisa con 0). */
+const MAC_GONE_MS = 3 * 60_000;
 /** Entre dos intentos de despertarlo, al menos esto (una ráfaga de mensajes, un intento). */
 const WAKE_EVERY_MS = 2 * 60_000;
 

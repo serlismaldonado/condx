@@ -24,5 +24,7 @@ if ! cmp -s agent-host/package-lock.json "$HOST/package-lock.json"; then
   cp agent-host/package.json agent-host/package-lock.json "$HOST/"
   (cd "$HOST" && npm ci --omit=dev --silent) && echo "Dependencias del host de agentes instaladas."
 fi
+# Un reinicio, no una despedida: el daemon no le avisa a Condx Cloud que se va.
+touch "${CONDX_HOME:-$HOME/.condx/daemon}/restarting"
 launchctl kickstart -k "gui/$(id -u)/dev.condx.daemon"
 echo "Daemon instalado y reiniciado."

@@ -49,3 +49,12 @@ test("con la Mac latiendo no contesta en los hilos de la Mac (los suyos sí)", a
   await expect(site(t, op({ kind: "patch", rowId: "chat-1", set: { siteFor: "r1" } }))).rejects.toThrow(/The Mac is answering/);
   await expect(site(t, op({ kind: "create", rowId: "site-2", set: { title: "Mío" } }))).resolves.toMatchObject({ status: "ok" });
 });
+
+test("la Mac se despide: el sitio contesta enseguida, sin esperar a que venza el latido", async () => {
+  const t = await setup(Date.now() - 30_000);
+  await expect(site(t, op({ kind: "patch", rowId: "chat-1", set: { siteFor: "r1" } }))).rejects.toThrow(/The Mac is answering/);
+  await t.mutation(api.sync.goodbye, { token: A.token });
+  await expect(site(t, op({ kind: "patch", rowId: "chat-1", set: { siteFor: "r1" } }))).resolves.toMatchObject({ status: "ok" });
+  await expect(t.mutation(api.sync.goodbye, { token: SITE.token })).rejects.toThrow(/Invalid token/);
+});
+

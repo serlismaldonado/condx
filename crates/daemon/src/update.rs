@@ -253,6 +253,8 @@ fn app_running() -> bool {
 /// Reinicia el daemon (launchd lo vuelve a levantar con el binario nuevo). La app la reabre el daemon
 /// nuevo (`reopen_after_update`): un proceso lanzado desde este moriría con él en `kickstart -k`.
 pub fn restart_soon() {
+    // Un reinicio, no una despedida: el sitio en la nube no toma los hilos por unos segundos.
+    let _ = std::fs::write(crate::config::home().join("restarting"), "");
     if app_running() {
         let _ = std::fs::write(reopen_marker(), crate::store::now_ms().to_string());
     }

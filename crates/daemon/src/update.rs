@@ -360,7 +360,12 @@ pub fn release(repo: &Path, version: &str) -> Result<String> {
 /// Lo que piden los agentes (Mayer): un release de Condx, que espera la aprobación de la persona.
 pub async fn request_release(state: &Shared, version: Option<&str>, phone: bool, by: &str) -> Result<crate::jobs::Job> {
     let env = local_env(state).ok_or_else(|| anyhow!("there's no local environment to approve the release in"))?;
-    crate::jobs::request(state, if phone { MOBILE_RECIPE } else { RELEASE_RECIPE }, &env, &json!({ "version": version.unwrap_or("") }), by).await
+    // Sin versión, el argumento no va (vacío no pasa la validación): la receta usa la siguiente de parche.
+    let args = match version {
+        Some(v) => json!({ "version": v }),
+        None => json!({}),
+    };
+    crate::jobs::request(state, if phone { MOBILE_RECIPE } else { RELEASE_RECIPE }, &env, &args, by).await
 }
 
 /// El repo de la app del teléfono: el de Mayer que es `condx-mobile`.

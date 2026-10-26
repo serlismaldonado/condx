@@ -131,8 +131,10 @@ fn role_logo(state: &Shared, role: &str) -> &'static str {
     crate::agents::logo_for(state, crate::roles::get(state, role).and_then(|r| r.provider).as_deref())
 }
 
-/// Llama a un invitado: si ya está en el hilo, le escribe; si no, lo arranca (solo lee, aunque su
-/// rol escriba) con lo que pasó hasta ahora.
+/// Llama a un invitado: si ya está en el hilo, le escribe; si no, lo arranca con lo que pasó hasta
+/// ahora. Solo lee aunque su rol escriba (llega con la conversación de contexto), salvo un rol con
+/// repos propios (Mayer, que mantiene Condx): ése trabaja en su worktree como un arreglo; desplegar
+/// sigue pidiendo la aprobación.
 /// `place`: el proyecto (si hay) y el flujo o «chat» donde trabaja.
 async fn call_guest(state: &Shared, thread: &str, role: &crate::roles::Role, context: String, text: &str, place: (Option<&str>, &str), images: &[Value]) -> Result<Value> {
     let (project, flow) = place;
@@ -141,7 +143,9 @@ async fn call_guest(state: &Shared, thread: &str, role: &crate::roles::Role, con
         crate::agent_host::message(state, &run_id, text, images).await?;
     } else {
         let mut r = role.clone();
-        r.mode = crate::roles::Mode::Read;
+        if r.repos.is_empty() {
+            r.mode = crate::roles::Mode::Read;
+        }
         let task = format!("{context}\n\nThe developer asks: {text}");
         crate::agent_host::start_role(state, &r, &run_id, &task, project, flow, None).await?;
         if !images.is_empty() {

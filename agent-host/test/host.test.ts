@@ -126,7 +126,8 @@ function fixRepo(): string {
   return dir;
 }
 
-test("en modo arreglo edita su worktree, corre los chequeos sin red y solo los scripts del commit base", async () => {
+// El perfil sin red de macOS (sandbox-exec); en Linux los chequeos van con `unshare -rn`.
+test("en modo arreglo edita su worktree, corre los chequeos sin red y solo los scripts del commit base", { skip: process.platform !== "darwin" }, async () => {
   const dir = fixRepo();
   const storage = join(mkdtempSync(join(tmpdir(), "condx-agent-store-")), "agents.sqlite");
   const faux = [

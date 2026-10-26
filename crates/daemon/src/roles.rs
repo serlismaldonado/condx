@@ -42,6 +42,26 @@ pub struct Role {
     /// separados por `|`, como `low|medium|high|critical`). Vacío: texto libre.
     pub output: IndexMap<String, String>,
     pub builtin: bool,
+    /// Dónde trabaja, si no es el repo del proyecto: el primero por defecto; otro cuando el pedido
+    /// nombra alguna de sus palabras (Mayer: `condx`, y `condx-mobile` si habla del teléfono).
+    pub repos: Vec<RoleRepo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RoleRepo {
+    pub path: String,
+    /// Palabras del pedido que lo eligen (sin mayúsculas ni acentos).
+    pub when: Vec<String>,
+}
+
+/// El repo de un rol para un pedido: el que nombra alguna de sus palabras, si no el primero.
+pub fn repo_for(role: &Role, text: &str) -> Option<std::path::PathBuf> {
+    let plain = |s: &str| s.to_lowercase().replace(['á', 'à'], "a").replace('é', "e").replace('í', "i").replace('ó', "o").replace('ú', "u");
+    let said = plain(text);
+    let picked = role.repos.iter().find(|r| r.when.iter().any(|w| !w.trim().is_empty() && said.contains(&plain(w.trim())))).or_else(|| role.repos.first())?;
+    let path = std::path::PathBuf::from(picked.path.trim());
+    (!picked.path.trim().is_empty()).then_some(path)
 }
 
 impl Default for Role {
@@ -59,6 +79,7 @@ impl Default for Role {
             max_minutes: 10,
             output: IndexMap::new(),
             builtin: false,
+            repos: vec![],
         }
     }
 }
@@ -110,12 +131,30 @@ pub fn defaults() -> Vec<Role> {
             &[("verdict", "approve|changes"), ("findings", "list")],
         ),
         builtin("explainer", "Explainer", Mode::Read, "You answer the developer's questions about this thread's event and the project, briefly, with file:line references.", &[]),
+        Role {
+            max_tokens: 200_000,
+            max_minutes: 25,
+            ..builtin(
+                "mayer",
+                "Mayer",
+                Mode::Write,
+                "You maintain Condx itself, in your own worktree: the daemon (crates/daemon, Rust), the desktop app (crates/app, GPUI), the agent host (agent-host, Node) and Condx Cloud (cloud, Convex) in the condx repo; the phone app (Native Shell / nsh, Rust) in the condx-mobile repo. When the developer reports a problem or asks for a change in Condx, find the cause in the code and make the smallest change that does it, in the style of the surrounding code. Run the checks that apply (cargo check and cargo test for Rust, npm test for the agent host, bun run test for the cloud) and say which passed. Never touch secrets or keys, never weaken a check to make it pass. End with what you changed, why, and anything the developer must do (rebuild, reinstall, re-pair).",
+                &[("change", "string"), ("files", "list"), ("checks", "string"), ("next", "string")],
+            )
+        },
     ]
 }
 
 pub fn list(state: &Shared) -> Vec<Role> {
     let stored = state.store.probes().ok().and_then(|l| l.into_iter().find(|(k, _)| k == KEY)).map(|(_, v)| v);
-    stored.and_then(|v| serde_json::from_value::<Vec<Role>>(v).ok()).unwrap_or_else(defaults)
+    let Some(mut list) = stored.and_then(|v| serde_json::from_value::<Vec<Role>>(v).ok()) else { return defaults() };
+    // Los de fábrica que llegaron después de guardar el catálogo (Mayer) también aparecen.
+    for d in defaults() {
+        if !list.iter().any(|r| r.id == d.id) {
+            list.push(d);
+        }
+    }
+    list
 }
 
 pub fn get(state: &Shared, id: &str) -> Option<Role> {
@@ -304,6 +343,15 @@ pub fn json(state: &Shared) -> Value {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn el_repo_de_un_rol_sale_de_las_palabras_del_pedido() {
+        let r = Role { repos: vec![RoleRepo { path: "/src/condx".into(), when: vec![] }, RoleRepo { path: "/src/condx-mobile".into(), when: vec!["teléfono".into(), "android".into(), "apk".into()] }], ..Role::default() };
+        assert_eq!(repo_for(&r, "@mayer el botón de voz del telefono no anda").unwrap(), std::path::PathBuf::from("/src/condx-mobile"));
+        assert_eq!(repo_for(&r, "la APK no instala").unwrap(), std::path::PathBuf::from("/src/condx-mobile"));
+        assert_eq!(repo_for(&r, "la app de escritorio se cierra").unwrap(), std::path::PathBuf::from("/src/condx"));
+        assert!(repo_for(&Role::default(), "lo que sea").is_none());
+    }
     use super::*;
 
     fn risk() -> Role {

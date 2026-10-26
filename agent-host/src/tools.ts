@@ -5,6 +5,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import type { Context } from "@earendil-works/chord/context";
@@ -250,17 +251,24 @@ export const runCheckTool = defineTool({
 export async function runScript(root: string, script: string): Promise<{ code: number | string; tail: string }> {
   const pm = packageManager(root);
   const home = process.env.HOME ?? "/nonexistent";
-  const tmp = join(process.env.TMPDIR ?? "/private/tmp", `condx-check-${process.pid}`);
+  const tmp = join(tmpdir(), `condx-check-${process.pid}`);
   await mkdir(tmp, { recursive: true });
-  const profile = sandboxProfile(root, home, tmp);
+  // Sin red siempre: en macOS con sandbox-exec (y su perfil de escritura); en Linux en un espacio de
+  // red propio (`unshare -rn`). Si el sistema no lo permite, no se corre sin sandbox.
+  const [cmd, args] =
+    process.platform === "darwin" ? ["/usr/bin/sandbox-exec", ["-p", sandboxProfile(root, home, tmp), pm, "run", script]] : ["unshare", ["-rn", "--", pm, "run", script]];
   return await new Promise((ok) => {
     execFile(
-      "/usr/bin/sandbox-exec",
-      ["-p", profile, pm, "run", script],
+      cmd,
+      args,
       { cwd: root, timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, TMPDIR: tmp, CI: "1", NO_COLOR: "1", FORCE_COLOR: "0" } },
       (err, stdout, stderr) => {
         const code = err ? ((err as { code?: number | string }).code ?? "error") : 0;
-        ok({ code, tail: `${stdout}\n${stderr}`.trim().split("\n").slice(-60).join("\n") });
+        const tail = `${stdout}\n${stderr}`.trim().split("\n").slice(-60).join("\n");
+        if (process.platform !== "darwin" && (code === "ENOENT" || /unshare: /.test(stderr))) {
+          return ok({ code: "no-sandbox", tail: `the checks didn't run: this system doesn't allow a network-free sandbox (unshare -rn)\n${tail}` });
+        }
+        ok({ code, tail });
       },
     );
   });

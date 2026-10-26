@@ -522,7 +522,10 @@ pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str,
         bail!("today's token budget is used up ({} of {})", usage_today(state), settings.daily_token_budget);
     }
     let _slot = check_slot(state)?;
-    let repo = crate::projects::get(state, project).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir());
+    // El repo del rol, si tiene uno para este pedido (Mayer trabaja en Condx); si no, el del proyecto.
+    // Solo lo que pidió la persona (no la conversación que va de contexto) elige el repo.
+    let ask = text.rsplit("The developer asks:").next().unwrap_or(text);
+    let repo = crate::roles::repo_for(role, ask).filter(|p| p.join(".git").exists()).unwrap_or_else(|| crate::projects::get(state, project).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir()));
     // Un agente que escribe trabaja en su worktree (rama condx/fix-…), como el modo arreglo.
     let write = role.mode == crate::roles::Mode::Write;
     let (cwd, branch, base) = if write {

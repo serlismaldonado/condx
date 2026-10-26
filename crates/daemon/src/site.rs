@@ -371,6 +371,11 @@ fn clone_projects(state: &Shared, s: &mut Session) {
 
 fn clone_project(state: &Shared, name: &str, url: &str, branch: &str) -> Result<()> {
     let dir = home().join("projects").join(name);
+    // Un clon cortado a medias (el contenedor se reinició) no tiene ningún commit: se empieza de nuevo.
+    let complete = std::process::Command::new("git").arg("-C").arg(&dir).args(["rev-parse", "--verify", "HEAD"]).output().is_ok_and(|o| o.status.success());
+    if dir.exists() && !complete {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     if !dir.join(".git").exists() {
         std::fs::create_dir_all(dir.parent().unwrap())?;
         // Primero el token del dueño del repo (`github-token:<dueño>`), después los demás (un repo

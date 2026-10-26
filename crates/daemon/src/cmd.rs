@@ -126,7 +126,7 @@ pub fn env_file_values(path: &Path) -> Vec<(String, String)> {
         }
         let v = v.trim();
         // Sin comentario al final (fuera de comillas) y sin las comillas.
-        let v = if v.starts_with('"') || v.starts_with('\'') { v[1..].split(|c| c == '"' || c == '\'').next().unwrap_or("") } else { v.split(" #").next().unwrap_or("").trim() };
+        let v = if v.starts_with('"') || v.starts_with('\'') { v[1..].split(['"', '\'']).next().unwrap_or("") } else { v.split(" #").next().unwrap_or("").trim() };
         // La última gana, como en dotenv.
         out.retain(|(x, _)| x != k);
         out.push((k.to_string(), v.to_string()));

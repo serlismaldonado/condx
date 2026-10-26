@@ -150,6 +150,8 @@ pub struct DevtoolApp {
     pub recipes: Vec<Value>,
     pub jobs: Vec<Value>,
     pub approvals: Vec<Value>,
+    /// `/api/update`: la versión del daemon y la actualización ofrecida (si hay).
+    pub update: Value,
     /// Trabajo abierto en «Trabajos», con su log acumulado.
     pub job: Option<String>,
     pub job_detail: Option<Value>,
@@ -405,6 +407,7 @@ impl DevtoolApp {
             recipes: vec![],
             jobs: vec![],
             approvals: vec![],
+            update: Value::Null,
             job: None,
             job_detail: None,
             job_log: String::new(),
@@ -605,19 +608,22 @@ impl DevtoolApp {
             let services_path = format!("/api/services?project={project}");
             let overview_path = format!("/api/overview?project={project}");
             let jobs_path = format!("/api/jobs?limit=60&project={project}");
-            let (overview, probes, jobs, approvals, recipes, backups, services, projects, incidents) = cx
+            let ((overview, probes, jobs, approvals, recipes, backups, services, projects, incidents), update) = cx
                 .background_executor()
                 .spawn(async move {
                     (
-                        d.get(&overview_path),
-                        d.get("/api/probes"),
-                        d.get(&jobs_path),
-                        d.get("/api/approvals"),
-                        d.get("/api/recipes"),
-                        d.get("/api/backups"),
-                        d.get(&services_path),
-                        d.get("/api/projects"),
-                        d.get("/api/incidents?limit=100"),
+                        (
+                            d.get(&overview_path),
+                            d.get("/api/probes"),
+                            d.get(&jobs_path),
+                            d.get("/api/approvals"),
+                            d.get("/api/recipes"),
+                            d.get("/api/backups"),
+                            d.get(&services_path),
+                            d.get("/api/projects"),
+                            d.get("/api/incidents?limit=100"),
+                        ),
+                        d.get("/api/update"),
                     )
                 })
                 .await;
@@ -645,6 +651,9 @@ impl DevtoolApp {
                     if let Ok(Value::Array(list)) = incidents {
                         app.notify_incidents(&list, window, cx);
                         app.incidents = list;
+                    }
+                    if let Ok(v @ Value::Object(_)) = update {
+                        app.update = v;
                     }
                     if let Ok(Value::Array(list)) = backups {
                         app.backups = list;

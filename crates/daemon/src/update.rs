@@ -239,16 +239,62 @@ pub fn apply(version: &str) -> Result<String> {
     Ok(format!("Condx {version} installed; restarting"))
 }
 
-/// Reinicia el daemon (launchd lo vuelve a levantar con el binario nuevo) y, si la app estaba
-/// abierta, la vuelve a abrir. Desprendido: este proceso muere en el camino.
+/// Marca que la app estaba abierta al actualizar: el daemon nuevo la vuelve a abrir al arrancar.
+fn reopen_marker() -> PathBuf {
+    crate::config::home().join("reopen-app")
+}
+
+fn app_running() -> bool {
+    Command::new("pgrep").args(["-x", "condx"]).output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Reinicia el daemon (launchd lo vuelve a levantar con el binario nuevo). La app la reabre el daemon
+/// nuevo (`reopen_after_update`): un proceso lanzado desde este moriría con él en `kickstart -k`.
 pub fn restart_soon() {
-    let app = app_path();
+    if app_running() {
+        let _ = std::fs::write(reopen_marker(), crate::store::now_ms().to_string());
+    }
     let uid = Command::new("id").arg("-u").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let script = format!(
-        "sleep 3; if pgrep -f 'Condx.app/Contents/MacOS' >/dev/null; then osascript -e 'quit app \"Condx\"'; sleep 2; REOPEN=1; fi; launchctl kickstart -k gui/{uid}/dev.condx.daemon; [ -n \"$REOPEN\" ] && open '{}'",
-        app.display()
-    );
+    let script = format!("sleep 3; launchctl kickstart -k gui/{uid}/dev.condx.daemon");
     let _ = Command::new("sh").args(["-c", &format!("nohup sh -c {} >/dev/null 2>&1 &", shell_quote(&script))]).spawn();
+}
+
+/// Al arrancar después de una actualización: cierra la app vieja (sigue corriendo desde la carpeta de
+/// respaldo) y abre la nueva. Sabe que hubo una por la marca o, si la dejó un daemon anterior a ella,
+/// porque cambió la versión y hay un respaldo de la app de hace minutos.
+pub fn reopen_after_update(state: &Shared) {
+    const LAST: &str = "meta:last-version";
+    let before = state.store.probes().ok().and_then(|l| l.into_iter().find(|(k, _)| k == LAST)).and_then(|(_, v)| v["version"].as_str().map(str::to_string));
+    let _ = state.store.save_probe(LAST, &json!({ "version": current() }));
+    let marked = reopen_marker().exists();
+    let _ = std::fs::remove_file(reopen_marker());
+    // Sin versión anterior anotada (un daemon de antes de esto) también cuenta: el respaldo lo dice.
+    let just_updated = before.as_deref() != Some(current()) && recent_app_backup();
+    if !(marked || just_updated) {
+        return;
+    }
+    std::thread::spawn(move || {
+        if app_running() {
+            let _ = Command::new("osascript").args(["-e", "quit app \"Condx\""]).output();
+            for _ in 0..20 {
+                if !app_running() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+        let app = app_path();
+        match Command::new("open").arg(&app).output() {
+            Ok(o) if o.status.success() => tracing::info!("update: reopened {}", app.display()),
+            _ => tracing::warn!("update: couldn't reopen {}", app.display()),
+        }
+    });
+}
+
+/// Un respaldo de la app de los últimos 15 minutos (lo deja `apply`).
+fn recent_app_backup() -> bool {
+    let now = crate::store::now_ms();
+    std::fs::read_dir(home().join(".condx/backups")).map(|d| d.flatten().any(|e| e.file_name().to_string_lossy().strip_prefix("Condx.app-").and_then(|t| t.parse::<i64>().ok()).is_some_and(|t| now - t < 15 * 60_000))).unwrap_or(false)
 }
 
 fn shell_quote(s: &str) -> String {

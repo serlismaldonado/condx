@@ -415,12 +415,23 @@ fn render_footer(app: &DevtoolApp, cx: &mut Context<DevtoolApp>) -> AnyElement {
     h_flex().h(px(36.)).px_1().gap_1().items_center().border_t_1().border_color(t.card_border).child(bell).child(theme).child(guide).child(settings).child(div().flex_1()).child(toggle).into_any_element()
 }
 
+/// La actualización de Condx en curso o esperando aprobación: (versión, corriendo).
+fn update_job(app: &DevtoolApp) -> Option<(String, bool)> {
+    let job = app.jobs.iter().find(|j| j["recipe"] == "update-condx" && matches!(j["status"].as_str(), Some("running" | "waiting-approval")))?;
+    let version = app.update["offered"].as_str().unwrap_or("").to_string();
+    Some((version, job["status"] == "running"))
+}
+
 /// El estado del daemon, en la esquina superior derecha de la ventana.
 fn daemon_status(app: &DevtoolApp, cx: &mut Context<DevtoolApp>) -> impl IntoElement {
     let t = Tokens::current(cx);
+    let version = app.update["current"].as_str().map(|v| format!(" {v}")).unwrap_or_default();
+    let updating = update_job(app).filter(|(_, running)| *running);
     let (health, status): (Health, SharedString) = match (&app.error, app.updated_at) {
+        // Mientras se instala una versión nueva el daemon se reinicia: no es una falla.
+        (Some(_), _) if updating.is_some() => (Health::Warn, t!("Updating Condx…").into()),
         (Some(e), _) => (Health::Bad, e.clone().into()),
-        (None, Some(at)) => (Health::Ok, t!("Daemon · {a}", a = ui::ago(at)).into()),
+        (None, Some(at)) => (Health::Ok, t!("Daemon{v} · {a}", v = version, a = ui::ago(at)).into()),
         (None, None) => (Health::Unknown, t!("Connecting to the daemon…").into()),
     };
     // Con la ventana angosta, solo el punto (el texto queda en el tooltip).
@@ -455,6 +466,15 @@ fn header_chips(app: &DevtoolApp, cx: &mut Context<DevtoolApp>) -> Div {
                 .child(div().max_w(px(260.)).truncate().child(text))
                 .on_click(cx.listener(|this, _, window, cx| this.open_page(Page::Jobs, window, cx))),
         );
+    }
+    // Una versión nueva de Condx: instalándose, o lista para aprobar.
+    if let Some((version, running)) = update_job(app) {
+        let text = if running { t!("Updating Condx to {v}…", v = version) } else { t!("Condx {v} is ready to install", v = version) };
+        let mut c = chip("chip-update").child(div().max_w(px(260.)).truncate().child(text));
+        if running {
+            c = c.child(Spinner::new().xsmall());
+        }
+        row = row.child(c.on_click(cx.listener(|this, _, window, cx| this.open_page(Page::Jobs, window, cx))));
     }
     if !app.approvals.is_empty() {
         row = row.child(

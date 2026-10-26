@@ -148,6 +148,7 @@ fn serve() -> Result<()> {
         notify::spawn(&state);
         mail::spawn(&state);
         update::spawn(&state);
+        update::reopen_after_update(&state);
         events::spawn(&state);
         jobs::recover(&state);
         workflows::recover(&state);

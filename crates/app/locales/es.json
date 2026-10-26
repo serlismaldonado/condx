@@ -925,5 +925,9 @@
   "waiting for your answer": "esperando tu respuesta",
   "{count} variables": "{count} variables",
   "{n} jobs running": "{n} trabajos corriendo",
-  "{n} tokens": "{n} tokens"
+  "{n} tokens": "{n} tokens",
+  "Daemon{v} · {a}": "Daemon{v} · {a}",
+  "Updating Condx…": "Actualizando Condx…",
+  "Updating Condx to {v}…": "Actualizando Condx a {v}…",
+  "Condx {v} is ready to install": "Condx {v} lista para instalar"
 }

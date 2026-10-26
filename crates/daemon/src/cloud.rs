@@ -52,7 +52,7 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects"];
 /// Lo más largo de un mensaje de un hilo en el teléfono (antes 700: las respuestas se cortaban).
 const ITEM_CHARS: usize = 12_000;
 /// Lo que ocupan los mensajes de un hilo en su fila: si se pasa, se dejan afuera los más viejos.
@@ -84,6 +84,40 @@ pub const APK_ROW: &str = "_apk";
 /// La configuración de los agentes de la Mac (proveedor y modelo por defecto, presupuesto, cuántos a
 /// la vez, autonomía, política de Git; nada secreto): el sitio en la nube la copia.
 pub const SETTINGS_ROW: &str = "_settings";
+/// Los teléfonos de confianza de la Mac (id, nombre, llave pública): el sitio en la nube verifica con
+/// ellos las firmas de los mensajes cuando contesta con la Mac apagada.
+pub const DEVICES_ROW: &str = "_devices";
+/// Los proyectos de la Mac con su repo de GitHub (sin credenciales) y su rama: el sitio en la nube los
+/// clona para que sus agentes lean el código.
+pub const PROJECTS_ROW: &str = "_projects";
+
+/// Los proyectos que se publican: nombre, remoto `https://…` sin credenciales y rama por defecto.
+pub fn published_projects(state: &Shared) -> Vec<Value> {
+    let git = |repo: &std::path::Path, args: &[&str]| std::process::Command::new("git").arg("-C").arg(repo).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    state
+        .store
+        .projects()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| {
+            let remote = git(&p.repo, &["remote", "get-url", "origin"])?;
+            let url = github_https(&remote)?;
+            let branch = git(&p.repo, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).and_then(|b| b.strip_prefix("origin/").map(str::to_string)).unwrap_or_else(|| "main".into());
+            Some(json!({ "name": p.name, "url": url, "branch": branch }))
+        })
+        .collect()
+}
+
+/// `git@github.com:o/r.git` o `https://user:token@github.com/o/r` → `https://github.com/o/r.git`
+/// (solo GitHub, sin credenciales).
+fn github_https(remote: &str) -> Option<String> {
+    let path = remote
+        .strip_prefix("git@github.com:")
+        .or_else(|| remote.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| remote.strip_prefix("https://").map(|r| r.rsplit_once('@').map(|(_, h)| h).unwrap_or(r)).and_then(|r| r.strip_prefix("github.com/")))?;
+    let path = path.trim_end_matches('/').trim_end_matches(".git");
+    (path.split('/').count() == 2 && !path.is_empty()).then(|| format!("https://github.com/{path}.git"))
+}
 /// Cada cuánto se vuelven a armar los hilos (cada uno lee las conversaciones de sus agentes).
 const THREADS_EVERY_MS: i64 = 8_000;
 /// Cada cuánto se rearman los hilos mientras un agente trabaja (lo que escribe va llegando).
@@ -331,7 +365,8 @@ pub fn diff(scope: &str, current: &IndexMap<String, Values>, want: &IndexMap<Str
         }
     }
     for (id, have) in current {
-        if want.contains_key(id) {
+        // Los hilos del sitio en la nube (`site-…`) son suyos: la Mac no los borra.
+        if want.contains_key(id) || id.starts_with("site-") {
             continue;
         }
         match jobs_status.get(id) {
@@ -899,10 +934,14 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
     for row in s.engine.rows(&scope) {
         let Some(request_id) = row.row.values.get("requestId").and_then(Value::as_str).map(str::to_string) else { continue };
         let answered = row.row.values.get("resultFor").and_then(Value::as_str) == Some(request_id.as_str());
-        if row.pending || answered || !s.seen.insert(format!("{}:{request_id}", row.row.id)) {
+        // Lo contestó el sitio en la nube con la Mac apagada (`siteFor`): no se contesta dos veces.
+        let by_site = row.row.values.get("siteFor").and_then(Value::as_str) == Some(request_id.as_str());
+        if row.pending || answered || by_site || row.row.id.starts_with("site-") || !s.seen.insert(format!("{}:{request_id}", row.row.id)) {
             continue;
         }
         let id = row.row.id.clone();
+        // Lo que contestó el sitio en este hilo mientras la Mac no estaba: va como contexto al agente.
+        let site_context = site_context(&row.row.values, s.site_handed.get(&id).copied().unwrap_or(0));
         let result = match verify_thread_request(&s.link.daemon_id, &id, &row.row.values, &devices, now_ms()) {
             Ok(r) => {
                 // Los adjuntos: bajarlos de la nube (cifrados para esta Mac) y prepararlos para el agente.
@@ -916,7 +955,10 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
                 match prepared {
                     Err(e) => format!("rejected: couldn't receive the attachments: {e:#}"),
                     Ok(p) => {
-                        let text = [r.arg.trim(), p.text.as_str()].iter().filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join("\n\n");
+                        let text = [site_context.as_ref().map(|(t, _)| t.as_str()).unwrap_or(""), r.arg.trim(), p.text.as_str()].iter().filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join("\n\n");
+                        if let Some((_, n)) = &site_context {
+                            s.site_handed.insert(id.clone(), *n);
+                        }
                         let _rt = s.rt.enter();
                         if id == NEW_ROW {
                             // Un hilo nuevo: un chat con el agente, que arranca con este mensaje.
@@ -940,6 +982,20 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
         s.thread_results.insert(id, (request_id, result));
         s.threads_built.0 = 0;
     }
+}
+
+/// Las respuestas del sitio en la nube (`siteItems`) que la Mac todavía no le pasó a su agente, como
+/// texto, y cuántas hay en total.
+fn site_context(row: &Values, handed: usize) -> Option<(String, usize)> {
+    let items: Vec<Value> = row.get("siteItems").and_then(Value::as_str).and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+    if items.len() <= handed {
+        return None;
+    }
+    let lines: Vec<String> = items[handed..]
+        .iter()
+        .map(|i| format!("{}: {}", if i["kind"] == "user" { "User" } else { "Cloud site" }, i["text"].as_str().unwrap_or("")))
+        .collect();
+    Some((format!("(While this Mac was away, this happened in the thread on the cloud site:)\n{}", lines.join("\n")), items.len()))
 }
 
 /// Las decisiones nuevas de los teléfonos: verificar y, si corresponde, decidir el trabajo.
@@ -1032,6 +1088,10 @@ struct Session {
     rung_at: i64,
     /// El último latido publicado (`aliveAt` en la fila `_mac`).
     alive_at: i64,
+    /// Cuántas respuestas del sitio en la nube ya se le pasaron al agente, por hilo.
+    site_handed: std::collections::HashMap<String, usize>,
+    /// Los proyectos publicados (se recalculan cada 5 min: correr git en cada vuelta sobra).
+    projects_built: (i64, Vec<Value>),
 }
 
 fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<Session> {
@@ -1061,7 +1121,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0, alive_at: 0 })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0, alive_at: 0, site_handed: Default::default(), projects_built: (0, vec![]) })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -1159,6 +1219,11 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     agents.extend(crate::connections::list().iter().map(|c| json!({ "id": c.handle(), "name": c.name, "logo": c.logo(), "external": true })));
     trows.insert(AGENTS_ROW.into(), obj(json!({ "title": "agents", "participants": serde_json::to_string(&agents).unwrap_or_default() })));
     trows.insert(SETTINGS_ROW.into(), obj(json!({ "title": "settings", "settings": serde_json::to_string(&crate::agents::settings(state)).unwrap_or_default() })));
+    trows.insert(DEVICES_ROW.into(), obj(json!({ "title": "devices", "devices": serde_json::to_string(&trusted_devices()).unwrap_or_default() })));
+    if now_ms() - s.projects_built.0 > 5 * 60_000 {
+        s.projects_built = (now_ms(), published_projects(state));
+    }
+    trows.insert(PROJECTS_ROW.into(), obj(json!({ "title": "projects", "projects": serde_json::to_string(&s.projects_built.1).unwrap_or_default() })));
     if let Some(apk) = crate::update::latest_apk(state) {
         trows.insert(APK_ROW.into(), obj(json!({ "title": "apk", "version": apk["version"], "versionCode": apk["versionCode"], "url": apk["url"] })));
     }
@@ -1380,6 +1445,25 @@ mod tests {
         // Sin él: cada 15 s.
         assert!(!ring_due(now, now - 3_000, false));
         assert!(ring_due(now, now - FALLBACK_RING_MS, false));
+    }
+
+    #[test]
+    fn el_remoto_de_github_sin_credenciales() {
+        assert_eq!(github_https("git@github.com:o/r.git").as_deref(), Some("https://github.com/o/r.git"));
+        assert_eq!(github_https("https://x-access-token:SECRET@github.com/o/r").as_deref(), Some("https://github.com/o/r.git"));
+        assert_eq!(github_https("https://github.com/o/r.git/").as_deref(), Some("https://github.com/o/r.git"));
+        assert_eq!(github_https("https://gitlab.com/o/r.git"), None);
+    }
+
+    #[test]
+    fn lo_que_contesto_el_sitio_va_una_vez_como_contexto() {
+        let mut row = Values::new();
+        row.insert("siteItems".into(), json!(json!([{ "kind": "user", "text": "hola" }, { "kind": "reply", "text": "aquí el sitio" }]).to_string()));
+        let (text, n) = site_context(&row, 0).unwrap();
+        assert!(text.contains("User: hola") && text.contains("Cloud site: aquí el sitio"), "{text}");
+        assert_eq!(n, 2);
+        assert!(site_context(&row, 2).is_none());
+        assert!(site_context(&Values::new(), 0).is_none());
     }
 
     #[test]

@@ -19,7 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use ed25519_dalek::SigningKey;
 use indexmap::IndexMap;
 use localfirst_core::http::{ConvexHttpTransport, Doorbell};
-use localfirst_core::{sqlite, sync_once, Engine, EngineConfig};
+use localfirst_core::{sqlite, sync_once, Engine, EngineConfig, OpDraft, Values};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -190,9 +190,24 @@ struct Session {
     busy_at: i64,
     /// Ya le pidió a boat que lo detenga (una vez).
     stopping: bool,
+    /// El runtime del daemon (arrancar un agente es asíncrono; este hilo no lo es).
+    rt: tokio::runtime::Handle,
+    /// Los mensajes de teléfono que está contestando: corrida del agente → dónde va la respuesta.
+    answering: IndexMap<String, Answering>,
+    /// Pedidos ya tomados (uno por fila y pedido).
+    taken: std::collections::HashSet<String>,
+    /// Proyectos que se están clonando o que fallaron (no se reintenta en cada vuelta).
+    cloning: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, i64>>>,
 }
 
-fn open(id: &Identity) -> Result<Session> {
+/// Un mensaje de teléfono que el sitio está contestando.
+struct Answering {
+    row: String,
+    request_id: String,
+    user: Value,
+}
+
+fn open(id: &Identity, rt: tokio::runtime::Handle) -> Result<Session> {
     let (replica, outbox) = sqlite::open_in_memory().map_err(|e| anyhow!("{e}"))?;
     let mut n = 0u64;
     let mut engine = Engine::open(replica, outbox, EngineConfig { backoff_base_ms: 500, backoff_max_ms: 30_000, ..Default::default() }, move || {
@@ -206,7 +221,7 @@ fn open(id: &Identity) -> Result<Session> {
     engine.enable_scope(&threads_scope, None).map_err(|e| anyhow!("{e}"))?;
     let age = id.age.parse::<age::x25519::Identity>().map_err(|e| anyhow!("bad encryption identity in site.json: {e}"))?;
     let bell = crate::bell::Bell::start(&id.url, &id.token, &[keys_scope.clone(), threads_scope.clone()], localfirst_core::PROTOCOL_VERSION);
-    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0, busy_at: now_ms(), stopping: false })
+    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0, busy_at: now_ms(), stopping: false, rt, answering: IndexMap::new(), taken: Default::default(), cloning: Default::default() })
 }
 
 /// Una vuelta: timbre (en vivo o por HTTP) y sincronizar; luego aplicar las claves que cambiaron.
@@ -233,12 +248,15 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     // Primero las claves: la configuración nombra al proveedor por defecto.
     let applied = apply_keys(state, s)?;
     let settings = apply_settings(state, s)?;
+    let mac_alive_at = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::MAC_ROW).and_then(|r| r.row.values.get("aliveAt").and_then(Value::as_i64));
+    let mac_away = !mac_alive_at.is_some_and(|at| now - at < MAC_GONE_MS);
+    clone_projects(state, s);
+    answer_threads(state, s, mac_away);
     // ¿Detenerse? Con trabajo (agentes o trabajos en marcha) no; sin trabajo un rato, sí.
     let busy = !state.store.agent_runs(&["running"], None)?.is_empty() || !state.store.jobs(&["running", "queued"], 1)?.is_empty();
     if busy {
         s.busy_at = now;
     }
-    let mac_alive_at = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::MAC_ROW).and_then(|r| r.row.values.get("aliveAt").and_then(Value::as_i64));
     let stop = should_stop(now, s.busy_at, mac_alive_at);
     if stop && !s.stopping {
         if let (Some(id), Some(key)) = (load().and_then(|i| i.boat_sandbox), crate::secrets::get(BOAT_KEY).ok().flatten()) {
@@ -247,7 +265,182 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
             s.stopping = true;
         }
     }
-    Ok(json!({ "liveBell": s.bell.is_live(), "keys": applied, "settingsFromMac": settings, "idleFor": now - s.busy_at, "macAliveAt": mac_alive_at, "stopping": s.stopping }))
+    Ok(json!({ "liveBell": s.bell.is_live(), "keys": applied, "settingsFromMac": settings, "idleFor": now - s.busy_at, "macAliveAt": mac_alive_at, "macAway": mac_away, "answering": s.answering.len(), "stopping": s.stopping }))
+}
+
+/// Los mensajes de los teléfonos que le tocan al sitio (S5): los de sus hilos (`site-…`) siempre; los
+/// de los hilos de la Mac y los hilos nuevos, solo con la Mac apagada. Verifica la firma con los
+/// teléfonos de confianza que publica la Mac (`_devices`), arranca un chat con la conversación como
+/// contexto y, cuando el agente contesta, escribe la respuesta donde va.
+fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
+    let rows = s.engine.rows(&s.threads_scope);
+    let devices: Vec<crate::cloud::TrustedDevice> = rows
+        .iter()
+        .find(|r| r.row.id == crate::cloud::DEVICES_ROW)
+        .and_then(|r| r.row.values.get("devices").and_then(Value::as_str))
+        .and_then(|t| serde_json::from_str(t).ok())
+        .unwrap_or_default();
+    let daemon_id = s.threads_scope.trim_start_matches("threads:").to_string();
+    for r in &rows {
+        let v = &r.row.values;
+        let id = r.row.id.as_str();
+        let Some(request_id) = v.get("requestId").and_then(Value::as_str) else { continue };
+        let answered = [v.get("resultFor"), v.get("siteFor")].iter().any(|f| f.and_then(|x| x.as_str()) == Some(request_id));
+        let mine = id.starts_with("site-");
+        if r.pending || answered || (!mine && !mac_away) || (id.starts_with('_') && id != crate::cloud::NEW_ROW) {
+            continue;
+        }
+        if !s.taken.insert(format!("{id}:{request_id}")) {
+            continue;
+        }
+        let req = match crate::cloud::verify_thread_request(&daemon_id, id, v, &devices, now_ms()) {
+            Ok(req) => req,
+            Err(e) => {
+                tracing::warn!("site: phone message on {id} rejected: {e}");
+                continue;
+            }
+        };
+        let mut text = req.arg.trim().to_string();
+        if req.files.is_some() {
+            text.push_str("\n\n(The phone sent attachments; they're sealed for the Mac and can't be opened here.)");
+        }
+        let prompt = match transcript(v) {
+            t if t.is_empty() => text.clone(),
+            t => format!("(Earlier in this conversation:)\n{t}\n\n(New message from {}:)\n{text}", req.device.name),
+        };
+        let project = v.get("project").and_then(Value::as_str).map(str::to_string);
+        let _rt = s.rt.enter();
+        match s.rt.block_on(crate::agent_host::start_chat(state, &prompt, project.as_deref(), &format!("phone:{}", req.device.name))) {
+            Ok(run) => {
+                let at = v.get("requestedAt").and_then(Value::as_i64).unwrap_or_else(now_ms);
+                let user = json!({ "kind": "user", "author": null, "at": at, "text": req.arg.trim() });
+                tracing::info!("site: answering a phone message on {id}");
+                s.answering.insert(run["id"].as_str().unwrap_or_default().to_string(), Answering { row: id.to_string(), request_id: request_id.to_string(), user });
+            }
+            Err(e) => tracing::warn!("site: couldn't start an agent for {id}: {e:#}"),
+        }
+    }
+    // Las corridas que terminaron: la respuesta a su hilo.
+    let done: Vec<(String, Value)> = s.answering.keys().filter_map(|run_id| state.store.agent_run(run_id).ok().flatten().filter(|r| r["status"] != "running").map(|r| (run_id.clone(), r))).collect();
+    for (run_id, run) in done {
+        let Some(a) = s.answering.shift_remove(&run_id) else { continue };
+        let text = match run["status"].as_str() {
+            Some("done") => run["answer"].as_str().unwrap_or("").trim().to_string(),
+            Some(st) => format!("The agent {st}: {}", run["error"].as_str().unwrap_or("no details")),
+            None => continue,
+        };
+        let reply = json!({ "kind": "reply", "author": "Cloud site", "at": now_ms(), "text": text });
+        if let Err(e) = write_answer(s, &a, reply) {
+            tracing::warn!("site: couldn't write the answer on {}: {e:#}", a.row);
+        }
+    }
+}
+
+/// Los proyectos de la Mac (`_projects`) que el sitio todavía no tiene: los clona en segundo plano
+/// (con el token de GitHub si hay: los repos privados) y los registra, para que sus agentes lean el
+/// código. Un clon que falla se reintenta a los 10 min.
+fn clone_projects(state: &Shared, s: &mut Session) {
+    let wanted: Vec<Value> = s
+        .engine
+        .rows(&s.threads_scope)
+        .into_iter()
+        .find(|r| r.row.id == crate::cloud::PROJECTS_ROW)
+        .and_then(|r| r.row.values.get("projects").and_then(Value::as_str).and_then(|t| serde_json::from_str(t).ok()))
+        .unwrap_or_default();
+    let have: Vec<String> = state.store.projects().unwrap_or_default().into_iter().map(|p| p.name).collect();
+    for p in wanted {
+        let (Some(name), Some(url)) = (p["name"].as_str().map(str::to_string), p["url"].as_str().map(str::to_string)) else { continue };
+        if have.contains(&name) || !url.starts_with("https://github.com/") {
+            continue;
+        }
+        {
+            let mut busy = s.cloning.lock().unwrap();
+            if busy.get(&name).is_some_and(|at| now_ms() - at < 10 * 60_000) {
+                continue;
+            }
+            busy.insert(name.clone(), now_ms());
+        }
+        let branch = p["branch"].as_str().unwrap_or("main").to_string();
+        let st = state.clone();
+        std::thread::spawn(move || match clone_project(&st, &name, &url, &branch) {
+            Ok(()) => tracing::info!("site: project {name} cloned and registered"),
+            Err(e) => tracing::warn!("site: couldn't clone {name}: {e:#}"),
+        });
+    }
+}
+
+fn clone_project(state: &Shared, name: &str, url: &str, branch: &str) -> Result<()> {
+    let dir = home().join("projects").join(name);
+    if !dir.join(".git").exists() {
+        std::fs::create_dir_all(dir.parent().unwrap())?;
+        let mut cmd = std::process::Command::new("git");
+        // El token va en un encabezado de esta orden, no en el remoto guardado.
+        if let Some(token) = crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT).ok().flatten() {
+            use base64::Engine as _;
+            let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{}", token.trim()));
+            cmd.args(["-c", &format!("http.extraHeader=Authorization: Basic {basic}")]);
+        }
+        let out = cmd.args(["clone", "--quiet", "--branch", branch, url]).arg(&dir).output().context("couldn't run git")?;
+        if !out.status.success() {
+            let _ = std::fs::remove_dir_all(&dir);
+            bail!("git clone failed: {}", devtool_core::redact(&String::from_utf8_lossy(&out.stderr)).chars().take(300).collect::<String>());
+        }
+    }
+    crate::projects::register(state, &dir, Some(name))?;
+    Ok(())
+}
+
+/// La conversación hasta ahora (lo de la Mac y lo del sitio), como texto para el agente.
+fn transcript(v: &Values) -> String {
+    let list = |k: &str| v.get(k).and_then(Value::as_str).and_then(|t| serde_json::from_str::<Vec<Value>>(t).ok()).unwrap_or_default();
+    let mut items = list("items");
+    items.extend(list("siteItems"));
+    items.sort_by_key(|i| i["at"].as_i64().unwrap_or(0));
+    let start = items.len().saturating_sub(30);
+    items[start..]
+        .iter()
+        .map(|i| format!("{}: {}", if i["kind"] == "user" { "User" } else { i["author"].as_str().unwrap_or("Agent") }, i["text"].as_str().unwrap_or("").chars().take(2000).collect::<String>()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Escribe la respuesta: en un hilo del sitio, como la Mac en los suyos; en un hilo de la Mac, aparte
+/// (`siteItems`, `siteFor`); un hilo nuevo se crea como `site-…` y `_new` dice cuál.
+fn write_answer(s: &mut Session, a: &Answering, reply: Value) -> Result<()> {
+    let now = now_ms();
+    let rows = s.engine.rows(&s.threads_scope);
+    let row = rows.iter().find(|r| r.row.id == a.row).map(|r| r.row.values.clone()).unwrap_or_default();
+    let list = |k: &str| row.get(k).and_then(Value::as_str).and_then(|t| serde_json::from_str::<Vec<Value>>(t).ok()).unwrap_or_default();
+    let mut set = Values::new();
+    let drafts = if a.row == crate::cloud::NEW_ROW {
+        let id = format!("site-{}", crate::cloud::random_hex(6)?);
+        let title: String = a.user["text"].as_str().unwrap_or("Chat").chars().take(60).collect();
+        let participants = json!([{ "node": "agent", "name": "Cloud site", "logo": "minimax" }]).to_string();
+        let mut new = Values::new();
+        for (k, v) in [("title", json!(title)), ("kind", json!("chat")), ("status", json!("done")), ("updatedAt", json!(now)), ("items", json!(json!([a.user, reply]).to_string())), ("participants", json!(participants)), ("waitingAnswer", json!(false))] {
+            new.insert(k.into(), v);
+        }
+        set.insert("siteFor".into(), json!(a.request_id));
+        set.insert("siteResult".into(), json!(format!("thread {id}")));
+        vec![OpDraft::create(&s.threads_scope, new).with_row(&id), OpDraft::patch(&s.threads_scope, crate::cloud::NEW_ROW, set)]
+    } else if a.row.starts_with("site-") {
+        let mut items = list("items");
+        items.extend([a.user.clone(), reply]);
+        set.insert("items".into(), json!(Value::Array(items).to_string()));
+        set.insert("status".into(), json!("done"));
+        set.insert("updatedAt".into(), json!(now));
+        set.insert("result".into(), json!("sent to Cloud site"));
+        set.insert("resultFor".into(), json!(a.request_id));
+        vec![OpDraft::patch(&s.threads_scope, &a.row, set)]
+    } else {
+        let mut items = list("siteItems");
+        items.extend([a.user.clone(), reply]);
+        set.insert("siteItems".into(), json!(Value::Array(items).to_string()));
+        set.insert("siteFor".into(), json!(a.request_id));
+        vec![OpDraft::patch(&s.threads_scope, &a.row, set)]
+    };
+    s.engine.commit(drafts, now).map_err(|e| anyhow!("{e}"))?;
+    Ok(())
 }
 
 /// Si el sitio se detiene: sin trabajo media hora, o dos minutos si la Mac está latiendo (ella atiende).
@@ -326,6 +519,7 @@ fn apply_settings(state: &Shared, s: &Session) -> Result<bool> {
 
 /// El hilo del sitio: espera la confirmación de la Mac y después sincroniza las claves.
 pub fn spawn(state: Shared) {
+    let rt = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("condx-site".into())
         .spawn(move || {
@@ -338,7 +532,7 @@ pub fn spawn(state: Shared) {
                     }
                     Some(id) if session.is_none() => match status(&id) {
                         Ok(st) if st == "active" => {
-                            match open(&id) {
+                            match open(&id, rt.clone()) {
                                 Ok(s) => session = Some(s),
                                 Err(e) => state.set_probe("site", false, Value::Null, Some(format!("{e:#}"))),
                             }
@@ -375,6 +569,15 @@ pub fn spawn(state: Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn la_conversacion_junta_lo_de_la_mac_y_lo_del_sitio_en_orden() {
+        let mut v = Values::new();
+        v.insert("items".into(), json!(json!([{ "kind": "user", "at": 1, "text": "hola" }, { "kind": "reply", "author": "Agent", "at": 2, "text": "qué tal" }]).to_string()));
+        v.insert("siteItems".into(), json!(json!([{ "kind": "user", "at": 3, "text": "sigues?" }, { "kind": "reply", "author": "Cloud site", "at": 4, "text": "sí" }]).to_string()));
+        assert_eq!(transcript(&v), "User: hola\nAgent: qué tal\nUser: sigues?\nCloud site: sí");
+        assert_eq!(transcript(&Values::new()), "");
+    }
 
     #[test]
     fn se_detiene_sin_trabajo_o_cuando_la_mac_volvio() {

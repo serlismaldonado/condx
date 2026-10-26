@@ -24,7 +24,7 @@ export const REQUESTS = ["diagnose", "fix", "ignore", "resolve", "deploy", "disc
 
 export type Principal =
   | { kind: "daemon"; daemonId: string; key: string }
-  | { kind: "device"; daemonId: string; deviceId: string; publicKey: string; key: string };
+  | { kind: "device"; daemonId: string; deviceId: string; publicKey: string; key: string; site?: boolean };
 
 export async function sha256Hex(text: string): Promise<string> {
   const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
@@ -55,7 +55,7 @@ export async function principalFromToken(ctx: QueryCtx, token: string): Promise<
   // El daemon tiene que seguir vinculado.
   const owner = await ctx.db.query("daemons").withIndex("by_daemonId", (q) => q.eq("daemonId", device.daemonId)).unique();
   if (!owner) unauthorized();
-  return { kind: "device", daemonId: device.daemonId, deviceId: device.deviceId, publicKey: device.publicKey, key: `device:${device.deviceId}` };
+  return { kind: "device", daemonId: device.daemonId, deviceId: device.deviceId, publicKey: device.publicKey, key: `device:${device.deviceId}`, site: device.kind === "site" };
 }
 
 /** `<tipo>:<daemonId>` → sus partes, o null si no es un alcance de Condx. */
@@ -98,6 +98,37 @@ export function writeDenied(principal: Principal, op: Op): string | null {
   if (set.deviceKey !== principal.publicKey) return "The decision must be signed with this phone's key";
   if (typeof set.signature !== "string" || !/^[0-9a-f]{128}$/.test(set.signature)) return "Missing signature";
   if (typeof set.decidedAt !== "number") return "Missing decidedAt";
+  return null;
+}
+
+/** Lo que el sitio en la nube escribe en sus propios hilos (`site-…`): como la Mac en los suyos. */
+const SITE_OWN_FIELDS = ["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "result", "resultFor"];
+/** En un hilo de la Mac (o en `_new`), aparte de lo de la Mac: sus respuestas y a qué pedido contestó. */
+const SITE_MAC_FIELDS = ["siteItems", "siteFor", "siteResult"];
+/** Un latido de la Mac más viejo que esto: la Mac está apagada (late cada 5 min). */
+export const MAC_GONE_MS = 12 * 60_000;
+
+/**
+ * El sitio en la nube (S5): contesta en los hilos cuando la Mac no está. En los suyos (`site-…`)
+ * escribe como la Mac; en los de la Mac solo sus campos aparte, y solo si la Mac no late.
+ */
+export async function siteWriteDenied(ctx: QueryCtx, principal: Principal, op: Op): Promise<string | null> {
+  const parsed = parseScope(op.scope);
+  if (!parsed || parsed.daemonId !== principal.daemonId) return "No access to this scope";
+  if (parsed.kind !== "threads") return "A cloud site only writes threads";
+  if (op.sets && Object.keys(op.sets).length > 0) return "A cloud site doesn't write sets";
+  const keys = Object.keys(op.set ?? {});
+  if (op.rowId.startsWith("site-")) {
+    if (op.kind === "delete") return null;
+    const bad = keys.find((k) => !SITE_OWN_FIELDS.includes(k));
+    return bad ? `A cloud site can't write “${bad}”` : null;
+  }
+  if (op.kind !== "patch" || (op.rowId.startsWith("_") && op.rowId !== "_new")) return "A cloud site only answers in threads";
+  const bad = keys.find((k) => !SITE_MAC_FIELDS.includes(k));
+  if (bad) return `A cloud site can't write “${bad}” in the Mac's threads`;
+  const mac = await ctx.db.query("lf_rows").withIndex("by_scope_and_rowId", (q) => q.eq("scope", op.scope).eq("rowId", "_mac")).unique();
+  const aliveAt = (mac?.values as { aliveAt?: unknown } | undefined)?.aliveAt;
+  if (typeof aliveAt === "number" && Date.now() - aliveAt < MAC_GONE_MS) return "The Mac is answering this thread";
   return null;
 }
 

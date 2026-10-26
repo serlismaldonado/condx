@@ -69,7 +69,7 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects", "catalog"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects", "catalog", "overview"];
 /// Lo más largo de un mensaje de un hilo en el teléfono (antes 700: las respuestas se cortaban).
 const ITEM_CHARS: usize = 12_000;
 /// Lo que ocupan los mensajes de un hilo en su fila: si se pasa, se dejan afuera los más viejos.
@@ -109,12 +109,62 @@ pub const RUN_ROW: &str = "_run";
 /// Lo que un teléfono puede pedir: las recetas (con sus argumentos y en qué entornos) y los flujos.
 pub const CATALOG_ROW: &str = "_catalog";
 
+/// El resumen de cada proyecto para el teléfono (como la vista general de la Mac): git, deployer,
+/// servicios locales con su estado, lo que pide atención y los detalles de cada entorno.
+pub const OVERVIEW_ROW: &str = "_overview";
+
+/// Texto corto y redactado (los errores pueden traer rutas o claves).
+fn clip(v: &Value, max: usize) -> Value {
+    short_text(v, max)
+}
+
+async fn overview(state: &Shared) -> Value {
+    let mut projects = vec![];
+    for p in state.store.projects().unwrap_or_default() {
+        let o = crate::overview::build_for(state, Some(&p.name)).await;
+        let services: Vec<Value> = crate::services::list(state, &p)
+            .await
+            .iter()
+            .map(|v| {
+                json!({
+                    "name": v["name"], "title": v["title"], "status": v["status"], "busy": v["busy"], "error": clip(&v["error"], 300),
+                    "detail": clip(&v["detail"], 160), "healthy": v["healthy"], "phase": v["phase"], "port": v["port"], "mode": v["mode"],
+                    "cpu": v["cpu"], "memory": v["memory"],
+                })
+            })
+            .collect();
+        let envs: serde_json::Map<String, Value> = o["environments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| {
+                let name = e["name"].as_str()?.to_string();
+                Some((name, json!({
+                    "version": e["convex"]["version"], "latencyMs": e["convex"]["latencyMs"], "checkedAt": e["convex"]["checkedAt"],
+                    "error": clip(&e["convex"]["error"], 200), "commit": e["deployed"]["commit"], "branch": e["deployed"]["branch"],
+                    "behind": e["deployed"]["behindBranch"], "dirty": e["deployed"]["uncommittedChanges"],
+                })))
+            })
+            .collect();
+        let g = &o["git"];
+        projects.push(json!({
+            "name": p.name,
+            "git": { "branch": g["branch"], "head": g["head"], "subject": clip(&g["subject"], 120), "ahead": g["ahead"], "behind": g["behind"], "changed": g["changed"], "untracked": g["untracked"] },
+            "deployer": { "phase": o["deployer"]["phase"], "running": o["deployer"]["running"] },
+            "attention": o["attention"].as_array().into_iter().flatten().take(6).map(|a| clip(a, 200)).collect::<Vec<_>>(),
+            "services": services,
+            "envs": envs,
+        }));
+    }
+    json!({ "at": now_ms(), "projects": projects })
+}
+
 /// El catálogo para el teléfono: recetas y flujos encendidos de cada proyecto.
 fn catalog(state: &Shared) -> Value {
     let recipes: Vec<Value> = crate::recipes::all()
         .iter()
         .map(|r| {
-            let args: Vec<Value> = r.args.iter().map(|a| json!({ "name": a.name, "type": serde_json::to_value(&a.kind).unwrap_or(Value::Null), "default": a.default, "description": a.description })).collect();
+            let args: Vec<Value> = r.args.iter().map(|a| json!({ "name": a.name, "type": serde_json::to_value(a.kind).unwrap_or(Value::Null), "default": a.default, "description": a.description })).collect();
             json!({ "name": r.name, "title": r.title, "kinds": r.kinds, "args": args })
         })
         .collect();
@@ -152,6 +202,16 @@ fn run_request(state: &Shared, s: &Session, row: &Values, devices: &[TrustedDevi
         };
     }
     let _rt = s.rt.enter();
+    // Levantar, detener o reiniciar un servicio local (o `all`), como el botón de la Mac.
+    if let Some(svc) = ask["service"].as_object() {
+        let name = svc.get("name").and_then(Value::as_str).unwrap_or_default();
+        let action = svc.get("action").and_then(Value::as_str).unwrap_or_default();
+        let project = svc.get("project").and_then(Value::as_str);
+        return match crate::projects::get(state, project).and_then(|p| crate::services::action(state, &p, name, action)) {
+            Ok(_) => format!("{action} {name}: on its way"),
+            Err(e) => format!("rejected: {e:#}"),
+        };
+    }
     if let Some(flow) = ask["flow"].as_str() {
         return match crate::workflows::start(state, flow, ask["commit"].as_str().filter(|c| !c.is_empty()).unwrap_or("dev"), &by) {
             Ok(run) => format!("flow started ({})", run.id),
@@ -1023,6 +1083,9 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
             tracing::info!("cloud: phone run request: {result}");
             s.thread_results.insert(id, (request_id, result));
             s.threads_built.0 = 0;
+            // Un servicio pedido: el resumen se refresca enseguida y seguido mientras cambia.
+            s.service_asked_at = now_ms();
+            s.overview_built.0 = 0;
             continue;
         }
         // Lo que contestó el sitio en este hilo mientras la Mac no estaba: va como contexto al agente.
@@ -1192,6 +1255,8 @@ struct Session {
     logs: std::collections::HashMap<String, (i64, String)>,
     /// El catálogo publicado (recetas y flujos; se recalcula cada minuto).
     catalog_built: (i64, Value),
+    overview_built: (i64, Value),
+    service_asked_at: i64,
 }
 
 fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<Session> {
@@ -1221,7 +1286,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0, alive_at: 0, site_handed: Default::default(), projects_built: (0, vec![]), logs: Default::default(), catalog_built: (0, Value::Null) })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0, alive_at: 0, site_handed: Default::default(), projects_built: (0, vec![]), logs: Default::default(), catalog_built: (0, Value::Null), overview_built: (0, Value::Null), service_asked_at: 0 })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -1341,6 +1406,12 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         s.catalog_built = (now_ms(), catalog(state));
     }
     trows.insert(CATALOG_ROW.into(), obj(json!({ "title": "catalog", "catalog": s.catalog_built.1.to_string() })));
+    // El resumen: cada 20 s; cada 3 s mientras un servicio está ocupado o justo después de un pedido.
+    let quiet = !state.services.busy_any() && now_ms() - s.service_asked_at > 60_000;
+    if now_ms() - s.overview_built.0 > if quiet { 20_000 } else { 3_000 } {
+        s.overview_built = (now_ms(), s.rt.block_on(overview(state)));
+    }
+    trows.insert(OVERVIEW_ROW.into(), obj(json!({ "title": "overview", "overview": s.overview_built.1.to_string() })));
     let mut run_row = obj(json!({ "title": "run" }));
     if let Some((rid, result)) = s.thread_results.get(RUN_ROW) {
         run_row.insert("result".into(), Value::String(result.clone()));

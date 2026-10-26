@@ -42,3 +42,10 @@ Badges stay on the tab (what waits). The thread view keeps the whole screen.
 5. ✅ **Phone UI in Spanish** (`src/i18n.rs`, translated inside the shared theme helpers): the texts follow the phone's language (es/en), as the desktop does.
 
 Each phase is tested on the phone (adb) in light and dark before it ships.
+6. ✅ **Summary and local services** (2026-10-26): the daemon publishes the `_overview` row (per
+   project: git, deployer, local services with CPU and memory, what needs attention, each
+   environment's latency and deployed commit; every 20 s, every 3 s while a service changes). The
+   Environments tab shows the desktop's stat cards on top and, per project, attention, environments,
+   repository and local services with Start / Stop / Restart (and Start all / Stop all) through a
+   signed `_run` request `{service: {project, name, action}}`. Services need the Mac: with the Mac
+   away the buttons hide.

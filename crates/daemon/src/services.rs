@@ -33,6 +33,13 @@ pub struct Services {
     usage: Mutex<HashMap<String, std::collections::VecDeque<(f32, u64)>>>,
 }
 
+impl Services {
+    /// Si algún servicio se está levantando, deteniendo o reiniciando.
+    pub fn busy_any(&self) -> bool {
+        !self.busy.lock().unwrap().is_empty()
+    }
+}
+
 /// Lecturas que se guardan por proceso (a una cada ~3 s, unos 90 s).
 const USAGE_KEEP: usize = 30;
 

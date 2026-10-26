@@ -437,7 +437,7 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
     // En qué idioma contestan los agentes por defecto (vacío: el de quien escribe).
     let language = settings["language"].as_str().unwrap_or("").to_string();
     let mut language_buttons = h_flex().gap_1();
-    for (code, label) in [("", t!("Automatic")), ("es", "Español".into()), ("en", "English".into())] {
+    for (code, label) in [("", t!("Automatic")), ("es", "Español"), ("en", "English")] {
         let value = code.to_string();
         let button = Button::new(SharedString::from(format!("lang-{code}"))).xsmall().label(label).on_click(cx.listener(move |this, _, _, cx| {
             let value = value.clone();

@@ -1,6 +1,6 @@
 # Design: keep working with the Mac off (cloud site, boat workers, Claude)
 
-Status: draft, 2026-10-26. Phase S0 done (Condx Cloud on Convex cloud, site on `condx.heskala.com` through Vercel); the rest is design only. Builds on Condx Cloud
+Status: draft, 2026-10-26. Phases S0, S6–S8 done; S1 done locally (Docker) (Condx Cloud on Convex cloud, site on `condx.heskala.com` through Vercel); the rest is design only. Builds on Condx Cloud
 (`cloud.md`), agents (`agents.md`, remote runners in §6.7) and agent flows (`agent-flows.md`).
 
 ## 1. Goal
@@ -113,7 +113,7 @@ from both sites and from workers.
 | Phase | What | Status |
 | --- | --- | --- |
 | **S0** ✅ | Condx Cloud on Convex cloud: deploy into the user's Convex project, relink the Mac daemon, re-pair the phone; the tunnel and the self-hosted backend stay only for tests | done 2026-10-26: the user's own Convex project, site proxy `condx.heskala.com` (Vercel `condx-cloud-site`); verified on the phone: with the daemon stopped it keeps the last state and queues a message, delivered and answered when the daemon returns. The Mac publishes a heartbeat every 5 min (`aliveAt` on the `_mac` row); the phone shows "Mac offline · <ago>" after 12 min without one |
-| S1 | `condxd` + agent host for Linux in a Docker image; `serve --site cloud`; runs in a small boat VM; paired like a phone with least-privilege keys | design |
+| **S1** ◐ | `condxd` + agent host for Linux in a Docker image; `serve --site cloud`; runs in a small boat VM; paired like a phone with least-privilege keys | local part done 2026-10-26 (`site.rs`, `deploy/site/Dockerfile`): `condxd` builds and runs on Linux; `serve --site cloud` has no production (no prod environments, no jobs on them), no updater and no daemon link, secrets in `secrets.json`; `condxd site pair "<QR text or link>"` claims a code from the Mac's "Pair a phone" panel (own ed25519 key + age identity), the user confirms it there, and the provider keys arrive sealed to it over the live doorbell and become its own providers. Verified in Docker: paired, received both MiniMax keys and answered a chat with them. Pending: run it on boat, mirror the Mac's agent settings (default provider, budget), and the Mac app listing the site apart from phones |
 | S2 | boat workers: per-project base snapshot, fork → work → push branch → delete; counted by the limit and the budget | design |
 | S3 | `harness: claude-code` with live text, for fixes and deploys | design |
 | S4 | Orchestrator: long-lived Claude Code on the cloud site with the Condx MCP | design |

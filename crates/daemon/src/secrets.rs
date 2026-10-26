@@ -40,6 +40,16 @@ fn service() -> String {
 
 /// El archivo de secretos de las pruebas, si corresponde (ver arriba).
 fn test_file() -> Option<PathBuf> {
+    // El sitio en la nube no tiene Llavero: su archivo es `secrets.json` aunque tenga `CONDX_HOME`
+    // (los primeros sitios lo guardaron como el de las pruebas: se pasa una vez).
+    if crate::site::is_cloud() {
+        let home = crate::config::home();
+        let (path, old) = (home.join("secrets.json"), home.join("test-secrets.json"));
+        if !path.exists() && old.exists() {
+            let _ = std::fs::rename(&old, &path);
+        }
+        return Some(path);
+    }
     match override_service() {
         Some(s) => s.strip_prefix("file:").map(PathBuf::from),
         None => devtool_core::paths::var(&["CONDX_HOME", "HESKALA_DEVD_HOME"]).map(|h| PathBuf::from(h).join("test-secrets.json")),

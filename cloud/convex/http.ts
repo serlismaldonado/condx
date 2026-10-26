@@ -4,6 +4,7 @@
 // texto que la app pega con «Paste the QR's text». La app también lee este enlace al escanear.
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
+import { internal } from "./_generated/api";
 
 const http = httpRouter();
 
@@ -78,6 +79,45 @@ http.route({
         "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
       },
     });
+  }),
+});
+
+// La ingesta del SDK (ingest.ts): el navegador manda con `x-condx-key: ck_pub_…` (CORS abierto,
+// sin cookies) y el componente de Convex con `authorization: Bearer ck_sec_…`.
+const CORS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-headers": "content-type, x-condx-key",
+  "access-control-max-age": "86400",
+};
+
+function reply(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...CORS } });
+}
+
+http.route({ path: "/ingest", method: "OPTIONS", handler: httpAction(async () => new Response(null, { status: 204, headers: CORS })) });
+
+http.route({
+  path: "/ingest",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(ck_sec_[a-f0-9]{48})$/)?.[1];
+    const publicKey = req.headers.get("x-condx-key")?.match(/^ck_pub_[a-f0-9]{48}$/)?.[0];
+    if (!bearer && !publicKey) return reply(401, { error: "missing ingest key" });
+    const text = await req.text();
+    if (text.length > 1_000_000) return reply(413, { error: "too large" });
+    let body: { events?: unknown[] };
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return reply(400, { error: "invalid JSON" });
+    }
+    const events = Array.isArray(body.events) ? body.events : [];
+    if (events.length === 0) return reply(400, { error: "no events" });
+    const key = await ctx.runQuery(internal.ingest.keyFor, { publicKey, secret: bearer });
+    if (!key) return reply(401, { error: "unknown or revoked ingest key" });
+    const res = await ctx.runMutation(internal.ingest.record, { daemonId: key.daemonId, project: key.project, source: key.source, events, key: key.key });
+    return reply(res.stored === 0 && res.dropped > 0 ? 429 : 200, res);
   }),
 });
 

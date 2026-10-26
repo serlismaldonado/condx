@@ -103,6 +103,8 @@ async fn el_token_de_agentes_no_aprueba_ni_toca_reglas_ni_claves() {
         (Method::POST, "/api/incidents/inc-x/fix", json!({})),
         (Method::POST, "/api/agent-chats", json!({ "text": "hi" })),
         (Method::POST, "/api/threads/r1/message", json!({ "text": "hi" })),
+        (Method::POST, "/api/sdk/keys", json!({ "project": "shop" })),
+        (Method::DELETE, "/api/sdk/keys/ck_pub_x", json!({})),
         (Method::POST, "/api/agents/roles", json!({ "name": "x" })),
         (Method::POST, "/api/agents/roles/reset", json!({})),
         (Method::DELETE, "/api/agents/roles/triage", json!({})),

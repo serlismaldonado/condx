@@ -159,7 +159,7 @@ export const push = mutation({
   },
 });
 
-async function applyOp(ctx: MutationCtx, principalKey: string, op: Op): Promise<OpResult> {
+export async function applyOp(ctx: MutationCtx, principalKey: string, op: Op): Promise<OpResult> {
   for (const key of [...Object.keys(op.set ?? {}), ...Object.keys(op.sets ?? {})]) {
     if (!FIELD_KEY.test(key)) reject("invalid", `invalid field name “${key}”`);
   }

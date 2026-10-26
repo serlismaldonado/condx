@@ -1,0 +1,26 @@
+{
+  "name": "@condx/convex",
+  "version": "0.1.0",
+  "description": "Condx SDK for the backend of any Convex app: a Convex component that records errors of actions (and the ones you report) and forwards them to your Condx Cloud, where agents triage them.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./src/client/index.ts", "default": "./src/client/index.ts" },
+    "./convex.config": { "types": "./src/component/convex.config.ts", "default": "./src/component/convex.config.ts" },
+    "./convex.config.js": { "types": "./src/component/convex.config.ts", "default": "./src/component/convex.config.ts" }
+  },
+  "files": ["src", "README.md"],
+  "scripts": {
+    "codegen": "convex codegen --component-dir ./src/component",
+    "check": "tsc --noEmit -p .",
+    "test": "vitest run"
+  },
+  "peerDependencies": { "convex": ">=1.24" },
+  "devDependencies": {
+    "@edge-runtime/vm": "5.0.0",
+    "convex": "1.46.0",
+    "convex-test": "0.0.49",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}

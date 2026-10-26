@@ -11,6 +11,7 @@
 import type * as auth from "../auth.js";
 import type * as daemons from "../daemons.js";
 import type * as http from "../http.js";
+import type * as ingest from "../ingest.js";
 import type * as pairing from "../pairing.js";
 import type * as sync from "../sync.js";
 
@@ -24,6 +25,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   daemons: typeof daemons;
   http: typeof http;
+  ingest: typeof ingest;
   pairing: typeof pairing;
   sync: typeof sync;
 }>;

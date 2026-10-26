@@ -71,6 +71,7 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
         SettingsTab::Agents => v_flex().gap_3().child(super::agent_settings::card(app, window, cx)).child(super::agent_roles::card(app, window, cx)),
         SettingsTab::Connect => agents(app, cx),
         SettingsTab::Cloud => super::cloud::card(app, window, cx),
+        SettingsTab::Sdk => super::sdk::card(app, window, cx),
         SettingsTab::Notifications => super::notify_settings::card(app, window, cx),
     };
     // Como en un entorno: las pestañas arriba y el contenido debajo (la página se desplaza).

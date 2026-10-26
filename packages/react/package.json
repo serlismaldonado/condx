@@ -1,0 +1,32 @@
+{
+  "name": "@condx/react",
+  "version": "0.1.0",
+  "description": "Condx SDK for the frontend of any Convex app: captures errors (uncaught, render, failed Convex calls) and lets your users report a problem. Events go to your Condx Cloud, where agents triage them.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "README.md"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "convex": ">=1.17"
+  },
+  "peerDependenciesMeta": { "convex": { "optional": true } },
+  "devDependencies": {
+    "@testing-library/react": "16.3.0",
+    "@types/react": "19.1.8",
+    "convex": "1.46.0",
+    "jsdom": "26.1.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}

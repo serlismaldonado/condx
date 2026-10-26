@@ -10,7 +10,7 @@ import { ConvexError } from "convex/values";
 import type { QueryCtx } from "./_generated/server";
 import type { Op } from "localfirst/server";
 
-export const SCOPE_KINDS = ["env", "jobs", "approvals", "runs", "workflows", "incidents", "keys"] as const;
+export const SCOPE_KINDS = ["env", "jobs", "approvals", "runs", "workflows", "incidents", "keys", "events"] as const;
 export type ScopeKind = (typeof SCOPE_KINDS)[number];
 
 /** Lo que un teléfono puede leer. */

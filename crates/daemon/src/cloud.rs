@@ -333,14 +333,38 @@ fn call(kind: &str, path: &str, mut args: Value) -> Result<Value> {
 /// fragmento (no viaja al servidor). La cámara de cualquier teléfono abre un enlace; la app de
 /// Condx lo lee igual que el texto. Sitio: `.convex.cloud` → `.convex.site`; un dominio propio
 /// sirve las dos cosas (el túnel manda `/pair` al sitio); un backend local, el puerto siguiente.
-pub fn pair_link(url: &str, code: &str) -> String {
-    let site = if let Some(base) = url.strip_suffix(".convex.cloud") {
+/// El sitio (HTTP actions) de un deployment: `.convex.cloud` → `.convex.site`; un dominio propio
+/// sirve las dos cosas (el túnel manda las rutas del sitio); un backend local, el puerto siguiente.
+pub fn site_url(url: &str) -> String {
+    if let Some(base) = url.strip_suffix(".convex.cloud") {
         format!("{base}.convex.site")
     } else if let Some((host, port)) = url.strip_prefix("http://").and_then(|r| r.rsplit_once(':')).filter(|(h, _)| *h == "127.0.0.1" || *h == "localhost") {
         format!("http://{host}:{}", port.parse::<u16>().map(|p| p + 1).unwrap_or(3211))
     } else {
         url.to_string()
-    };
+    }
+}
+
+/// Llaves del SDK de Condx (ingest.ts en la nube): con ellas una app manda sus errores y los
+/// reportes de sus usuarios. La secreta se ve una sola vez (aquí no se guarda).
+pub fn sdk_keys() -> Result<Value> {
+    let link = load_link().context("link Condx Cloud first (Settings → Condx Cloud)")?;
+    let keys = call("query", "ingest:listKeys", json!({}))?;
+    Ok(json!({ "endpoint": site_url(&link.url), "keys": keys }))
+}
+
+pub fn sdk_create_key(project: &str) -> Result<Value> {
+    let link = load_link().context("link Condx Cloud first (Settings → Condx Cloud)")?;
+    let v = call("mutation", "ingest:createKey", json!({ "project": project }))?;
+    Ok(json!({ "endpoint": site_url(&link.url), "project": project, "publicKey": v["publicKey"], "secret": v["secret"] }))
+}
+
+pub fn sdk_revoke_key(public_key: &str) -> Result<bool> {
+    Ok(call("mutation", "ingest:revokeKey", json!({ "publicKey": public_key }))? == json!(true))
+}
+
+pub fn pair_link(url: &str, code: &str) -> String {
+    let site = site_url(url);
     let enc = |s: &str| s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
     format!("{site}/pair#d={}&c={}", enc(url), enc(code))
 }

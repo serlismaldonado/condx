@@ -48,6 +48,30 @@ export default defineSchema({
     .index("by_codeHash", ["codeHash"])
     .index("by_daemonId", ["daemonId"]),
 
+  /**
+   * Llaves de ingesta (ingest.ts): con ellas el SDK de Condx de una app manda errores y reportes de
+   * sus usuarios al alcance `events:<daemonId>`. La pública va en el navegador (se puede rotar); la
+   * secreta, en el componente de Convex de la app (aquí solo su SHA-256).
+   */
+  ingestKeys: defineTable({
+    daemonId: v.string(),
+    project: v.string(),
+    publicKey: v.string(),
+    secretHash: v.string(),
+    createdAt: v.number(),
+    revokedAt: v.optional(v.number()),
+  })
+    .index("by_publicKey", ["publicKey"])
+    .index("by_secretHash", ["secretHash"])
+    .index("by_daemonId", ["daemonId"]),
+
+  /** Cuántos eventos mandó cada llave en cada minuto (límite de ingesta). */
+  ingestRate: defineTable({
+    key: v.string(),
+    minute: v.number(),
+    count: v.number(),
+  }).index("by_key_and_minute", ["key", "minute"]),
+
   /** Versión monotónica de cada alcance (sube con cada cambio). `minVersion`: lo más viejo retenido. */
   lf_scopes: defineTable({
     scope: v.string(),

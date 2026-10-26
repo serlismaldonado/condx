@@ -82,11 +82,12 @@ pub enum SettingsTab {
     Agents,
     Connect,
     Cloud,
+    Sdk,
     Notifications,
 }
 
 impl SettingsTab {
-    pub const ALL: [SettingsTab; 6] = [SettingsTab::General, SettingsTab::Data, SettingsTab::Agents, SettingsTab::Connect, SettingsTab::Cloud, SettingsTab::Notifications];
+    pub const ALL: [SettingsTab; 7] = [SettingsTab::General, SettingsTab::Data, SettingsTab::Agents, SettingsTab::Connect, SettingsTab::Cloud, SettingsTab::Sdk, SettingsTab::Notifications];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -95,6 +96,7 @@ impl SettingsTab {
             SettingsTab::Agents => t!("Agents"),
             SettingsTab::Connect => t!("Connect an agent"),
             SettingsTab::Cloud => t!("Condx Cloud"),
+            SettingsTab::Sdk => t!("Condx SDK"),
             SettingsTab::Notifications => t!("Notifications"),
         }
     }
@@ -314,6 +316,10 @@ pub struct DevtoolApp {
     pub agents: Option<Value>,
     /// El catálogo de agentes para flujos (views::agent_roles) y el que se edita.
     pub agent_roles: Option<Value>,
+    /// Configuración → Condx SDK: llaves de ingesta y la recién creada (su secreta solo se ve una vez).
+    pub sdk: Option<Load>,
+    pub sdk_new: Option<Value>,
+    pub sdk_error: Option<String>,
     pub role_edit: Option<Value>,
     pub roles_error: Option<String>,
     pub agents_error: Option<String>,
@@ -486,6 +492,9 @@ impl DevtoolApp {
             agent_run: None,
             agent_run_at: 0,
             agent_roles: None,
+            sdk: None,
+            sdk_new: None,
+            sdk_error: None,
             role_edit: None,
             roles_error: None,
             chats: vec![],

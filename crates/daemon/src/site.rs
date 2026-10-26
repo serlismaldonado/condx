@@ -47,8 +47,8 @@ pub fn is_cloud() -> bool {
     std::env::var("CONDX_SITE").is_ok_and(|s| s == "cloud")
 }
 
-/// Las URLs de boat de los puertos de la máquina (`hosts.json`: `{"3000": "https://…-3000.on.boat.dev?_token=…"}`),
-/// creadas con `boat host` (son fijas): el frontend con su token, el backend público.
+/// Las URLs de boat de los frontends del sitio (`hosts.json`: `{"3002": "https://…-3002.on.boat.dev?_token=…"}`),
+/// creadas con `boat host` (son fijas, privadas con token).
 fn hosts() -> serde_json::Map<String, Value> {
     std::fs::read_to_string(crate::config::home().join("hosts.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default()
 }
@@ -338,9 +338,22 @@ fn run_services(state: &Shared, s: &mut Session, mac_away: bool) {
                     let _rt = s.rt.enter();
                     s.service_asked_at = now_ms();
                     s.overview_at = 0;
-                    match crate::projects::get(state, svc.get("project").and_then(Value::as_str)).and_then(|p| crate::services::action(state, &p, name, action)) {
-                        Ok(_) => format!("{action} {name}: on its way (cloud site)"),
+                    match crate::projects::get(state, svc.get("project").and_then(Value::as_str)) {
                         Err(e) => format!("rejected: {e:#}"),
+                        Ok(p) => {
+                            // Al levantar, el clon sigue la rama en la que trabajaba la Mac.
+                            let branch = if action == "stop" {
+                                String::new()
+                            } else {
+                                let mac_branch = svc.get("branch").and_then(Value::as_str).map(str::to_string).or_else(|| mac_branch(&rows, &p.name)).unwrap_or_default();
+                                crate::services::follow_branch(&p, &mac_branch)
+                            };
+                            match crate::services::action(state, &p, name, action) {
+                                Ok(_) if branch.is_empty() => format!("{action} {name}: on its way (cloud site)"),
+                                Ok(_) => format!("{action} {name}: on its way (cloud site · {branch})"),
+                                Err(e) => format!("rejected: {e:#}"),
+                            }
+                        }
                     }
                 }
             }
@@ -355,9 +368,17 @@ fn run_services(state: &Shared, s: &mut Session, mac_away: bool) {
     }
 }
 
+/// La rama en la que estaba la Mac en un proyecto (de su `_overview`).
+fn mac_branch(rows: &[localfirst_core::ViewRow], project: &str) -> Option<String> {
+    let text = rows.iter().find(|r| r.row.id == crate::cloud::OVERVIEW_ROW)?.row.values.get("overview")?.as_str()?.to_string();
+    let v: Value = serde_json::from_str(&text).ok()?;
+    v["projects"].as_array()?.iter().find(|p| p["name"] == project)?["git"]["branch"].as_str().map(str::to_string)
+}
+
 /// El resumen del sitio (sus proyectos clonados y sus servicios): cada 20 s, cada 3 s mientras cambia.
 fn publish_overview(state: &Shared, s: &mut Session) -> Result<()> {
-    // Sin los puertos publicados (scripts/boat-hosts.sh) no hay servicios que ofrecer.
+    // Hasta que se publiquen los frontends (scripts/boat-hosts.sh, después de desplegar Condx Cloud
+    // con el campo `overview` permitido) no se publica: un envío rechazado trabaría los demás.
     if hosts().is_empty() {
         return Ok(());
     }
@@ -569,6 +590,21 @@ fn clone_projects(state: &Shared, s: &mut Session) {
     }
 }
 
+/// `git fetch origin` en un clon del sitio, probando cada token de GitHub (como al clonar).
+pub fn fetch(dir: &std::path::Path) -> bool {
+    let mut tokens: Vec<Option<String>> = crate::secrets::accounts_with_prefix("github-token").iter().filter_map(|a| crate::secrets::get(a).ok().flatten()).map(Some).collect();
+    tokens.push(None);
+    tokens.into_iter().any(|token| {
+        let mut cmd = std::process::Command::new("git");
+        if let Some(token) = &token {
+            use base64::Engine as _;
+            let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{}", token.trim()));
+            cmd.args(["-c", &format!("http.extraHeader=Authorization: Basic {basic}")]);
+        }
+        cmd.env("GIT_TERMINAL_PROMPT", "0").arg("-C").arg(dir).args(["fetch", "-q", "origin"]).output().is_ok_and(|o| o.status.success())
+    })
+}
+
 fn clone_project(state: &Shared, name: &str, url: &str, branch: &str) -> Result<()> {
     let dir = home().join("projects").join(name);
     // Un clon cortado a medias (el contenedor se reinició) no tiene ningún commit: se empieza de nuevo.
@@ -687,6 +723,28 @@ fn apply_keys(state: &Shared, s: &Session) -> Result<usize> {
             Err(_) => continue,
         };
         let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        if text("kind").as_deref() == Some("convex-deploy") {
+            let name = text("label").unwrap_or_default();
+            let url = text("baseUrl");
+            crate::secrets::set(&format!("deploy-key:{name}"), &key)?;
+            state.store.upsert_environment(&devtool_core::Environment {
+                name: name.clone(),
+                kind: devtool_core::EnvKind::CloudDev,
+                label: Some(format!("{name} · cloud dev")),
+                convex_site_url: url.as_ref().map(|u| u.replace(".convex.cloud", ".convex.site")),
+                convex_url: url,
+                convex_deployment: text("model"),
+                frontend_url: None,
+                branch: None,
+                credential: None,
+                created_at: now_ms(),
+                project: text("project"),
+            })?;
+            applied.insert(r.row.id.clone(), stamp);
+            changed = true;
+            tracing::info!("site: cloud dev deploy key received ({name})");
+            continue;
+        }
         let body = crate::agents::ProviderBody { id: Some(r.row.id.clone()), kind: text("kind").unwrap_or_default(), label: text("label"), base_url: text("baseUrl"), model: text("model"), api_key: Some(key).filter(|k| !k.is_empty()) };
         crate::agents::upsert_provider(state, body, &crate::agents::seal_for_mac)?;
         applied.insert(r.row.id.clone(), stamp);
@@ -695,7 +753,14 @@ fn apply_keys(state: &Shared, s: &Session) -> Result<usize> {
     }
     let gone: Vec<String> = applied.keys().filter(|id| !rows.iter().any(|r| &r.row.id == *id)).cloned().collect();
     for id in gone {
-        let _ = crate::agents::delete_provider(state, &id);
+        match id.strip_prefix("deploy:") {
+            Some(env) => {
+                let _ = crate::secrets::delete(&format!("deploy-key:{env}"));
+            }
+            None => {
+                let _ = crate::agents::delete_provider(state, &id);
+            }
+        }
         applied.shift_remove(&id);
         changed = true;
     }

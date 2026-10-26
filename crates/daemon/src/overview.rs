@@ -25,7 +25,7 @@ pub async fn build_for(state: &Shared, project: Option<&str>) -> Value {
 }
 
 /// Git de un repo sin sonda propia: rama, HEAD, cambios y adelanto/atraso.
-async fn git_light(repo: &std::path::Path) -> Value {
+pub async fn git_light(repo: &std::path::Path) -> Value {
     let t = std::time::Duration::from_secs(10);
     let head = crate::cmd::run("git", &["log", "-1", "--format=%H%x09%s"], Some(repo), &[], t).await.stdout;
     let (sha, subject) = head.trim().split_once('\t').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or_default();

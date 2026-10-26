@@ -62,6 +62,14 @@ async fn usage_by_group() -> HashMap<u32, (f32, u64)> {
 /// Servicios del proyecto: el frontend es `vite` en heskala-erp y `frontend`
 /// en los demás (si se detectó uno).
 fn names(project: &Project) -> Vec<&'static str> {
+    // En el sitio en la nube no hay backend local: el deployer y el frontend van contra cloud dev.
+    if crate::site::is_cloud() {
+        return match (project.is_default(), project.frontend.is_empty()) {
+            (_, true) => vec!["deployer"],
+            (true, false) => vec!["deployer", "vite"],
+            (false, false) => vec!["deployer", "frontend"],
+        };
+    }
     match (project.is_default(), project.frontend.is_empty()) {
         (true, _) => NAMES.to_vec(),
         (false, true) => vec!["backend", "deployer"],
@@ -218,7 +226,7 @@ pub async fn list(state: &Shared, project: &Project) -> Vec<Value> {
                         v["url"] = json!(format!("http://localhost:{port}"));
                         v["healthy"] = json!(status == "running" && http_ok(format!("http://127.0.0.1:{port}/version")).await);
                     }
-                    "deployer" if project.is_default() => {
+                    "deployer" if project.is_default() && !crate::site::is_cloud() => {
                         v["phase"] = state.probe_data("deployer").map(|p| p["phase"].clone()).unwrap_or(Value::Null);
                     }
                     "deployer" => {
@@ -290,11 +298,25 @@ pub fn action(state: &Shared, project: &Project, name: &str, action: &str) -> Re
     }
     let st = state.clone();
     let action = action.to_string();
+    // En el sitio en la nube, un proyecto a la vez (la máquina es chica): los de los demás se detienen.
+    let others: Vec<Project> = if crate::site::is_cloud() && action != "stop" {
+        state.store.projects().unwrap_or_default().into_iter().filter(|p| p.name != project.name).collect()
+    } else {
+        vec![]
+    };
     for n in &names {
         st.services.busy.lock().unwrap().insert(key(project, n), action.clone());
     }
     let project = project.clone();
     tokio::spawn(async move {
+        for other in &others {
+            for n in self::names(other) {
+                if let Some(proc) = proc_name(&st, other, n).filter(|p| st.procs.get(p).is_some()) {
+                    append(&key(other, n), "— stop (another project started on the cloud site) —");
+                    let _ = procs::stop(&st, &proc).await;
+                }
+            }
+        }
         for n in names {
             let k = key(&project, n);
             let res = run_action(&st, &project, n, &action).await;
@@ -329,7 +351,7 @@ async fn compose(state: &Shared, name: &str, args: &[&str]) -> Result<()> {
 
 /// Frontend del proyecto. En los que no son heskala-erp apunta al backend
 /// local por variables de entorno (ganan al `.env.local`, que no se toca).
-fn frontend_spec(project: &Project) -> Result<Spec> {
+fn frontend_spec(state: &Shared, project: &Project) -> Result<Spec> {
     let port = frontend_port(project);
     let mut parts = project.frontend.iter().map(|a| a.replace("{port}", &port.to_string()));
     let first = parts.next().ok_or_else(|| anyhow!("{} has no frontend configured", project.name))?;
@@ -342,8 +364,10 @@ fn frontend_spec(project: &Project) -> Result<Spec> {
     if !project.is_default() || cloud {
         // En el sitio en la nube el navegador del teléfono llega al backend por su URL de boat.
         let backend = native::backend_port(project);
-        let convex = crate::site::public_url(backend).unwrap_or_else(|| format!("http://127.0.0.1:{backend}"));
-        let site = crate::site::public_url(backend + 1).unwrap_or_else(|| format!("http://127.0.0.1:{}", backend + 1));
+        let (convex, site) = match cloud.then(|| cloud_dev(state, project)).transpose()? {
+            Some(env) => (env.convex_url.clone().unwrap_or_default(), env.convex_site_url.clone().unwrap_or_default()),
+            None => (format!("http://127.0.0.1:{backend}"), format!("http://127.0.0.1:{}", backend + 1)),
+        };
         for prefix in ["VITE_", "NEXT_PUBLIC_", "EXPO_PUBLIC_", ""] {
             env.push((format!("{prefix}CONVEX_URL"), convex.clone()));
             env.push((format!("{prefix}CONVEX_SITE_URL"), site.clone()));
@@ -363,6 +387,55 @@ fn frontend_spec(project: &Project) -> Result<Spec> {
         ready_url: Some(format!("http://127.0.0.1:{port}/")),
         ready_secs: if project.frontend_kind.as_deref() == Some("next") { 60 } else { 20 },
     })
+}
+
+/// El cloud dev de un proyecto en el sitio en la nube (la Mac le manda su deploy key).
+pub fn cloud_dev(state: &Shared, project: &Project) -> Result<devtool_core::Environment> {
+    state
+        .store
+        .environments()?
+        .into_iter()
+        .find(|e| e.kind == devtool_core::EnvKind::CloudDev && e.project.as_deref().unwrap_or(crate::projects::DEFAULT) == project.name)
+        .ok_or_else(|| anyhow!("{} has no cloud dev with a deploy key: save the dev deploy key in Condx on the Mac (the environment's Keys tab)", project.name))
+}
+
+/// `convex dev` contra el cloud dev del proyecto, con su deploy key (sin backend local).
+fn cloud_deployer_spec(state: &Shared, project: &Project) -> Result<Spec> {
+    let env = cloud_dev(state, project)?;
+    let (_, key) = crate::secrets::deploy_key(&env)?.ok_or_else(|| anyhow!("the deploy key of {} hasn't arrived from the Mac yet", env.name))?;
+    let local_cli = project.repo.join("node_modules/.bin/convex");
+    let (program, mut args) = if local_cli.exists() { (local_cli.display().to_string(), vec![]) } else { ("npx".to_string(), vec!["convex".to_string()]) };
+    args.extend(["dev", "--typecheck=disable", "--tail-logs=always"].map(String::from));
+    Ok(Spec {
+        name: project.proc("deployer"),
+        program,
+        args,
+        env: vec![("CONVEX_DEPLOY_KEY".into(), key), ("CONVEX_DEPLOYMENT".into(), String::new())],
+        cwd: native::deployer_root(project)?,
+        ready_url: None,
+        ready_secs: 0,
+    })
+}
+
+/// La rama en la que trabaja la Mac, en el clon del sitio: así se sigue en la nube donde se dejó.
+/// Solo si está en GitHub y el clon no tiene cambios propios; si no, se queda donde está.
+pub fn follow_branch(project: &Project, branch: &str) -> String {
+    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&project.repo).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let here = git(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    if branch.is_empty() {
+        return format!("branch {here}");
+    }
+    let fetched = crate::site::fetch(&project.repo);
+    if !fetched || git(&["rev-parse", "--verify", "-q", &format!("origin/{branch}")]).is_none() {
+        return format!("branch {here} (the Mac's {branch} isn't on GitHub: push it from the Mac)");
+    }
+    if git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty()) {
+        return format!("branch {here} (the cloud copy has its own changes; it didn't switch to {branch})");
+    }
+    match git(&["checkout", "-q", "-B", branch, &format!("origin/{branch}")]) {
+        Some(_) => format!("branch {branch}"),
+        None => format!("branch {here} (couldn't switch to {branch})"),
+    }
 }
 
 /// En el sitio en la nube el clon llega sin dependencias: se instalan la primera vez (bun si el repo
@@ -402,6 +475,7 @@ async fn start_proc(state: &Shared, project: &Project, name: &str) -> Result<()>
             }
             native::start_backend(state, project).await
         }
+        "deployer" if crate::site::is_cloud() => procs::start(state, cloud_deployer_spec(state, project)?).await.map(|_| ()),
         "deployer" => native::start_deployer(state, project).await,
         _ => {
             if state.procs.get(&project.proc("frontend")).is_none() {
@@ -410,7 +484,7 @@ async fn start_proc(state: &Shared, project: &Project, name: &str) -> Result<()>
                     bail!("port {port} is already used by another process ({cmd}, pid {pid}); stop it or use that one");
                 }
             }
-            procs::start(state, frontend_spec(project)?).await.map(|_| ())
+            procs::start(state, frontend_spec(state, project)?).await.map(|_| ())
         }
     }
 }

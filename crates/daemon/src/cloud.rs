@@ -120,8 +120,14 @@ fn clip(v: &Value, max: usize) -> Value {
 
 pub async fn overview(state: &Shared) -> Value {
     let mut projects = vec![];
+    let cloud = crate::site::is_cloud();
     for p in state.store.projects().unwrap_or_default() {
-        let o = crate::overview::build_for(state, Some(&p.name)).await;
+        // En el sitio en la nube: solo su clon (rama) y a qué cloud dev van sus servicios.
+        let o = if cloud {
+            json!({ "git": crate::overview::git_light(&p.repo).await, "environments": [], "attention": [], "deployer": {} })
+        } else {
+            crate::overview::build_for(state, Some(&p.name)).await
+        };
         let services: Vec<Value> = crate::services::list(state, &p)
             .await
             .iter()
@@ -156,6 +162,7 @@ pub async fn overview(state: &Shared) -> Value {
             "attention": o["attention"].as_array().into_iter().flatten().take(6).map(|a| clip(a, 200)).collect::<Vec<_>>(),
             "services": services,
             "envs": envs,
+            "target": if cloud { crate::services::cloud_dev(state, &p).ok().map(|e| json!({ "env": e.name, "deployment": e.convex_deployment })).unwrap_or(Value::Null) } else { Value::Null },
         }));
     }
     json!({ "at": now_ms(), "projects": projects })
@@ -204,6 +211,22 @@ fn run_request(state: &Shared, s: &Session, row: &Values, devices: &[TrustedDevi
         };
     }
     let _rt = s.rt.enter();
+    // Subir la rama en la que trabaja la Mac (sus commits) para seguir en la nube desde ahí. Las
+    // ramas principales no: esas se suben a mano o por un flujo.
+    if let Some(h) = ask["handoff"].as_object() {
+        let project = match crate::projects::get(state, h.get("project").and_then(Value::as_str)) {
+            Ok(p) => p,
+            Err(e) => return format!("rejected: {e:#}"),
+        };
+        let branch = std::process::Command::new("git").arg("-C").arg(&project.repo).args(["rev-parse", "--abbrev-ref", "HEAD"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        if branch.is_empty() || matches!(branch.as_str(), "main" | "master" | "dev" | "develop" | "HEAD") {
+            return format!("rejected: the Mac is on {branch}; push it yourself (it's a main branch)");
+        }
+        return match crate::gitflow::push(&project.repo, &branch) {
+            Ok(()) => format!("pushed {branch}: the cloud site continues from it"),
+            Err(e) => format!("rejected: {e:#}"),
+        };
+    }
     // Levantar, detener o reiniciar un servicio local (o `all`), como el botón de la Mac.
     if let Some(svc) = ask["service"].as_object() {
         let name = svc.get("name").and_then(Value::as_str).unwrap_or_default();
@@ -265,7 +288,7 @@ const LIVE_TICK_MS: i64 = 1_500;
 
 /// Lo que el teléfono ve de un proveedor: sus datos y su clave cifrada para la Mac y los teléfonos de
 /// confianza (`sealed`, age armado). Nunca la clave en claro.
-const KEY_FIELDS: &[&str] = &["kind", "label", "baseUrl", "model", "keyHint", "sealed", "recipients", "updatedAt"];
+const KEY_FIELDS: &[&str] = &["kind", "label", "baseUrl", "model", "keyHint", "sealed", "recipients", "updatedAt", "project"];
 
 /// Los resueltos se ven un rato (para que el teléfono vea en qué terminó lo que pidió).
 const RESOLVED_VISIBLE_MS: i64 = 3_600_000;
@@ -779,6 +802,48 @@ fn key_rows(state: &Shared, devices: &[TrustedDevice], cache: &mut IndexMap<Stri
             },
         };
         rows.insert(id, obj(json!({ "kind": p["kind"], "label": p["label"], "baseUrl": p["baseUrl"], "model": p["model"], "keyHint": p["keyHint"], "sealed": sealed, "recipients": recipients.len(), "updatedAt": p["updatedAt"] })));
+    }
+    rows.extend(deploy_key_rows(state, devices, cache));
+    rows
+}
+
+/// Las deploy keys de cloud dev (nunca producción), cifradas solo para el sitio en la nube: con la
+/// Mac apagada, sus servicios despliegan al cloud dev de cada proyecto. Una fila `deploy:<entorno>`.
+fn deploy_key_rows(state: &Shared, devices: &[TrustedDevice], cache: &mut IndexMap<String, (String, String)>) -> IndexMap<String, Values> {
+    use std::hash::{Hash, Hasher};
+    let mut rows = IndexMap::new();
+    let site: Vec<age::x25519::Recipient> = devices.iter().filter(|d| d.kind.as_deref() == Some("site")).filter_map(|d| d.encryption_key.as_deref()?.parse().ok()).collect();
+    if site.is_empty() {
+        return rows;
+    }
+    let names: Vec<String> = site.iter().map(|r| r.to_string()).collect();
+    for env in state.store.environments().unwrap_or_default().into_iter().filter(|e| e.kind == devtool_core::EnvKind::CloudDev) {
+        let Ok(Some((_, key))) = crate::secrets::deploy_key(&env) else { continue };
+        if crate::secrets::check_deploy_key(&env, &key).is_err() {
+            continue;
+        }
+        // Un sello de la key (no la key): cambia si la key o el sitio cambian.
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (key.as_str(), names.join(",")).hash(&mut h);
+        let print = format!("{:x}", h.finish());
+        let id = format!("deploy:{}", env.name);
+        let sealed = match cache.get(&id) {
+            Some((f, s)) if *f == print => s.clone(),
+            _ => match crate::agents::seal(&key, &site) {
+                Ok(s) => {
+                    cache.insert(id.clone(), (print.clone(), s.clone()));
+                    s
+                }
+                Err(e) => {
+                    tracing::warn!("cloud: couldn't seal the deploy key of {}: {e:#}", env.name);
+                    continue;
+                }
+            },
+        };
+        rows.insert(id, obj(json!({
+            "kind": "convex-deploy", "label": env.name, "baseUrl": env.convex_url, "model": env.convex_deployment,
+            "project": env.project.as_deref().unwrap_or(crate::projects::DEFAULT), "sealed": sealed, "recipients": site.len(), "updatedAt": print,
+        })));
     }
     rows
 }

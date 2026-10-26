@@ -1,7 +1,12 @@
 # Flows with agents, events and threads
 
-Status: design (2026-10-25). First event sources: Convex and frontend errors and user reports through the Condx SDK (any Convex app), and external agents through the MCP. Builds on the workflow engine (`workflows.rs`), the agent host
+Status: F1-F7 done (2026-10-25, local, tested with a scripted model and with MiniMax in the app). First event sources: Convex and frontend errors and user reports through the Condx SDK (any Convex app), and external agents through the MCP. Builds on the workflow engine (`workflows.rs`), the agent host
 (`agent_host.rs`, `agent-host/` with pi durable), incidents, notifications and the phone.
+
+Not done yet: publishing `@condx/react` and `@condx/convex` to npm; the daemon's own error capture
+for apps without the SDK (Convex logs); webhook and schedule triggers; parallel agents in one run;
+a full flow with a real model from a real error to a deploy approved on the phone (each piece is
+tested, the whole loop only with the scripted model).
 
 ## 1. Goal
 
@@ -226,6 +231,7 @@ the checks, the approval buttons, and anything the developer asks along the way.
 
 | Phase | What | Done when |
 | --- | --- | --- |
+<!-- All phases done 2026-10-25: F1 roles.rs + Agent node, F2 conditions.rs, F3 threads.rs + Ask, F4a packages/ + cloud ingest, F4b events.rs, F5 fix-checks + templates, F6 phone threads, F7 outcomes.rs. -->
 | F1 | Agent catalog (roles, mode, output schema) and the `agent` node; outputs flow to the next nodes | a manual flow Triage → Risk produces a validated risk report in the run |
 | F2 | Edge conditions; `notify` with a summary to the phone and the thread | the same flow notifies only when risk ≥ the threshold, and skips the rest with a reason |
 | F3 | Threads: each run is a thread with its agents, flow messages, cards and mentions; the Agents page lists threads; `ask` node | the developer asks `@risk` something in the run's thread and gets the answer in context |

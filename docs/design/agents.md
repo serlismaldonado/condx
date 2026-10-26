@@ -1,6 +1,6 @@
 # Design: agents that respond to incidents
 
-Status: all phases done (A0-A6, 2026-10-25, local). Next: push inside Condx and the QR camera on iOS when nsh releases its host channel (Android scans with the system camera); remote runners (A7, designed in §6.7). Builds on Condx Cloud (`cloud.md`, phone approvals).
+Status: all phases done (A0-A6, 2026-10-25, local); agents in flows, threads and the SDK are in `agent-flows.md` (F1-F7 done). Next: push inside Condx and the QR camera on iOS when nsh releases its host channel (Android scans with the system camera); remote runners (A7, designed in §6.7). Builds on Condx Cloud (`cloud.md`, phone approvals).
 
 ## 1. Goal
 

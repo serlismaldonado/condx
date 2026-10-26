@@ -462,7 +462,9 @@ pub async fn start_chat(state: &Shared, text: &str, project: Option<&str>, by: &
 /// Un chat nuevo pedido desde el teléfono: con sus imágenes (van enseguida, como un mensaje) y aviso
 /// al teléfono cuando el agente conteste.
 pub async fn start_chat_with(state: &Shared, text: &str, project: Option<&str>, by: &str, images: &[Value]) -> Result<Value> {
-    let mut run = start_chat(state, text, project, by).await?;
+    // Un hilo nuevo sin proyecto: el que nombra el mensaje («¿en qué rama está serlismaldonado?»).
+    let named = project.is_none().then(|| mentioned_project(state, text)).flatten();
+    let mut run = start_chat(state, text, project.or(named.as_deref()), by).await?;
     run["replyNotice"] = json!(true);
     state.store.save_agent_run(&run)?;
     if !images.is_empty() {
@@ -470,6 +472,15 @@ pub async fn start_chat_with(state: &Shared, text: &str, project: Option<&str>, 
         message(state, &id, "These are the images I attached.", images).await?;
     }
     Ok(run)
+}
+
+/// El proyecto que nombra un texto (su nombre como palabra; el más largo si nombra varios).
+pub fn mentioned_project(state: &Shared, text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_')).filter(|w| !w.is_empty()).collect();
+    let mut found: Vec<String> = state.store.projects().unwrap_or_default().into_iter().map(|p| p.name).filter(|n| words.contains(&n.to_lowercase().as_str())).collect();
+    found.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    found.into_iter().next()
 }
 
 /// El hilo de un incidente (desde el teléfono): la conversación del agente que ya trabajó en él;

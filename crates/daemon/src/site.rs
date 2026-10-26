@@ -277,6 +277,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     // Primero las claves: la configuración nombra al proveedor por defecto.
     let applied = apply_keys(state, s)?;
     let settings = apply_settings(state, s)?;
+    *SITE_LOGO_NOW.lock().unwrap() = crate::agents::logo_for(state, None);
     let mac_alive_at = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::MAC_ROW).and_then(|r| r.row.values.get("aliveAt").and_then(Value::as_i64));
     let mac_away = !mac_alive_at.is_some_and(|at| now - at < MAC_GONE_MS);
     clone_projects(state, s);
@@ -466,7 +467,7 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
             }
             Err(e) => {
                 tracing::warn!("site: couldn't start an agent for {id}: {e:#}");
-                let failed = json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": SITE_LOGO, "at": now_ms(), "text": format!("Couldn't start an agent on the cloud site: {e:#}") });
+                let failed = json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": site_logo(), "at": now_ms(), "text": format!("Couldn't start an agent on the cloud site: {e:#}") });
                 let items: Vec<Value> = a.base.iter().cloned().chain([a.user.clone(), failed]).collect();
                 let _ = publish(s, &a.row, items, true);
             }
@@ -479,9 +480,9 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
         let Some(run) = state.store.agent_run(&run_id).ok().flatten() else { continue };
         let at = s.answering[&run_id].user["at"].as_i64().unwrap_or(0);
         let (reply, done) = match run["status"].as_str() {
-            Some("running") => (crate::threads::live_item(&run, SITE_AUTHOR, SITE_LOGO, at).unwrap_or_else(|| thinking(at)), false),
-            Some("done") => (json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": SITE_LOGO, "at": now_ms(), "text": run["answer"].as_str().unwrap_or("").trim() }), true),
-            Some(st) => (json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": SITE_LOGO, "at": now_ms(), "text": format!("The agent {st}: {}", run["error"].as_str().unwrap_or("no details")) }), true),
+            Some("running") => (crate::threads::live_item(&run, SITE_AUTHOR, site_logo(), at).unwrap_or_else(|| thinking(at)), false),
+            Some("done") => (json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": site_logo(), "at": now_ms(), "text": run["answer"].as_str().unwrap_or("").trim() }), true),
+            Some(st) => (json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": site_logo(), "at": now_ms(), "text": format!("The agent {st}: {}", run["error"].as_str().unwrap_or("no details")) }), true),
             None => continue,
         };
         if !done && s.answering[&run_id].shown == reply {
@@ -502,11 +503,17 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
 }
 
 const SITE_AUTHOR: &str = "Cloud site";
-const SITE_LOGO: &str = "minimax";
+/// La marca con que se ve el sitio en los hilos: la de su proveedor predeterminado (se actualiza en
+/// cada vuelta, cuando cambia la configuración que copia de la Mac).
+static SITE_LOGO_NOW: std::sync::Mutex<&'static str> = std::sync::Mutex::new("other");
+
+fn site_logo() -> &'static str {
+    *SITE_LOGO_NOW.lock().unwrap()
+}
 
 /// La respuesta mientras el agente todavía no escribió nada.
 fn thinking(at: i64) -> Value {
-    json!({ "at": at + 1, "kind": "reply", "live": true, "author": SITE_AUTHOR, "logo": SITE_LOGO, "activity": "Thinking…", "text": "" })
+    json!({ "at": at + 1, "kind": "reply", "live": true, "author": SITE_AUTHOR, "logo": site_logo(), "activity": "Thinking…", "text": "" })
 }
 
 /// Toma un mensaje: lo marca recibido y publica el mensaje con la respuesta pensando. Un hilo pedido
@@ -520,7 +527,7 @@ fn take(s: &mut Session, id: &str, request_id: &str, user: Value, v: &Values) ->
     let (row, base, drafts) = if id == crate::cloud::NEW_ROW {
         let row = format!("site-{}", crate::cloud::random_hex(6)?);
         let title: String = user["text"].as_str().unwrap_or("Chat").chars().take(60).collect();
-        let participants = json!([{ "node": "agent", "name": SITE_AUTHOR, "logo": SITE_LOGO }]).to_string();
+        let participants = json!([{ "node": "agent", "name": SITE_AUTHOR, "logo": site_logo() }]).to_string();
         let mut new = Values::new();
         for (k, val) in [("title", json!(title)), ("kind", json!("chat")), ("status", json!("running")), ("updatedAt", json!(now)), ("items", items(&[])), ("participants", json!(participants)), ("waitingAnswer", json!(false))] {
             new.insert(k.into(), val);

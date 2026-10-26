@@ -49,3 +49,13 @@ Each phase is tested on the phone (adb) in light and dark before it ships.
    repository and local services with Start / Stop / Restart (and Start all / Stop all) through a
    signed `_run` request `{service: {project, name, action}}`. Services need the Mac: with the Mac
    away the buttons hide.
+7. ✅ **Local services on the cloud site** (2026-10-26, code done; boat test pending): with the Mac
+   away, the cloud site handles `_run` service requests (`siteFor`/`siteResult`, Condx Cloud only
+   lets it answer there while the Mac is away) and publishes `site-overview` (its cloned projects
+   and their services). Services run natively in the container (`CONDX_CONVEX_BACKEND`, Bun for the
+   dependencies, installed the first time). The container runs with `--network host` and boat
+   publishes the ports with `boat host` (fixed URLs, in `/data/condx/hosts.json`): the frontend
+   token-gated (the phone opens it with «Open»), the backend public (the browser connects to it; the
+   app's own auth protects the data). The cloud site's data is its own, not the Mac's. Running
+   services keep the machine on up to 3 h after the last phone request.
+   Projects in the Environments tab fold (remembered on the phone).

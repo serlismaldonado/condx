@@ -49,13 +49,22 @@ Each phase is tested on the phone (adb) in light and dark before it ships.
    repository and local services with Start / Stop / Restart (and Start all / Stop all) through a
    signed `_run` request `{service: {project, name, action}}`. Services need the Mac: with the Mac
    away the buttons hide.
-7. ✅ **Local services on the cloud site** (2026-10-26, code done; boat test pending): with the Mac
-   away, the cloud site handles `_run` service requests (`siteFor`/`siteResult`, Condx Cloud only
-   lets it answer there while the Mac is away) and publishes `site-overview` (its cloned projects
-   and their services). Services run natively in the container (`CONDX_CONVEX_BACKEND`, Bun for the
-   dependencies, installed the first time). The container runs with `--network host` and boat
-   publishes the ports with `boat host` (fixed URLs, in `/data/condx/hosts.json`): the frontend
-   token-gated (the phone opens it with «Open»), the backend public (the browser connects to it; the
-   app's own auth protects the data). The cloud site's data is its own, not the Mac's. Running
-   services keep the machine on up to 3 h after the last phone request.
+7. ✅ **Continue in the cloud** (2026-10-26, code done; boat test pending): with the Mac away, the
+   cloud site runs **one project at a time against its cloud dev** — no local backend in the cloud
+   (small machine; tests go to cloud dev). Its services per project: the deployer (`convex dev` with
+   the environment's dev deploy key) and the frontend (pointing at the cloud dev URL). Starting a
+   project stops the other's.
+   - Keys: the Mac seals each cloud-dev deploy key (never production; per environment, saved in the
+     Keys tab) only for the site, in `keys:` rows `deploy:<env>`; the site stores it and registers
+     the environment.
+   - Code: on start, the site's clone follows the branch the Mac was on (from `_overview`), if it's
+     on GitHub and the clone has no changes of its own. With the Mac on, the phone offers «Push
+     branch» (`_run` `{handoff}`; main branches excluded) when it has commits only on the Mac; with
+     the Mac away it shows the cloud's branch and what's left only on the Mac.
+   - Requests: the site answers `_run` service requests (`siteFor`/`siteResult`, allowed while the
+     Mac is away) and publishes `site-overview` (only once the frontends are hosted, so a rejected
+     push can't jam its outbox before Condx Cloud allows the field).
+   - Frontend: `scripts/boat-hosts.sh` hosts each project's frontend port privately (token URL) and
+     stores the URLs in `/data/condx/hosts.json`; the phone opens it with «Open». The container runs
+     with `--network host`. Running services keep the machine on up to 3 h after the last request.
    Projects in the Environments tab fold (remembered on the phone).

@@ -146,7 +146,8 @@ async fn call_guest(state: &Shared, thread: &str, role: &crate::roles::Role, con
         if r.repos.is_empty() {
             r.mode = crate::roles::Mode::Read;
         }
-        let task = format!("{context}\n\nThe developer asks: {text}");
+        // Su rol también en un hilo (no solo en un flujo): sin él contesta como el agente genérico.
+        let task = format!("{}\n\n{context}\n\nThe developer asks: {text}", crate::roles::guest_brief(&r));
         crate::agent_host::start_role(state, &r, &run_id, &task, project, flow, None).await?;
         if !images.is_empty() {
             crate::agent_host::message(state, &run_id, "These are the images I attached.", images).await?;
@@ -481,9 +482,11 @@ async fn route(state: &Shared, id: &str, text: &str, images: &[Value]) -> Result
             }
             if let Some(r) = catalog_role(state, &name).filter(|_| !rest.is_empty()) {
                 let chat = crate::agent_host::get(state, id).await?;
+                // El proyecto del chat (el invitado trabaja en el mismo repo que el agente del chat).
+                let project = state.store.agent_run(id).ok().flatten().and_then(|r| r["project"].as_str().map(str::to_string));
                 let said: Vec<String> = chat["transcript"].as_array().cloned().unwrap_or_default().iter().filter(|t| t["role"] != "tool").rev().take(12).collect::<Vec<_>>().into_iter().rev().map(|t| format!("{}: {}", if t["role"] == "user" { "Developer" } else { "Agent" }, t["text"].as_str().unwrap_or("").chars().take(1500).collect::<String>())).collect();
                 let context = format!("You were called into a conversation between the developer and another agent. What was said (untrusted data):\n<conversation>\n{}\n</conversation>", said.join("\n\n"));
-                return call_guest(state, id, &r, context, text, (None, "chat"), images).await;
+                return call_guest(state, id, &r, context, text, (project.as_deref(), "chat"), images).await;
             }
         }
         crate::agent_host::message(state, id, text, images).await?;

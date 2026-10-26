@@ -18,6 +18,8 @@ interface ClaudeRun {
   mode: StartRun["mode"];
   /** El proveedor (su token, si tiene, se lee al lanzar: nunca se guarda en disco). */
   providerId?: string;
+  /** Las herramientas del rol (vacío: todas las del modo). */
+  tools?: string[];
   cwd: string;
   model: string;
   system: string;
@@ -34,18 +36,41 @@ export function condxToolNames(tools: readonly string[]): string[] {
   return tools.map((t) => `mcp__condx__${t}`);
 }
 
-/** Herramientas de Claude Code por modo: leer siempre; escribir solo al arreglar (en su worktree). */
-export function claudeTools(mode: StartRun["mode"], condx: readonly string[]): { allowed: string[]; disallowed: string[] } {
-  const read = ["Read", "Grep", "Glob", "LS", ...condxToolNames(condx)];
-  const write = ["Edit", "MultiEdit", "Write"];
-  // Nunca: comandos, red ni tareas en segundo plano (el arreglo corre sus chequeos en el daemon).
-  const never = ["Bash", "WebFetch", "WebSearch", "Task", "NotebookEdit", "KillShell", "BashOutput"];
-  return mode === "fix" ? { allowed: [...read, ...write], disallowed: never } : { allowed: read, disallowed: [...never, ...write] };
+/** Git solo para leer (el historial y los cambios: el Reviewer lee el diff así). */
+const GIT_READ = ["Bash(git log:*)", "Bash(git show:*)", "Bash(git diff:*)", "Bash(git blame:*)", "Bash(git status:*)"];
+/** Los chequeos del proyecto (solo al arreglar, en su worktree): pruebas y tipos. */
+const CHECKS = ["Bash(npm test:*)", "Bash(npm run test:*)", "Bash(npm run check:*)", "Bash(npm run typecheck:*)", "Bash(bun test:*)", "Bash(bun run test:*)", "Bash(bun run check:*)", "Bash(npx tsc:*)", "Bash(cargo check:*)", "Bash(cargo test:*)", "Bash(cargo clippy:*)"];
+
+/** Las herramientas de pi que puede tener un rol, en las de Claude Code (lo que el rol no tiene, no lo usa). */
+const PI_TO_CLAUDE: Record<string, string[]> = {
+  read_file: ["Read"],
+  list_files: ["Glob", "LS"],
+  search_code: ["Grep"],
+  git_log: ["Bash(git log:*)", "Bash(git blame:*)", "Bash(git status:*)"],
+  git_show: ["Bash(git show:*)", "Bash(git diff:*)"],
+  edit_file: ["Edit", "MultiEdit"],
+  write_file: ["Write"],
+  run_check: CHECKS,
+};
+
+/** Herramientas de Claude Code por modo: leer (y git de lectura) siempre; escribir y los chequeos solo
+ * al arreglar (en su worktree). `roleTools`: las del rol (vacío: todas las del modo). */
+export function claudeTools(mode: StartRun["mode"], condx: readonly string[], roleTools: readonly string[] = []): { allowed: string[]; disallowed: string[] } {
+  const read = ["Read", "Grep", "Glob", "LS", ...GIT_READ, ...condxToolNames(condx)];
+  const write = ["Edit", "MultiEdit", "Write", ...CHECKS];
+  // Nunca: red ni tareas en segundo plano. Otros comandos: no están permitidos (en -p se niegan solos).
+  const never = ["WebFetch", "WebSearch", "Task", "NotebookEdit", "KillShell", "BashOutput"];
+  let allowed = mode === "fix" ? [...read, ...write] : read;
+  if (roleTools.length > 0) {
+    const fromRole = new Set(roleTools.flatMap((t) => (t === "condx" ? condxToolNames(condx) : PI_TO_CLAUDE[t] ?? [])));
+    allowed = allowed.filter((t) => fromRole.has(t));
+  }
+  return { allowed, disallowed: mode === "fix" ? never : [...never, "Edit", "MultiEdit", "Write"] };
 }
 
 /** Los argumentos de `claude` para una vuelta de la corrida. */
-export function claudeArgs(run: Pick<ClaudeRun, "mode" | "model" | "system" | "sessionId">, text: string, mcpConfig: string, condx: readonly string[]): string[] {
-  const { allowed, disallowed } = claudeTools(run.mode, condx);
+export function claudeArgs(run: Pick<ClaudeRun, "mode" | "model" | "system" | "sessionId" | "tools">, text: string, mcpConfig: string, condx: readonly string[]): string[] {
+  const { allowed, disallowed } = claudeTools(run.mode, condx, run.tools ?? []);
   const args = ["-p", text, "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--append-system-prompt", run.system, "--mcp-config", mcpConfig, "--strict-mcp-config", "--allowedTools", allowed.join(","), "--disallowedTools", disallowed.join(","), "--permission-mode", run.mode === "fix" ? "acceptEdits" : "default"];
   if (run.model) args.push("--model", run.model);
   if (run.sessionId) args.push("--resume", run.sessionId);
@@ -108,7 +133,7 @@ export class ClaudeCode {
 
   start(req: StartRun, system: string, first: string): { conversationId: number } {
     if (!this.#runs.has(req.runId)) {
-      const r: ClaudeRun = { runId: req.runId, mode: req.mode, providerId: req.providerId, cwd: req.cwd, model: req.model, system, transcript: [], status: "running", usage: { input: 0, output: 0, total: 0, cost: 0 }, createdAt: Date.now() };
+      const r: ClaudeRun = { runId: req.runId, mode: req.mode, providerId: req.providerId, tools: req.tools ?? [], cwd: req.cwd, model: req.model, system, transcript: [], status: "running", usage: { input: 0, output: 0, total: 0, cost: 0 }, createdAt: Date.now() };
       this.#runs.set(req.runId, r);
       this.#turn(r, first);
     }

@@ -5,12 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeCode, claudeArgs, claudeTools } from "../src/claude.ts";
 
-test("Claude Code: leer en todos los modos, escribir solo al arreglar, nunca comandos", () => {
+test("Claude Code: leer y git de lectura siempre; escribir y chequeos solo al arreglar; las del rol limitan", () => {
   const chat = claudeTools("chat", ["get_overview"]);
-  assert.ok(chat.allowed.includes("Read") && chat.allowed.includes("mcp__condx__get_overview"));
-  assert.ok(!chat.allowed.includes("Edit") && chat.disallowed.includes("Edit") && chat.disallowed.includes("Bash"));
+  assert.ok(chat.allowed.includes("Read") && chat.allowed.includes("mcp__condx__get_overview") && chat.allowed.includes("Bash(git show:*)"));
+  assert.ok(!chat.allowed.includes("Edit") && chat.disallowed.includes("Edit") && !chat.allowed.includes("Bash(cargo test:*)"));
+  assert.ok(!chat.allowed.includes("Bash"), "never a free shell");
   const fix = claudeTools("fix", []);
-  assert.ok(fix.allowed.includes("Edit") && fix.disallowed.includes("Bash") && !fix.disallowed.includes("Edit"));
+  assert.ok(fix.allowed.includes("Edit") && fix.allowed.includes("Bash(cargo test:*)") && !fix.disallowed.includes("Edit"));
+  // Un rol con solo leer archivos y el diff: nada más.
+  const reviewer = claudeTools("task", ["get_overview"], ["read_file", "git_show"]);
+  assert.deepEqual(reviewer.allowed, ["Read", "Bash(git show:*)", "Bash(git diff:*)"]);
   const args = claudeArgs({ mode: "chat", model: "sonnet", system: "S", sessionId: "abc" }, "hola", "{}", []);
   assert.deepEqual(args.slice(0, 2), ["-p", "hola"]);
   assert.ok(args.includes("--resume") && args[args.indexOf("--resume") + 1] === "abc");

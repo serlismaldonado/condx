@@ -239,6 +239,17 @@ pub fn reset(state: &Shared) -> Result<Vec<Role>> {
 }
 
 /// Lo que se le pide al agente sobre la forma de su resultado (va al final de su tarea).
+/// Lo que lleva un agente llamado a una conversación: su rol y su responsabilidad, y que conteste a la
+/// persona con lo que su rol cubre (los campos de su resultado, sin el formato estricto de un flujo).
+pub fn guest_brief(role: &Role) -> String {
+    let mut out = format!("Your role: {}\n{}", role.name, role.instructions);
+    if !role.output.is_empty() {
+        let fields: Vec<&str> = role.output.keys().map(String::as_str).collect();
+        out.push_str(&format!("\n\nThis is a conversation, not a flow: answer the developer directly in plain text, keeping to your role, and cover what your role reports ({}).", fields.join(", ")));
+    }
+    out
+}
+
 pub fn output_instructions(role: &Role) -> String {
     if role.output.is_empty() {
         return "Answer in plain text.".into();

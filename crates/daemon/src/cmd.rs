@@ -109,10 +109,55 @@ pub fn command(program: &str, args: &[&str], cwd: Option<&Path>, env: &[(&str, &
 }
 
 /// Lee una variable de un archivo .env sin pasar por el shell.
+/// Todas las variables de un archivo .env (`KEY=valor`, con o sin `export` y comillas; sin comentarios).
+pub fn env_file_values(path: &Path) -> Vec<(String, String)> {
+    let raw = std::fs::read_to_string(path).unwrap_or_default();
+    let mut out: Vec<(String, String)> = vec![];
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let k = k.trim();
+        if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let v = v.trim();
+        // Sin comentario al final (fuera de comillas) y sin las comillas.
+        let v = if v.starts_with('"') || v.starts_with('\'') { v[1..].split(|c| c == '"' || c == '\'').next().unwrap_or("") } else { v.split(" #").next().unwrap_or("").trim() };
+        // La última gana, como en dotenv.
+        out.retain(|(x, _)| x != k);
+        out.push((k.to_string(), v.to_string()));
+    }
+    out
+}
+
 pub fn env_file_value(path: &Path, key: &str) -> Option<String> {
     let raw = std::fs::read_to_string(path).ok()?;
     raw.lines().find_map(|line| {
         let (k, v) = line.split_once('=')?;
         (k.trim() == key).then(|| v.trim().trim_matches('"').trim_matches('\'').to_string())
     })
+}
+
+#[cfg(test)]
+mod env_file_tests {
+    use super::*;
+
+    #[test]
+    fn lee_todas_las_variables_de_un_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env.local");
+        std::fs::write(&path, "# comentario\nCONVEX_DEPLOYMENT=dev:x # team\nexport NOTION_API_KEY=\"secret value\"\nEMPTY=\nA=1\nA=2\nbad line\nAUTH='q'\n").unwrap();
+        let vars = env_file_values(&path);
+        assert_eq!(vars, vec![
+            ("CONVEX_DEPLOYMENT".to_string(), "dev:x".to_string()),
+            ("NOTION_API_KEY".to_string(), "secret value".to_string()),
+            ("EMPTY".to_string(), String::new()),
+            ("A".to_string(), "2".to_string()),
+            ("AUTH".to_string(), "q".to_string()),
+        ]);
+    }
 }

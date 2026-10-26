@@ -359,7 +359,9 @@ fn frontend_spec(state: &Shared, project: &Project) -> Result<Spec> {
     if !program.exists() {
         bail!("couldn't find {}: install the repo's dependencies (bun install / npm install)", program.display());
     }
-    let mut env = vec![];
+    // En el sitio en la nube, primero las variables de la app que mandó la Mac; las de Convex van
+    // después (ganan: apuntan al cloud dev).
+    let mut env = crate::site::app_env(&project.name);
     let cloud = crate::site::is_cloud();
     if !project.is_default() || cloud {
         // En el sitio en la nube el navegador del teléfono llega al backend por su URL de boat.

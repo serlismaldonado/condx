@@ -596,6 +596,22 @@ fn clone_projects(state: &Shared, s: &mut Session) {
     }
 }
 
+fn app_env_path(project: &str) -> std::path::PathBuf {
+    home().join("app-env").join(format!("{project}.json"))
+}
+
+/// Las variables de la app de un proyecto que mandó la Mac (sin las de Convex), para su frontend.
+pub fn app_env(project: &str) -> Vec<(String, String)> {
+    if !is_cloud() {
+        return vec![];
+    }
+    std::fs::read_to_string(app_env_path(project))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Map<String, Value>>(&t).ok())
+        .map(|m| m.into_iter().filter_map(|(k, v)| v.as_str().map(|v| (k, v.to_string()))).collect())
+        .unwrap_or_default()
+}
+
 /// `git fetch origin` en un clon del sitio, probando cada token de GitHub (como al clonar).
 pub fn fetch(dir: &std::path::Path) -> bool {
     let mut tokens: Vec<Option<String>> = crate::secrets::accounts_with_prefix("github-token").iter().filter_map(|a| crate::secrets::get(a).ok().flatten()).map(Some).collect();
@@ -729,6 +745,24 @@ fn apply_keys(state: &Shared, s: &Session) -> Result<usize> {
             Err(_) => continue,
         };
         let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        // Las variables de la app de un proyecto: a un archivo propio (solo el dueño lo lee).
+        if text("kind").as_deref() == Some("app-env") {
+            let project = text("project").unwrap_or_default();
+            if !project.is_empty() && !project.contains('/') {
+                let path = app_env_path(&project);
+                std::fs::create_dir_all(path.parent().unwrap())?;
+                std::fs::write(&path, &key)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+                }
+                applied.insert(r.row.id.clone(), stamp);
+                changed = true;
+                tracing::info!("site: app variables received ({project})");
+            }
+            continue;
+        }
         if text("kind").as_deref() == Some("convex-deploy") {
             let name = text("label").unwrap_or_default();
             let url = text("baseUrl");
@@ -762,6 +796,9 @@ fn apply_keys(state: &Shared, s: &Session) -> Result<usize> {
         match id.strip_prefix("deploy:") {
             Some(env) => {
                 let _ = crate::secrets::delete(&format!("deploy-key:{env}"));
+            }
+            None if id.starts_with("appenv:") => {
+                let _ = std::fs::remove_file(app_env_path(id.trim_start_matches("appenv:")));
             }
             None => {
                 let _ = crate::agents::delete_provider(state, &id);

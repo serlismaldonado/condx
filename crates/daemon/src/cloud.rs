@@ -813,6 +813,53 @@ fn key_rows(state: &Shared, devices: &[TrustedDevice], cache: &mut IndexMap<Stri
         rows.insert(id, obj(json!({ "kind": p["kind"], "label": p["label"], "baseUrl": p["baseUrl"], "model": p["model"], "keyHint": p["keyHint"], "sealed": sealed, "recipients": recipients.len(), "updatedAt": p["updatedAt"] })));
     }
     rows.extend(deploy_key_rows(state, devices, cache));
+    rows.extend(app_env_rows(state, devices, cache));
+    rows
+}
+
+/// Si una variable es de Convex (el sitio pone las suyas, apuntando al cloud dev): esas no viajan.
+fn is_convex_var(name: &str) -> bool {
+    name.to_ascii_uppercase().contains("CONVEX")
+}
+
+/// Las variables de la app de cada proyecto (su `.env.local`, sin las de Convex), cifradas solo para
+/// el sitio en la nube: con la Mac apagada, su frontend las necesita (claves de servicios, secretos
+/// de autenticación…). Una fila `appenv:<proyecto>`; ninguna si el proyecto no tiene variables.
+fn app_env_rows(state: &Shared, devices: &[TrustedDevice], cache: &mut IndexMap<String, (String, String)>) -> IndexMap<String, Values> {
+    use std::hash::{Hash, Hasher};
+    let mut rows = IndexMap::new();
+    let site: Vec<age::x25519::Recipient> = devices.iter().filter(|d| d.kind.as_deref() == Some("site")).filter_map(|d| d.encryption_key.as_deref()?.parse().ok()).collect();
+    if site.is_empty() {
+        return rows;
+    }
+    let names: Vec<String> = site.iter().map(|r| r.to_string()).collect();
+    for p in state.store.projects().unwrap_or_default() {
+        let vars: serde_json::Map<String, Value> = crate::cmd::env_file_values(&p.repo.join(".env.local")).into_iter().filter(|(k, _)| !is_convex_var(k)).map(|(k, v)| (k, Value::String(v))).collect();
+        if vars.is_empty() {
+            continue;
+        }
+        let text = Value::Object(vars.clone()).to_string();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (text.as_str(), names.join(",")).hash(&mut h);
+        let print = format!("{:x}", h.finish());
+        let id = format!("appenv:{}", p.name);
+        let sealed = match cache.get(&id) {
+            Some((f, s)) if *f == print => s.clone(),
+            _ => match crate::agents::seal(&text, &site) {
+                Ok(s) => {
+                    cache.insert(id.clone(), (print.clone(), s.clone()));
+                    s
+                }
+                Err(e) => {
+                    tracing::warn!("cloud: couldn't seal the app variables of {}: {e:#}", p.name);
+                    continue;
+                }
+            },
+        };
+        // Solo los nombres a la vista (nunca los valores): para saber qué llegó.
+        let hint = vars.keys().cloned().collect::<Vec<_>>().join(", ");
+        rows.insert(id, obj(json!({ "kind": "app-env", "label": p.name, "project": p.name, "keyHint": hint, "sealed": sealed, "recipients": site.len(), "updatedAt": print })));
+    }
     rows
 }
 

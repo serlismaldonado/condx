@@ -450,7 +450,7 @@ fn env_cmd(args: &[String]) -> Result<()> {
 fn secret_cmd(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("set") => {
-            let account = args.get(1).context("missing account (prod-deploy-key, dev-deploy-key, github-token, agentmail-key, resend-key or condx-cloud-key)")?;
+            let account = args.get(1).context("missing account (prod-deploy-key, dev-deploy-key, github-token[:owner], agentmail-key, resend-key or condx-cloud-key)")?;
             secrets::writable_account(account)?;
             if account == site::BOAT_KEY {
                 eprintln!("Paste the boat API key of this sandbox (boat_…, scoped to it: sandbox.read,sandbox.stop,sandbox.resume) and press Enter (it isn't shown):");
@@ -500,7 +500,7 @@ fn secret_cmd(args: &[String]) -> Result<()> {
                 println!("Saved ({account}). Turn email on in Condx (or POST /api/mail).");
                 return Ok(());
             }
-            if account == gitflow::TOKEN_ACCOUNT {
+            if account == gitflow::TOKEN_ACCOUNT || account.starts_with("github-token:") {
                 // Para el respaldo y los PR de los agentes: mejor uno fine-grained, solo los repos de
                 // los proyectos, con Contents y Pull requests de escritura.
                 eprintln!("Paste a GitHub token (fine-grained: Contents + Pull requests, read and write) and press Enter (it isn't shown):");

@@ -375,7 +375,10 @@ fn clone_project(state: &Shared, name: &str, url: &str, branch: &str) -> Result<
         std::fs::create_dir_all(dir.parent().unwrap())?;
         let mut cmd = std::process::Command::new("git");
         // El token va en un encabezado de esta orden, no en el remoto guardado.
-        if let Some(token) = crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT).ok().flatten() {
+        // El token del dueño del repo (`github-token:<dueño>`), o el general.
+        let owner = url.trim_start_matches("https://github.com/").split('/').next().unwrap_or_default();
+        let token = crate::secrets::get(&format!("github-token:{owner}")).ok().flatten().or_else(|| crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT).ok().flatten());
+        if let Some(token) = token {
             use base64::Engine as _;
             let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{}", token.trim()));
             cmd.args(["-c", &format!("http.extraHeader=Authorization: Basic {basic}")]);

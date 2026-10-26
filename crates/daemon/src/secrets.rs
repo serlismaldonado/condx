@@ -251,6 +251,14 @@ pub fn check_deploy_key(env: &devtool_core::Environment, key: &str) -> Result<St
 
 /// Valida el nombre de una cuenta que el usuario puede escribir con el CLI.
 pub fn writable_account(account: &str) -> Result<()> {
+    // Un token de GitHub por dueño (`github-token:<usuario u organización>`): uno fine-grained sirve
+    // para un solo dueño.
+    if let Some(owner) = account.strip_prefix("github-token:") {
+        if owner.is_empty() || owner.len() > 39 || !owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            bail!("“{owner}” isn't a GitHub user or organization");
+        }
+        return Ok(());
+    }
     if ![PROD_DEPLOY_KEY, DEV_DEPLOY_KEY, crate::gitflow::TOKEN_ACCOUNT, crate::mail::KEY_ACCOUNT, crate::mail::RESEND_ACCOUNT, crate::update::CLOUD_KEY, crate::site::BOAT_KEY].contains(&account) {
         bail!("only “{PROD_DEPLOY_KEY}”, “{DEV_DEPLOY_KEY}”, “{}”, “{}”, “{}”, “{}” or “{}” can be stored", crate::gitflow::TOKEN_ACCOUNT, crate::mail::KEY_ACCOUNT, crate::mail::RESEND_ACCOUNT, crate::update::CLOUD_KEY, crate::site::BOAT_KEY);
     }

@@ -51,9 +51,11 @@ pub fn settings(state: &Shared) -> Settings {
 
 pub fn save(state: &Shared, s: &Settings) -> Result<()> {
     let mut s = s.clone();
-    // Al encenderlo, desde ahora (un buzón compartido con otras pruebas no se toca hacia atrás).
-    if s.enabled && (s.since == 0 || !settings(state).enabled) {
-        s.since = crate::store::now_ms();
+    // Al encenderlo, desde ahora (un buzón compartido con otras pruebas no se toca hacia atrás); si
+    // ya estaba encendido, se mantiene desde cuándo.
+    let before = settings(state);
+    if s.enabled {
+        s.since = if before.enabled && before.since > 0 { before.since } else { crate::store::now_ms() };
     }
     let s = &s;
     if s.enabled && s.allow.is_empty() {

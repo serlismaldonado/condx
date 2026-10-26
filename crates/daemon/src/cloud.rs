@@ -33,6 +33,8 @@ const BUSY_FOR_MS: i64 = 30_000;
 /// no anda.
 const SAFETY_RING_MS: i64 = 60_000;
 const FALLBACK_RING_MS: i64 = 15_000;
+/// Cada cuánto publica la Mac que sigue encendida (el teléfono la da por apagada a los 12 min).
+const HEARTBEAT_MS: i64 = 5 * 60_000;
 const RECENT_JOBS: usize = 50;
 /// Campos que el daemon escribe en cada alcance (los demás son de otros: el teléfono).
 /// Sin la hora de la última revisión: cambiaba cada 30 s y nadie la lee (cuatro escrituras por vuelta).
@@ -50,7 +52,7 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt"];
 /// Lo más largo de un mensaje de un hilo en el teléfono (antes 700: las respuestas se cortaban).
 const ITEM_CHARS: usize = 12_000;
 /// Lo que ocupan los mensajes de un hilo en su fila: si se pasa, se dejan afuera los más viejos.
@@ -1022,6 +1024,8 @@ struct Session {
     bell: Option<crate::bell::Bell>,
     token: String,
     rung_at: i64,
+    /// El último latido publicado (`aliveAt` en la fila `_mac`).
+    alive_at: i64,
 }
 
 fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<Session> {
@@ -1051,7 +1055,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0 })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0, alive_at: 0 })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -1132,9 +1136,17 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         s.threads_built = (now_ms(), s.rt.block_on(thread_rows(state)));
     }
     let mut trows = s.threads_built.1.clone();
-    if let Ok(mac) = crate::agents::mac_recipient() {
-        trows.insert(MAC_ROW.into(), obj(json!({ "recipient": mac.to_string() })));
+    // La Mac: su llave (para cifrar lo que le manda un teléfono) y su latido, cada 5 min: el teléfono
+    // muestra «Mac offline» si el último es viejo.
+    let now = now_ms();
+    if now - s.alive_at >= HEARTBEAT_MS {
+        s.alive_at = now;
     }
+    let mut mac_row = obj(json!({ "aliveAt": s.alive_at }));
+    if let Ok(mac) = crate::agents::mac_recipient() {
+        mac_row.insert("recipient".into(), Value::String(mac.to_string()));
+    }
+    trows.insert(MAC_ROW.into(), mac_row);
     // El catálogo de agentes (encendidos), para llamarlos a cualquier hilo con @ desde el teléfono.
     let mut agents: Vec<Value> = crate::roles::list(state).into_iter().filter(|r| r.enabled).map(|r| json!({ "id": r.id, "name": r.name, "logo": crate::agents::logo_for(state, r.provider.as_deref()) })).collect();
     // Y los agentes externos conectados por el MCP (Claude Code, Codex…): también se los menciona.

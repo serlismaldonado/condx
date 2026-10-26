@@ -576,7 +576,7 @@ fn set_incident_agent(state: &Shared, incident_id: &str, run: &Value) {
     if let Ok(Some(mut inc)) = state.store.incident(incident_id) {
         let answer = run["answer"].as_str().map(|a| a.chars().take(4_000).collect::<String>());
         // Del arreglo, lo que la tarjeta muestra (el parche entero está en la corrida).
-        let fix = run["fix"].is_object().then(|| json!({ "branch": run["branch"], "commit": run["fix"]["commit"], "files": run["fix"]["files"], "stat": run["fix"]["stat"], "changes": run["fix"]["changes"], "discarded": run["fix"]["discarded"], "error": run["fix"]["error"] }));
+        let fix = run["fix"].is_object().then(|| json!({ "branch": run["branch"], "commit": run["fix"]["commit"], "files": run["fix"]["files"], "stat": run["fix"]["stat"], "changes": run["fix"]["changes"], "discarded": run["fix"]["discarded"], "error": run["fix"]["error"], "pushed": run["fix"]["pushed"], "pushError": run["fix"]["pushError"], "pr": run["fix"]["pr"] }));
         inc["agent"] = json!({ "runId": run["id"], "mode": run["mode"], "status": run["status"], "answer": answer, "error": run["error"], "at": now_ms(), "model": run["model"], "fix": fix, "template": run["template"]["name"] });
         let _ = state.store.save_incident(&inc);
     }
@@ -666,6 +666,16 @@ fn finish(state: &Shared, mut run: Value, status: &str, answer: Option<String>, 
         // Un agente de flujo no tiene incidente: el commit lleva el nombre de su flujo.
         let incident = run["incident"].as_str().and_then(|i| state.store.incident(i).ok().flatten()).unwrap_or_else(|| json!({ "title": run["title"], "id": run["id"] }));
         run["fix"] = commit_fix(&run, &incident);
+        // Respaldo: la rama del arreglo sube a GitHub en cuanto queda el commit.
+        if run["fix"]["changes"] == true {
+            if let (Some(dir), Some(branch)) = (run["worktree"].as_str(), run["branch"].as_str()) {
+                if let Value::Object(b) = crate::gitflow::backup(state, std::path::Path::new(dir), branch) {
+                    for (k, v) in b {
+                        run["fix"][k] = v;
+                    }
+                }
+            }
+        }
     }
     let _ = state.store.save_agent_run(&run);
     if let Some(inc) = run["incident"].as_str() {

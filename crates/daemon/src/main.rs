@@ -29,6 +29,7 @@ mod procs;
 mod projects;
 mod frontend;
 mod functions;
+mod gitflow;
 mod gitinfo;
 mod schema;
 mod seed;
@@ -375,8 +376,22 @@ fn env_cmd(args: &[String]) -> Result<()> {
 fn secret_cmd(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("set") => {
-            let account = args.get(1).context("missing account (prod-deploy-key or dev-deploy-key)")?;
+            let account = args.get(1).context("missing account (prod-deploy-key, dev-deploy-key or github-token)")?;
             secrets::writable_account(account)?;
+            if account == gitflow::TOKEN_ACCOUNT {
+                // Para el respaldo y los PR de los agentes: mejor uno fine-grained, solo los repos de
+                // los proyectos, con Contents y Pull requests de escritura.
+                eprintln!("Paste a GitHub token (fine-grained: Contents + Pull requests, read and write) and press Enter (it isn't shown):");
+                let mut value = String::new();
+                std::io::stdin().read_line(&mut value)?;
+                let value = value.trim();
+                if value.len() < 20 || value.contains(char::is_whitespace) {
+                    bail!("that doesn't look like a GitHub token");
+                }
+                secrets::set(account, value)?;
+                println!("Saved ({account}). Agents push their branches and open PRs with it.");
+                return Ok(());
+            }
             let (what, prefix) = if account == secrets::DEV_DEPLOY_KEY { ("cloud dev", "dev:") } else { ("production", "prod:") };
             eprintln!("Paste the {what} deploy key and press Enter (it isn't shown or kept in history):");
             let mut value = String::new();
@@ -386,7 +401,7 @@ fn secret_cmd(args: &[String]) -> Result<()> {
                 bail!("that doesn't look like a Convex {what} deploy key (“{prefix}<deployment>|…”)");
             }
             secrets::set(account, value)?;
-            println!("Saved in the Keychain ({account}, deployment {}).", value.split('|').next().unwrap_or_default());
+            println!("Saved ({account}, deployment {}).", value.split('|').next().unwrap_or_default());
         }
         Some("delete") => {
             let account = args.get(1).context("missing account")?;
@@ -395,7 +410,7 @@ fn secret_cmd(args: &[String]) -> Result<()> {
             println!("Borrada.");
         }
         Some("status") | None => {
-            for account in [secrets::PROD_DEPLOY_KEY, secrets::DEV_DEPLOY_KEY, secrets::BACKUP_KEY] {
+            for account in [secrets::PROD_DEPLOY_KEY, secrets::DEV_DEPLOY_KEY, secrets::BACKUP_KEY, gitflow::TOKEN_ACCOUNT] {
                 println!("{account:<16} {}", if secrets::exists(account) { "stored" } else { "missing" });
             }
         }

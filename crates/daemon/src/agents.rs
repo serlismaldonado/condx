@@ -47,6 +47,8 @@ pub struct Settings {
     /// Tokens por día entre todos los agentes (0: sin agentes).
     pub daily_token_budget: u64,
     pub max_concurrent: u32,
+    /// La política de Git: respaldo de las ramas y PR antes de desplegar (`gitflow.rs`).
+    pub git: crate::gitflow::Policy,
 }
 
 impl Default for Settings {
@@ -57,6 +59,7 @@ impl Default for Settings {
             default_model: None,
             daily_token_budget: 500_000,
             max_concurrent: 1,
+            git: crate::gitflow::Policy::default(),
         }
     }
 }

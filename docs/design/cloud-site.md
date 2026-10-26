@@ -118,7 +118,7 @@ from both sites and from workers.
 | S3 | `harness: claude-code` with live text, for fixes and deploys | design |
 | S4 | Orchestrator: long-lived Claude Code on the cloud site with the Condx MCP | design |
 | S5 | Thread ownership and handoff Mac ↔ cloud (heartbeat, "Continue in the cloud", return) | design |
-| S6 | Git policy: backup push after every run, PR before deploy, direct deploy on request | design |
+| **S6** ✅ | Git policy: backup push after every run, PR before deploy, direct deploy on request | done 2026-10-26 (`gitflow.rs`): the fix branch is pushed when the daemon commits it; deploying a fix from the phone pushes it and opens (or reuses) a PR against the repo's main branch, then starts the workflow; `<workflow>\|direct` skips the PR. Token: `condxd secret set github-token` (fine-grained). Policy in the agent settings (`git.backupPush`, `git.deployViaPr`). Pending: a "Deploy directly" option in the phone UI and the PR link shown there |
 | S7 | Email fallback through AgentMail (`heskala@agentmail.to`): notifications out, requests in | design |
 | S8 | `@mayer` + releases: CI builds (desktop on GitHub Actions macOS, APK on Linux), signed update manifest, daemon-side auto-updater, download links and "update ready" notifications | design |
 

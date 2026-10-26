@@ -658,15 +658,35 @@ fn apply_request(state: &Shared, rt: &tokio::runtime::Handle, incident_id: &str,
         "deploy" => (|| {
             let fix = &inc["agent"]["fix"];
             let commit = fix["commit"].as_str().filter(|_| fix["changes"] == true && fix["discarded"] != true).ok_or_else(|| anyhow::anyhow!("there's no fix ready"))?;
-            let w = crate::workflows::get(state, &r.arg)?;
+            // «<flujo>» o «<flujo>|direct» (el pedido explícito de desplegar sin PR).
+            let (wid, direct) = match r.arg.split_once('|') {
+                Some((w, "direct")) => (w.to_string(), true),
+                _ => (r.arg.clone(), false),
+            };
+            let w = crate::workflows::get(state, &wid)?;
             let project = inc["project"].as_str().unwrap_or(crate::projects::DEFAULT);
             if w.project != project {
                 anyhow::bail!("that workflow belongs to another project");
             }
+            // Antes de desplegar: la rama sube y queda su PR (si no se pidió directo).
+            let pr = match inc["agent"]["runId"].as_str().and_then(|id| state.store.agent_run(id).ok().flatten()) {
+                Some(mut agent_run) => {
+                    let pr = crate::gitflow::before_deploy(state, &agent_run, direct)?;
+                    if let Some(url) = &pr {
+                        agent_run["fix"]["pr"] = json!(url);
+                        let _ = state.store.save_agent_run(&agent_run);
+                    }
+                    pr
+                }
+                None => None,
+            };
             // Arrancar un flujo usa tokio (este hilo no es del runtime).
             let _rt = rt.enter();
-            let run = crate::workflows::start(state, &r.arg, commit, &by)?;
-            Ok(format!("workflow “{}” started ({})", w.name, run.id))
+            let run = crate::workflows::start(state, &wid, commit, &by)?;
+            Ok(match pr {
+                Some(url) => format!("PR {url} · workflow “{}” started ({})", w.name, run.id),
+                None => format!("workflow “{}” started ({})", w.name, run.id),
+            })
         })(),
         other => Err(anyhow::anyhow!("unknown request {other}")),
     };

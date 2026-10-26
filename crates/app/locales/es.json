@@ -934,5 +934,8 @@
   "None yet. On a Linux machine, run condxd serve --site cloud, open “Pair a phone” here and run condxd site pair <the code> there; it gets the provider keys sealed to it and your agent settings.": "Todavía no hay. En una máquina con Linux, corre condxd serve --site cloud, abre «Vincular un teléfono» aquí y corre allá condxd site pair <el código>; recibe las claves de los proveedores cifradas para él y tu configuración de agentes.",
   "It gets the provider keys sealed to it and copies your agent settings. It never touches production.": "Recibe las claves de los proveedores cifradas para él y copia tu configuración de agentes. Nunca toca producción.",
   "Automatic": "Automático",
-  "Agents answer in": "Los agentes contestan en"
+  "Agents answer in": "Los agentes contestan en",
+  "Add a cloud environment": "Agregar un entorno cloud",
+  "Paste its Convex deploy key (dashboard → Settings → Deploy keys): a prod: key adds production, a dev: key adds cloud dev or saves the key of the one it already has.": "Pega su deploy key de Convex (dashboard → Settings → Deploy keys): una prod: agrega producción; una dev: agrega cloud dev o guarda la key del que ya tiene.",
+  "{a} is ready: deploy key saved in the Keychain": "{a} listo: deploy key guardada en el Llavero"
 }

@@ -280,6 +280,62 @@ pub fn ensure_envs(state: &Shared, p: &Project) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// Un entorno cloud (cloud dev o producción) a partir de su deploy key: `dev:<deployment>|…` o
+/// `prod:<deployment>|…`. El nombre por defecto es `<proyecto>-dev` / `<proyecto>-prod` (`dev` /
+/// `prod` en el proyecto por defecto). Si ya hay un entorno con ese nombre tiene que ser del mismo
+/// proyecto y deployment (entonces solo se guarda la key).
+pub fn add_cloud_env(state: &Shared, p: &Project, key: &str, name: Option<String>) -> Result<devtool_core::Environment> {
+    use devtool_core::{EnvKind, Environment};
+    let target = key.split('|').next().unwrap_or_default();
+    let (kind, deployment) = match (target.strip_prefix("prod:"), target.strip_prefix("dev:")) {
+        (Some(d), _) => (EnvKind::CloudProd, d),
+        (_, Some(d)) => (EnvKind::CloudDev, d),
+        _ => anyhow::bail!("that doesn't look like a Convex deploy key (“prod:<deployment>|…” or “dev:<deployment>|…”)"),
+    };
+    if deployment.is_empty() || !deployment.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        anyhow::bail!("that doesn't look like a Convex deploy key");
+    }
+    let prod = kind == EnvKind::CloudProd;
+    let name = name.unwrap_or_else(|| match (p.is_default(), prod) {
+        (true, true) => "prod".into(),
+        (true, false) => "dev".into(),
+        (false, true) => format!("{}-prod", p.name),
+        (false, false) => format!("{}-dev", p.name),
+    });
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        anyhow::bail!("the environment's name can only have letters, numbers, - and _");
+    }
+    let env = match state.store.environment(&name)? {
+        Some(old) => {
+            let same_project = old.project.as_deref().unwrap_or(DEFAULT) == p.name;
+            if !same_project || old.kind != kind || old.convex_deployment.as_deref().is_some_and(|d| d != deployment) {
+                anyhow::bail!("“{name}” already exists for another project or deployment: give the new one another name");
+            }
+            old
+        }
+        None => {
+            let env = Environment {
+                name: name.clone(),
+                kind,
+                label: Some(format!("{} · {} ({deployment})", p.title, if prod { "production" } else { "cloud dev" })),
+                convex_url: Some(format!("https://{deployment}.convex.cloud")),
+                convex_site_url: Some(format!("https://{deployment}.convex.site")),
+                convex_deployment: Some(deployment.to_string()),
+                frontend_url: None,
+                branch: Some(if prod { "main".into() } else { current_branch(&p.repo).unwrap_or_else(|| "main".into()) }),
+                credential: None,
+                created_at: now_ms(),
+                project: (!p.is_default()).then(|| p.name.clone()),
+            };
+            state.store.upsert_environment(&env)?;
+            env
+        }
+    };
+    crate::secrets::check_deploy_key(&env, key)?;
+    crate::secrets::set(&crate::secrets::deploy_account(&env), key.trim())?;
+    Ok(env)
+}
+
 /// Al arrancar: entornos de todos los proyectos (puertos o cloud dev pudieron cambiar).
 pub fn ensure_all_envs(state: &Shared) {
     for p in state.store.projects().unwrap_or_default() {

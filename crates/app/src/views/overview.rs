@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::app::{DevtoolApp, Page};
 use crate::ui::{self, Health};
 
-pub fn render(app: &mut DevtoolApp, _: &mut Window, cx: &mut Context<DevtoolApp>) -> impl IntoElement {
+pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolApp>) -> impl IntoElement {
     let Some(o) = app.overview.clone() else {
         return super::empty(app.error.clone().unwrap_or_else(|| t!("Waiting for the daemon…").into()), cx).into_any_element();
     };
@@ -128,7 +128,11 @@ pub fn render(app: &mut DevtoolApp, _: &mut Window, cx: &mut Context<DevtoolApp>
     }
     details = details.item("deployer", format!("Deployer · {}", ui::phase_label(phase)), deployer_card).item("git", git_title, git_card);
     let details = details.render(app, cx);
-    v_flex().gap_3().p_4().child(stats).child(ui::section(t!("Environments"), cx)).child(envs).child(details).into_any_element()
+    // Agregar producción (o la key de cloud dev) pegando su deploy key: para cualquier proyecto.
+    let project = app.project.clone();
+    let (daemon, me) = (app.daemon.clone(), cx.entity().downgrade());
+    let add_env = app.add_env_views.entry(project.clone()).or_insert_with(|| cx.new(|cx| super::add_env::AddEnvView::new(project, daemon, me, window, cx))).clone();
+    v_flex().gap_3().p_4().child(stats).child(ui::section(t!("Environments"), cx)).child(envs).child(add_env).child(details).into_any_element()
 }
 
 fn behind_text(v: &Value) -> SharedString {

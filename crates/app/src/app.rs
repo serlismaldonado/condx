@@ -224,6 +224,8 @@ pub struct DevtoolApp {
     pub data_views: HashMap<String, Entity<crate::views::data::DataView>>,
     /// La pestaña Claves de cada entorno.
     pub key_views: HashMap<String, Entity<crate::views::keys::KeysView>>,
+    /// «Agregar un entorno cloud» de cada proyecto (en su vista general).
+    pub add_env_views: HashMap<String, Entity<crate::views::add_env::AddEnvView>>,
     /// Reglas de datos del daemon (`/api/policy`): leer y cambiar por tipo de entorno.
     pub policy: Option<Value>,
     pub policy_error: Option<String>,
@@ -367,6 +369,16 @@ fn gone<T: 'static>(this: &WeakEntity<T>) -> bool {
 }
 
 impl DevtoolApp {
+    /// Vuelve a leer la vista general del proyecto elegido (p. ej. después de agregar un entorno).
+    pub fn reload_overview(&mut self, cx: &mut Context<Self>) {
+        let name = self.project.clone();
+        self.get(format!("/api/overview?project={name}"), move |app, res| {
+            if let (Load::Ready(v), true) = (res, app.project == name) {
+                app.overview = Some(v);
+            }
+        }, cx);
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (daemon, error) = match Daemon::from_home() {
             Ok(d) => (Some(d), None),
@@ -459,6 +471,7 @@ impl DevtoolApp {
             ely_inputs: HashMap::new(),
             data_views: HashMap::new(),
             key_views: HashMap::new(),
+            add_env_views: HashMap::new(),
             policy: None,
             policy_error: None,
             mcp_status: None,

@@ -942,6 +942,28 @@ async fn post_keys(AxState(state): AxState<Shared>, Extension(client): Extension
     Json(json!({ "ok": true, "deployment": deployment })).into_response()
 }
 
+/// Agrega a un proyecto un entorno cloud a partir de su deploy key: la key dice el tipo (`dev:` o
+/// `prod:`) y el deployment, así que con pegarla alcanza. Crea el entorno (o lo usa si ya es de ese
+/// deployment) y guarda la key en el Llavero. Solo la app (como las claves).
+async fn post_project_environment(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Path(project): Path<String>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let project = match crate::projects::get(&state, Some(&project)) {
+        Ok(p) => p,
+        Err(e) => return fail(StatusCode::NOT_FOUND, e),
+    };
+    let key = body["deployKey"].as_str().unwrap_or_default().trim().to_string();
+    let name = body["name"].as_str().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+    match crate::projects::add_cloud_env(&state, &project, &key, name) {
+        Ok(env) => {
+            tracing::info!("environment {} added to {} from its deploy key", env.name, project.name);
+            Json(json!({ "ok": true, "name": env.name, "kind": env.kind, "deployment": env.convex_deployment })).into_response()
+        }
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
 /// Borra la deploy key propia del entorno (no las generales de `condxd secret`).
 async fn delete_keys(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Path(name): Path<String>) -> Response {
     if let Some(r) = deny(&client, Scope::JobsApprove) {
@@ -1368,6 +1390,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/cloud/devices/{id}", axum::routing::delete(delete_cloud_device))
         .route("/api/doctor/backend", post(post_doctor_backend))
         .route("/api/projects/{name}", axum::routing::delete(delete_project))
+        .route("/api/projects/{name}/environments", axum::routing::post(post_project_environment))
         .route("/api/services", get(get_services))
         .route("/api/services/{name}/logs", get(get_service_logs))
         .route("/api/services/{name}/{action}", post(post_service))

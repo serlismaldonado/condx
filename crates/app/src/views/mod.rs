@@ -8,6 +8,7 @@ pub mod er_route;
 pub mod guide;
 pub mod insights;
 pub mod jobs;
+pub mod add_env;
 pub mod keys;
 pub mod local;
 pub mod live;

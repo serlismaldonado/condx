@@ -195,7 +195,9 @@ http.route({
   }),
 });
 
-/** La descarga: con la llave de esa versión, al archivo (con su tipo, así el teléfono lo instala). */
+/** La descarga: con la llave de esa versión, al archivo (con su tipo, así el teléfono lo instala). Va a
+ * `/apk/<id>/condx-<versión>.apk`, que el proxy de Vercel sirve desde el almacenamiento: el teléfono
+ * nombra la descarga por el último tramo (la respuesta de una acción HTTP no alcanza para la APK). */
 http.route({
   path: "/download/android",
   method: "GET",
@@ -203,7 +205,20 @@ http.route({
     const key = new URL(req.url).searchParams.get("k") ?? "";
     const r = /^[0-9a-f]{48}$/.test(key) ? await ctx.runQuery(internal.releases.byKey, { key }) : null;
     if (!r?.url) return new Response("Not found", { status: 404 });
-    return new Response(null, { status: 302, headers: { location: r.url, "cache-control": "no-store" } });
+    const id = new URL(r.url).pathname.split("/").pop();
+    return new Response(null, { status: 302, headers: { location: `/apk/${id}/condx-${r.version}.apk`, "cache-control": "no-store" } });
+  }),
+});
+
+/** Sin el proxy (el sitio del deployment directo): al archivo, con su nombre de almacenamiento. */
+http.route({
+  pathPrefix: "/apk/",
+  method: "GET",
+  handler: httpAction(async (_ctx, req) => {
+    const id = new URL(req.url).pathname.split("/")[2] ?? "";
+    if (!/^[A-Za-z0-9+=_-]{16,}$/.test(id)) return new Response("Not found", { status: 404 });
+    const cloud = (process.env.CONVEX_CLOUD_URL ?? "").replace(/\/$/, "");
+    return new Response(null, { status: 302, headers: { location: `${cloud}/api/storage/${id}` } });
   }),
 });
 

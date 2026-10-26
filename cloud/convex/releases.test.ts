@@ -37,7 +37,13 @@ test("solo el daemon publica y la descarga pide la llave de esa versión", async
   expect(key).toMatch(/^[0-9a-f]{48}$/);
   const ok = await t.fetch(path);
   expect(ok.status).toBe(302);
-  expect(ok.headers.get("location")).toBeTruthy();
+  // Al archivo con su nombre en la ruta (así lo nombra el teléfono); sin el proxy, al almacenamiento.
+  const location = ok.headers.get("location") ?? "";
+  expect(location).toMatch(/^\/apk\/[A-Za-z0-9+=_-]{16,}\/condx-0\.3\.0\.apk$/);
+  const file = await t.fetch(location);
+  expect(file.status).toBe(302);
+  expect(file.headers.get("location")).toMatch(/\/api\/storage\/[A-Za-z0-9+=_-]{16,}$/);
+  expect((await t.fetch("/apk/nope/condx.apk")).status).toBe(404);
   // Sin llave, con una mal formada o con una que no existe: 404.
   expect((await t.fetch("/download/android")).status).toBe(404);
   expect((await t.fetch("/download/android?k=xyz")).status).toBe(404);

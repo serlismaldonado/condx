@@ -313,10 +313,15 @@ pub async fn request(state: &Shared, recipe_name: &str, env_name: &str, args: &V
             bail!("Promotion preconditions not met:\n- {}", failed.join("\n- "));
         }
     }
+    // La versión en el título (actualizar o publicar Condx): la tarjeta de aprobación dice cuál.
+    let title = match resolved.get("version").map(|v| v.as_str()).filter(|v| !v.is_empty()) {
+        Some(v) => format!("{} {v}", recipe.title),
+        None => recipe.title.clone(),
+    };
     let job = Job {
         id: new_id(),
         recipe: recipe.name.clone(),
-        title: recipe.title.clone(),
+        title,
         env: env_name.to_string(),
         env_kind,
         args: resolved,

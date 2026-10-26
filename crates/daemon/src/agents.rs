@@ -126,7 +126,13 @@ pub const KINDS: &[Kind] = &[
     Kind { id: "mistral", label: "Mistral", needs_base_url: false, model: "mistral-large-latest" },
     Kind { id: "openai-compatible", label: "OpenAI-compatible (Ollama, vLLM…)", needs_base_url: true, model: "" },
     Kind { id: "anthropic-compatible", label: "Anthropic-compatible (MiniMax…)", needs_base_url: true, model: "" },
+    // Sin clave: corre `claude -p` con la sesión de Claude Code de la persona (su plan). Modelo:
+    // un alias de Claude Code (`sonnet`, `opus`) o un id completo.
+    Kind { id: CLAUDE_CODE, label: "Claude Code (your plan)", needs_base_url: false, model: "sonnet" },
 ];
+
+/// El proveedor que usa la sesión de Claude Code en vez de una API key.
+pub const CLAUDE_CODE: &str = "claude-code";
 
 fn kind(id: &str) -> Option<&'static Kind> {
     KINDS.iter().find(|k| k.id == id)
@@ -161,7 +167,7 @@ pub fn logo(provider: &Value) -> &'static str {
     let model = provider["model"].as_str().unwrap_or("").to_lowercase();
     let any = |w: &str| base.contains(w) || label.contains(w) || model.contains(w);
     match provider["kind"].as_str().unwrap_or("") {
-        "anthropic" => "claude",
+        "anthropic" | "claude-code" => "claude",
         "openai" => "openai",
         "google" => "gemini",
         "xai" => "x",
@@ -261,7 +267,7 @@ pub fn upsert_provider(state: &Shared, body: ProviderBody, seal_to: &dyn Fn(&str
         (Some(k), _) => (json!(seal_to(k)?), json!(hint(k))),
         (None, Some(e)) => (e["sealedKey"].clone(), e["keyHint"].clone()),
         // Un endpoint compatible local puede no pedir clave.
-        (None, None) if k.needs_base_url => (Value::Null, Value::Null),
+        (None, None) if k.needs_base_url || k.id == CLAUDE_CODE => (Value::Null, Value::Null),
         (None, None) => bail!("{} needs an API key", k.label),
     };
     let now = crate::store::now_ms();
@@ -434,7 +440,7 @@ pub fn json(state: &Shared) -> Value {
     json!({
         "settings": settings(state),
         "providers": providers,
-        "kinds": KINDS.iter().map(|k| json!({ "id": k.id, "label": k.label, "needsBaseUrl": k.needs_base_url, "model": k.model })).collect::<Vec<_>>(),
+        "kinds": KINDS.iter().map(|k| json!({ "id": k.id, "label": k.label, "needsBaseUrl": k.needs_base_url, "model": k.model, "needsKey": k.id != CLAUDE_CODE })).collect::<Vec<_>>(),
         "sources": SOURCES,
         "host": state.agent_host.status(),
         "templates": crate::templates::list(state),

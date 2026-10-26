@@ -8,7 +8,8 @@ import { createRegistry, defineDoc, defineExtension, Harness, section, type Tool
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 import { piProviderId, type Providers } from "./providers.ts";
-import { condxTool, FIX_TOOLS, READ_TOOLS } from "./tools.ts";
+import { ClaudeCode } from "./claude.ts";
+import { CONDX_TOOLS, condxTool, FIX_TOOLS, READ_TOOLS } from "./tools.ts";
 
 const ctx: Context = BACKGROUND_CONTEXT;
 
@@ -147,6 +148,8 @@ export class Host {
   readonly providers: Providers;
   /** Corridas cuyo envío se está esperando en este proceso: id → estado final. */
   #settled = new Map<string, { status: string; reason?: string }>();
+  /** Las corridas con el proveedor Claude Code (`claude -p` con el plan de la persona). */
+  #claude?: ClaudeCode;
 
   constructor(providers: Providers) {
     this.providers = providers;
@@ -154,6 +157,7 @@ export class Host {
 
   static async open(path: string, providers: Providers, daemonUrl: string, daemonToken: string): Promise<Host> {
     const host = new Host(providers);
+    host.#claude = new ClaudeCode(`${path}.claude-runs`, daemonUrl, daemonToken, CONDX_TOOLS);
     const registry = createRegistry();
     const condx = condxTool(daemonUrl, daemonToken);
     // Una extensión por modo; cada conversación elige la suya (y solo ve esas herramientas).
@@ -191,6 +195,13 @@ export class Host {
     if (existing) return { conversationId: existing.conversationId };
     const provider = this.providers.get(req.providerId);
     if (!provider) throw new Error(`there's no provider ${req.providerId}`);
+    if (provider.kind === "claude-code") {
+      const prompt = req.mode === "fix" ? FIX_PROMPT : req.mode === "chat" ? CHAT_PROMPT : req.mode === "task" ? TASK_PROMPT : DIAGNOSE_PROMPT;
+      const first = req.mode === "chat" || req.mode === "task" ? String(req.text ?? "").trim() : (req.text?.trim() || incidentMessage(req.incident ?? {}, req.mode));
+      if (!first) throw new Error("empty message");
+      const system = [prompt, req.instructions?.trim() ?? "", languageLine(req.language)].filter(Boolean).join("\n\n");
+      return this.#claude!.start(req, system, first);
+    }
     const model = { provider: piProviderId(provider), modelId: req.model };
     const ext = req.mode === "fix" ? fixExt! : req.mode === "chat" ? chatExt! : req.mode === "task" ? taskExt! : diagnoseExt!;
     // Un chat y una tarea de flujo empiezan con el texto que arma el daemon; un incidente, con su evidencia.
@@ -219,6 +230,7 @@ export class Host {
 
   /** Estado, respuesta, transcripción y gasto de una corrida. */
   async get(runId: string): Promise<Record<string, unknown> | undefined> {
+    if (this.#claude?.has(runId)) return this.#claude.get(runId);
     const found = await this.#conversation(runId);
     if (!found?.conversation) return undefined;
     const view = await found.conversation.viewState(ctx);
@@ -245,6 +257,8 @@ export class Host {
 
   /** Un mensaje de la persona: si está trabajando, lo redirige; si no, sigue la conversación. */
   async message(runId: string, text: string, images: { data: string; mimeType: string }[] = []): Promise<void> {
+    // Claude Code: solo el texto (las imágenes de un hilo no pasan por `claude -p`).
+    if (this.#claude?.has(runId)) return this.#claude.message(runId, images.length ? `${text}\n\n(${images.length} image(s) attached in the thread aren't available to this agent)` : text);
     const found = await this.#conversation(runId);
     if (!found?.conversation) throw new Error(`there's no run ${runId}`);
     // Con imágenes (adjuntos de un hilo): texto e imágenes en el mismo mensaje, para los modelos que ven.
@@ -258,6 +272,7 @@ export class Host {
   }
 
   async abort(runId: string): Promise<void> {
+    if (this.#claude?.has(runId)) return this.#claude.abort(runId);
     const found = await this.#conversation(runId);
     if (!found?.conversation) throw new Error(`there's no run ${runId}`);
     await found.conversation.abort(ctx);
@@ -265,6 +280,7 @@ export class Host {
   }
 
   async close(): Promise<void> {
+    this.#claude?.close();
     await this.#harness.close(ctx);
   }
 }

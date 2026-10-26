@@ -44,6 +44,7 @@ export function piProviderId(p: ProviderConfig): string {
 
 /** Solo pruebas: el proveedor guionado de pi-ai, que main.ts registra aparte. */
 const FAUX = "faux";
+export const CLAUDE_CODE = "claude-code";
 
 export class Providers {
   readonly credentials = new InMemoryCredentialStore();
@@ -59,7 +60,8 @@ export class Providers {
     for (const p of list) {
       this.#configs.set(p.id, p);
       const id = piProviderId(p);
-      if (p.kind === FAUX) continue;
+      // Claude Code no pasa por pi-ai: corre `claude -p` con la sesión de la persona (claude.ts).
+      if (p.kind === FAUX || p.kind === CLAUDE_CODE) continue;
       const compatible = COMPATIBLE[p.kind];
       if (compatible) {
         if (!p.baseUrl || !p.model) throw new Error(`${p.id}: a compatible provider needs a base URL and a model`);

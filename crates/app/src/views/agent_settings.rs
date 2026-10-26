@@ -416,7 +416,9 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         .child(ui::kv(t!("Name"), Input::new(&label).small(), cx))
         .when_some(url, |c, url| c.child(ui::kv(t!("Base URL"), Input::new(&url).small(), cx)))
         .child(ui::kv(t!("Model"), Input::new(&model).small(), cx))
-        .child(ui::kv(if needs_url { t!("API key (optional)") } else { t!("API key") }, Input::new(&key).small(), cx))
+        .when(kind["needsKey"] != false, |c| c.child(ui::kv(if needs_url { t!("API key (optional)") } else { t!("API key") }, Input::new(&key).small(), cx)))
+        // Claude Code: sin clave; usa la sesión de `claude` de esta Mac (tu plan).
+        .when(kind["needsKey"] == false, |c| c.child(ui::muted(t!("No API key: agents run `claude -p` with this Mac's Claude Code login (your plan). Model: sonnet, opus or a full model id."), cx).text_xs()))
         .child(h_flex().child(ui::brand(Button::new("prov-save").small().icon(IconName::Check).label(t!("Save provider")), cx).on_click(cx.listener(|this, _, _, cx| this.save_provider(cx)))));
 
     // Presupuesto y cuántos a la vez.

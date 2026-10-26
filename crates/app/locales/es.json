@@ -937,5 +937,6 @@
   "Agents answer in": "Los agentes contestan en",
   "Add a cloud environment": "Agregar un entorno cloud",
   "Paste its Convex deploy key (dashboard → Settings → Deploy keys): a prod: key adds production, a dev: key adds cloud dev or saves the key of the one it already has.": "Pega su deploy key de Convex (dashboard → Settings → Deploy keys): una prod: agrega producción; una dev: agrega cloud dev o guarda la key del que ya tiene.",
-  "{a} is ready: deploy key saved in the Keychain": "{a} listo: deploy key guardada en el Llavero"
+  "{a} is ready: deploy key saved in the Keychain": "{a} listo: deploy key guardada en el Llavero",
+  "No API key: agents run `claude -p` with this Mac's Claude Code login (your plan). Model: sonnet, opus or a full model id.": "Sin API key: los agentes corren `claude -p` con la sesión de Claude Code de esta Mac (tu plan). Modelo: sonnet, opus o un id completo."
 }

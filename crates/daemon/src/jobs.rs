@@ -835,6 +835,17 @@ async fn builtin_step(
         n if n.starts_with("project-create-") => crate::create::builtin(state, job, n, cancel).await,
         // La aprobación de un flujo: ya se aprobó para llegar aquí.
         "workflow-gate" => Ok(format!("approved: {}", job.args.get("message").cloned().unwrap_or_default())),
+        // Un release de Condx (`update.rs`): en esta Mac si se puede, si no en la nube.
+        "condx-release" => {
+            let version = job.args.get("version").cloned().unwrap_or_default();
+            let repo = crate::update::condx_repo(state).ok_or_else(|| anyhow!("there's no Condx repo (set Mayer's repos)"))?;
+            let done = tokio::task::spawn_blocking(move || crate::update::release(&repo, &version)).await.map_err(|e| anyhow!(e.to_string()))??;
+            // Hecho aquí: el release ya está publicado; se ofrece enseguida como actualización.
+            if done.starts_with("built on this Mac") {
+                let _ = crate::update::check(state).await;
+            }
+            Ok(done)
+        }
         // Una versión nueva de Condx (`update.rs`): instala y se reinicia cuando el trabajo ya terminó.
         "condx-update" => {
             let version = job.args.get("version").cloned().ok_or_else(|| anyhow!("which version?"))?;

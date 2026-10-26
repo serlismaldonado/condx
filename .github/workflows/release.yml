@@ -1,10 +1,10 @@
 name: Release
 
-# Un tag vX.Y.Z publica el release con la app y el daemon para Mac con Apple Silicon.
+# El release en la nube, de respaldo: lo normal es publicarlo desde la Mac con scripts/release.sh
+# (local primero, minutos en vez de 15+). Corre a mano, o lo lanza el daemon cuando no hay una Mac
+# disponible (la receta `release-condx`), para un tag que ya existe.
 # Sin firma de Developer ID: install.sh quita la cuarentena al instalar.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:

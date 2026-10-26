@@ -1,0 +1,20 @@
+name = "release-condx"
+title = "Release Condx"
+description = "Publishes a new Condx release. Local first: built and signed on this Mac (scripts/release.sh, minutes); if there's no Mac available, built in the cloud (GitHub Actions, scripts/release-cloud.sh). Daemons then offer it as an update."
+kinds = ["devbox"]
+projects = true
+writes = true
+
+[approval]
+devbox = "simple"
+
+[[args]]
+name = "version"
+type = "string"
+default = ""
+description = "The version (X.Y.Z); empty for the next patch"
+
+[[step]]
+name = "Build and publish (local first, cloud if there's no Mac)"
+builtin = "condx-release"
+timeout_secs = 2700

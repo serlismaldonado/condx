@@ -61,6 +61,8 @@ pub const AGENT: Client = Client { name: "agent", scopes: &[Scope::Read], conn: 
 pub const AGENT_TOOLS: &[&str] = &[
     "get_overview", "list_environments", "get_environment", "get_env_var_names", "get_git", "get_deployer", "get_vercel", "get_frontend",
     "list_incidents", "list_recipes", "list_jobs", "get_job", "get_job_log", "list_workflows", "get_workflow_run", "get_errors",
+    // Pedir un release de Condx: espera la aprobación de la persona (Mayer).
+    "request_release",
 ];
 
 /// Lee o crea un token aleatorio en `file`, que queda en 0600: se crea así desde el principio

@@ -25,6 +25,7 @@ const PUBLIC_KEY: &str = "jlX5WWQfx1fVoPVGtztgLTxL3Qs25Z3iK1IFp42/vzw=";
 const REPO: &str = "serlismaldonado/condx";
 const STATE_KEY: &str = "meta:update";
 pub const RECIPE: &str = "update-condx";
+pub const RELEASE_RECIPE: &str = "release-condx";
 
 pub fn current() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -226,6 +227,66 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Dónde se compila un release: en esta Mac si se puede (local primero), si no en la nube.
+#[derive(Debug, PartialEq)]
+pub enum Place {
+    Local,
+    /// Por qué no aquí.
+    Cloud(String),
+}
+
+/// Local si este daemon corre en una Mac con el repo, la llave de actualización, OpenSSL 3 y gh.
+pub fn place(repo: &Path) -> Place {
+    let missing = |what: &str| Place::Cloud(what.to_string());
+    if !cfg!(target_os = "macos") {
+        return missing("this daemon isn't on a Mac (the app only builds on macOS)");
+    }
+    if !repo.join("scripts/release.sh").exists() {
+        return missing("the Condx repo isn't on this Mac");
+    }
+    if !home().join(".condx/update-signing-key.pem").exists() {
+        return missing("the update key isn't on this Mac");
+    }
+    if !Path::new("/opt/homebrew/opt/openssl@3/bin/openssl").exists() {
+        return missing("OpenSSL 3 isn't installed (brew install openssl@3)");
+    }
+    if Command::new("gh").arg("--version").output().is_err() {
+        return missing("gh isn't installed");
+    }
+    Place::Local
+}
+
+/// El repo de Condx: el primero de Mayer (el que lo mantiene).
+pub fn condx_repo(state: &Shared) -> Option<PathBuf> {
+    crate::roles::get(state, "mayer").and_then(|r| r.repos.first().map(|x| PathBuf::from(x.path.trim()))).filter(|p| p.join(".git").exists())
+}
+
+/// Publica un release: compila en esta Mac o, si no hay, lanza el del CI. Devuelve dónde y qué pasó.
+pub fn release(repo: &Path, version: &str) -> Result<String> {
+    let token = crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT)?.ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?;
+    let (script, why) = match place(repo) {
+        Place::Local => ("scripts/release.sh", "built on this Mac".to_string()),
+        Place::Cloud(reason) => ("scripts/release-cloud.sh", format!("no Mac available ({reason}): built in the cloud")),
+    };
+    let mut cmd = Command::new("bash");
+    cmd.arg(script).current_dir(repo).env("GH_TOKEN", token.trim());
+    if !version.trim().is_empty() {
+        cmd.arg(version.trim());
+    }
+    let out = cmd.output().with_context(|| format!("couldn't run {script}"))?;
+    let tail = |b: &[u8]| String::from_utf8_lossy(b).lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+    if !out.status.success() {
+        bail!("{why}, but {script} failed:\n{}", devtool_core::redact(&tail(&out.stderr)));
+    }
+    Ok(format!("{why}.\n{}", devtool_core::redact(&tail(&out.stdout))))
+}
+
+/// Lo que piden los agentes (Mayer): un release de Condx, que espera la aprobación de la persona.
+pub async fn request_release(state: &Shared, version: Option<&str>, by: &str) -> Result<crate::jobs::Job> {
+    let env = local_env(state).ok_or_else(|| anyhow!("there's no local environment to approve the release in"))?;
+    crate::jobs::request(state, RELEASE_RECIPE, &env, &json!({ "version": version.unwrap_or("") }), by).await
+}
+
 /// Revisa al arrancar y cada 6 horas.
 pub fn spawn(state: &Shared) {
     let state = state.clone();
@@ -244,6 +305,15 @@ pub fn spawn(state: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sin_el_repo_se_compila_en_la_nube() {
+        let tmp = tempfile::tempdir().unwrap();
+        match place(tmp.path()) {
+            Place::Cloud(why) => assert!(why.contains("repo") || why.contains("Mac"), "{why}"),
+            Place::Local => panic!("an empty folder can't build a release"),
+        }
+    }
 
     #[test]
     fn compara_versiones() {

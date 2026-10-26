@@ -604,6 +604,10 @@ async fn execute(state: &Shared, mut job: Job) {
         match run_step(state, &mut job, env.as_ref(), recipe, step, &mut ctx, &mut cancel).await {
             Ok(msg) => {
                 log_line(&job.id, &format!("✔ {}", step.name));
+                // Lo que dijo el paso (un release: dónde se compiló y por qué) también va al log.
+                for line in msg.iter().flat_map(|m| m.lines()).filter(|l| !l.trim().is_empty()) {
+                    log_line(&job.id, &format!("  {line}"));
+                }
                 mark(&mut job, i, StepStatus::Ok, msg);
             }
             Err(e) if *cancel.borrow() => {

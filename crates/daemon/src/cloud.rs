@@ -827,7 +827,8 @@ async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
             Err(_) => {
                 let run = state.store.agent_run(&id).ok().flatten().unwrap_or_default();
                 match run["incident"].as_str().and_then(|i| state.store.incident(i).ok().flatten()) {
-                    Some(inc) => (inc["project"].as_str().map(str::to_string), inc["env"].as_str().map(str::to_string)),
+                    // Sin proyecto (el CI de otro repo): el nombre del repo.
+                    Some(inc) => (inc["project"].as_str().map(str::to_string).or_else(|| inc["evidence"]["repo"].as_str().and_then(|r| r.rsplit('/').next()).map(str::to_string)), inc["env"].as_str().map(str::to_string)),
                     None => (run["project"].as_str().map(str::to_string), None),
                 }
             }

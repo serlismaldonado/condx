@@ -557,7 +557,7 @@ async fn post_mail(AxState(state): AxState<Shared>, Extension(client): Extension
         Err(e) => return fail(StatusCode::BAD_REQUEST, anyhow::anyhow!(e.to_string())),
     };
     match crate::mail::save(&state, &s) {
-        Ok(()) => Json(json!(s)).into_response(),
+        Ok(()) => Json(json!(crate::mail::settings(&state))).into_response(),
         Err(e) => fail(StatusCode::BAD_REQUEST, e),
     }
 }

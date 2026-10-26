@@ -23,7 +23,6 @@ pub const KEY_ACCOUNT: &str = "agentmail-key";
 const SETTINGS_KEY: &str = "meta:mail";
 const THREADS_KEY: &str = "meta:mail-threads";
 const DONE: &str = "condx-done";
-const IGNORED: &str = "condx-ignored";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -35,11 +34,13 @@ pub struct Settings {
     pub allow: Vec<String>,
     /// `fallback` (si ntfy está apagado o falla), `always` u `off`.
     pub notify: String,
+    /// Desde cuándo se leen correos (al encenderlo): lo que ya estaba en el buzón no se toca.
+    pub since: i64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { enabled: false, inbox: "heskala@agentmail.to".into(), allow: vec![], notify: "fallback".into() }
+        Self { enabled: false, inbox: "heskala@agentmail.to".into(), allow: vec![], notify: "fallback".into(), since: 0 }
     }
 }
 
@@ -49,6 +50,12 @@ pub fn settings(state: &Shared) -> Settings {
 }
 
 pub fn save(state: &Shared, s: &Settings) -> Result<()> {
+    let mut s = s.clone();
+    // Al encenderlo, desde ahora (un buzón compartido con otras pruebas no se toca hacia atrás).
+    if s.enabled && (s.since == 0 || !settings(state).enabled) {
+        s.since = crate::store::now_ms();
+    }
+    let s = &s;
     if s.enabled && s.allow.is_empty() {
         bail!("say who can write to the agents (--allow you@example.com)");
     }
@@ -118,6 +125,31 @@ impl Client {
     }
 }
 
+/// Cuándo llegó un correo, en ms (`timestamp` o `created_at`, RFC 3339); 0 si no se sabe.
+fn received_at(m: &Value) -> i64 {
+    let t = m["timestamp"].as_str().or_else(|| m["created_at"].as_str()).unwrap_or("");
+    utc_ms(t).unwrap_or(0)
+}
+
+/// `AAAA-MM-DDTHH:MM:SS[.fff]Z` (UTC, como los da AgentMail) en ms desde 1970.
+fn utc_ms(t: &str) -> Option<i64> {
+    let (date, time) = t.trim().trim_end_matches('Z').split_once('T')?;
+    let mut d = date.split('-').map(|x| x.parse::<i64>().ok());
+    let (y, mo, day) = (d.next()??, d.next()??, d.next()??);
+    let (hms, frac) = time.split_once('.').unwrap_or((time, "0"));
+    let mut h = hms.split(':').map(|x| x.parse::<i64>().ok());
+    let (hh, mm, ss) = (h.next()??, h.next()??, h.next()??);
+    let ms = format!("{:0<3}", frac.chars().take(3).collect::<String>()).parse::<i64>().ok()?;
+    // Días desde 1970-01-01 (algoritmo de Howard Hinnant).
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 24 + hh) * 60 + mm) * 60_000 + ss * 1000 + ms)
+}
+
 /// La dirección de un `From` («Nombre <a@b.com>» o «a@b.com»), en minúsculas.
 pub fn address(from: &str) -> String {
     let from = from.trim();
@@ -170,16 +202,14 @@ pub async fn process_inbox(state: &Shared) -> Result<usize> {
     // Del más viejo al más nuevo: un hilo se abre antes de que llegue su respuesta.
     for m in list.into_iter().rev() {
         let labels: Vec<&str> = m["labels"].as_array().map(|l| l.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-        if !labels.contains(&"received") || labels.contains(&DONE) || labels.contains(&IGNORED) {
+        if !labels.contains(&"received") || labels.contains(&DONE) || received_at(&m) < s.since {
             continue;
         }
         let id = m["message_id"].as_str().unwrap_or_default().to_string();
         let from = m["from"].as_str().unwrap_or_default().to_string();
         let c = client.clone();
+        // De otro remitente: ni se contesta ni se toca (el buzón puede servir a otras cosas).
         if !allowed(&s, &from) {
-            let id2 = id.clone();
-            tokio::task::spawn_blocking(move || c.label(&id2, IGNORED)).await??;
-            tracing::warn!("mail: ignored a message from a sender that isn't allowed ({})", address(&from));
             continue;
         }
         let id2 = id.clone();
@@ -283,6 +313,15 @@ mod tests {
         assert!(allowed(&s, "Serlis M <SERLIS@heskala.com>"));
         assert!(!allowed(&s, "Eve <serlis@heskala.com.evil.io>"));
         assert!(!allowed(&s, ""));
+    }
+
+    #[test]
+    fn solo_cuenta_lo_que_llego_despues_de_encenderlo() {
+        assert_eq!(received_at(&json!({ "timestamp": "2026-10-26T07:00:00.000Z" })), 1_792_998_000_000);
+        assert_eq!(received_at(&json!({ "created_at": "2026-10-26T07:00:00Z" })), 1_792_998_000_000);
+        assert_eq!(received_at(&json!({})), 0);
+        assert_eq!(utc_ms("1970-01-01T00:00:01.5Z"), Some(1500));
+        assert_eq!(utc_ms("2024-02-29T12:00:00Z"), Some(1_709_208_000_000));
     }
 
     #[test]

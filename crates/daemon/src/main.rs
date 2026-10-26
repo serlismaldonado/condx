@@ -43,6 +43,7 @@ mod events;
 mod roles;
 mod templates;
 mod threads;
+mod update;
 mod telemetry;
 mod workflows;
 #[cfg(test)]
@@ -146,6 +147,7 @@ fn serve() -> Result<()> {
         agent_host::spawn_poller(&state);
         notify::spawn(&state);
         mail::spawn(&state);
+        update::spawn(&state);
         events::spawn(&state);
         jobs::recover(&state);
         workflows::recover(&state);

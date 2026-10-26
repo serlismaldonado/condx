@@ -543,6 +543,22 @@ async fn delete_agent_provider(AxState(state): AxState<Shared>, Extension(client
 }
 
 /// Notificaciones con ntfy (notify.rs): la configuración, sin el token.
+/// Las actualizaciones de Condx: la versión de este daemon, la última revisada y la ofrecida.
+async fn get_update(AxState(state): AxState<Shared>) -> Response {
+    Json(crate::update::status(&state)).into_response()
+}
+
+/// Revisa ya (y si hay una versión nueva, pide la aprobación para instalarla).
+async fn post_update_check(AxState(state): AxState<Shared>, Extension(client): Extension<Client>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::update::check(&state).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
 /// El correo de respaldo (AgentMail): ajustes y si hay key (nunca su valor).
 async fn get_mail(AxState(state): AxState<Shared>) -> Response {
     Json(json!({ "settings": crate::mail::settings(&state), "hasKey": crate::secrets::exists(crate::mail::KEY_ACCOUNT) })).into_response()
@@ -1319,6 +1335,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agent-runs/{id}", get(get_agent_run))
         .route("/api/notify", get(get_notify).post(post_notify))
         .route("/api/mail", get(get_mail).post(post_mail))
+        .route("/api/update", get(get_update))
+        .route("/api/update/check", post(post_update_check))
         .route("/api/notify/test", post(post_notify_test))
         .route("/api/agent-runs/{id}/{action}", post(post_agent_run_action))
         .route("/api/projects", get(get_projects).post(post_project))

@@ -32,6 +32,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("project-create", include_str!("../../../recipes/project-create.toml")),
     ("workflow-approval", include_str!("../../../recipes/workflow-approval.toml")),
     ("workflow-approval-strict", include_str!("../../../recipes/workflow-approval-strict.toml")),
+    ("update-condx", include_str!("../../../recipes/update-condx.toml")),
 ];
 
 /// Tipo de entorno al que apunta una receta; `new` = crea el entorno.

@@ -835,6 +835,13 @@ async fn builtin_step(
         n if n.starts_with("project-create-") => crate::create::builtin(state, job, n, cancel).await,
         // La aprobación de un flujo: ya se aprobó para llegar aquí.
         "workflow-gate" => Ok(format!("approved: {}", job.args.get("message").cloned().unwrap_or_default())),
+        // Una versión nueva de Condx (`update.rs`): instala y se reinicia cuando el trabajo ya terminó.
+        "condx-update" => {
+            let version = job.args.get("version").cloned().ok_or_else(|| anyhow!("which version?"))?;
+            let done = tokio::task::spawn_blocking(move || crate::update::apply(&version)).await.map_err(|e| anyhow!(e.to_string()))??;
+            crate::update::restart_soon();
+            Ok(done)
+        }
         other => crate::pipeline::builtin(state, job, env, other, ctx, timeout, cancel).await,
     }
 }

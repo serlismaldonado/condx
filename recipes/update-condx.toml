@@ -1,0 +1,19 @@
+name = "update-condx"
+title = "Update Condx"
+description = "Installs a new Condx release (app, daemon and agent host) after checking its signature. The daemon offers it when a release is out; it restarts itself when done."
+kinds = ["devbox"]
+projects = true
+writes = true
+
+[approval]
+devbox = "simple"
+
+[[args]]
+name = "version"
+type = "string"
+description = "The release to install (its signed manifest must say this version)"
+
+[[step]]
+name = "Download, verify and install"
+builtin = "condx-update"
+timeout_secs = 900

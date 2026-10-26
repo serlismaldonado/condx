@@ -41,16 +41,33 @@ jobs:
           APP_DIR="$PWD/dist" SKIP_BUILD=1 scripts/bundle-app.sh release
           cp target/release/condxd dist/condxd
           codesign --force --sign - dist/condxd
-          tar -czf "$NAME.tar.gz" -C dist Condx.app condxd
+          # El host de agentes (el daemon instala sus dependencias con npm ci).
+          mkdir -p dist/agent-host && cp -R agent-host/src agent-host/package.json agent-host/package-lock.json dist/agent-host/
+          tar -czf "$NAME.tar.gz" -C dist Condx.app condxd agent-host
           shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
           echo "NAME=$NAME" >> "$GITHUB_ENV"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
+      # El manifiesto firmado que el daemon verifica antes de actualizarse (update.rs): versión,
+      # archivo y SHA-256, firmados con la llave de actualización (Ed25519).
+      - name: Signed manifest
+        env:
+          CONDX_UPDATE_KEY: ${{ secrets.CONDX_UPDATE_KEY }}
+        run: |
+          if [ -z "$CONDX_UPDATE_KEY" ]; then echo "::warning::CONDX_UPDATE_KEY isn't set: no manifest, daemons won't offer this release"; exit 0; fi
+          SUM=$(cut -d' ' -f1 "$NAME.tar.gz.sha256")
+          printf '{"version":"%s","tag":"%s","asset":"%s","url":"https://github.com/%s/releases/download/%s/%s","sha256":"%s","published":"%s"}' \
+            "${TAG#v}" "$TAG" "$NAME.tar.gz" "${{ github.repository }}" "$TAG" "$NAME.tar.gz" "$SUM" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > manifest.json
+          umask 077 && printf '%s\n' "$CONDX_UPDATE_KEY" > update-key.pem
+          OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
+          "$OPENSSL" pkeyutl -sign -inkey update-key.pem -rawin -in manifest.json -out manifest.json.sig
+          rm -f update-key.pem
+          echo "MANIFEST=manifest.json manifest.json.sig" >> "$GITHUB_ENV"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$NAME.tar.gz" "$NAME.tar.gz.sha256" install.sh --clobber
+            gh release upload "$TAG" "$NAME.tar.gz" "$NAME.tar.gz.sha256" install.sh $MANIFEST --clobber
           else
-            gh release create "$TAG" "$NAME.tar.gz" "$NAME.tar.gz.sha256" install.sh --generate-notes --title "Condx $TAG"
+            gh release create "$TAG" "$NAME.tar.gz" "$NAME.tar.gz.sha256" install.sh $MANIFEST --generate-notes --title "Condx $TAG"
           fi

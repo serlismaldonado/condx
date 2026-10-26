@@ -6,7 +6,7 @@
 //   POST /providers            { providers: [...] }        reemplaza los proveedores (y sus claves)
 //   POST /runs                 StartRun                    arranca una corrida (idempotente por runId)
 //   GET  /runs/:id                                         estado, respuesta, transcripción, gasto
-//   POST /runs/:id/message     { text }                    redirige o sigue la conversación
+//   POST /runs/:id/message     { text, images? }           redirige o sigue la conversación (imágenes: {data, mimeType})
 //   POST /runs/:id/abort
 //   GET  /health
 
@@ -43,7 +43,8 @@ async function body(req: IncomingMessage): Promise<any> {
   let raw = "";
   for await (const chunk of req) {
     raw += chunk;
-    if (raw.length > 1_000_000) throw new Error("body too large");
+    // Las imágenes de un hilo llegan en base64 (hasta 6 por mensaje).
+    if (raw.length > 48_000_000) throw new Error("body too large");
   }
   return raw ? JSON.parse(raw) : {};
 }
@@ -109,10 +110,13 @@ async function main(): Promise<void> {
           return run ? send(res, 200, run) : send(res, 404, { error: `there's no run ${id}` });
         }
         if (req.method === "POST" && parts[2] === "message") {
-          const text = String((await body(req)).text ?? "").slice(0, 4_000);
+          // Con adjuntos el texto puede traer un archivo entero (hasta ~200 KB) y las imágenes en base64.
+          const b = await body(req);
+          const text = String(b.text ?? "").slice(0, 240_000);
           if (!text.trim()) return send(res, 400, { error: "empty message" });
           if (fauxModel) resetFaux();
-          await host.message(id, text);
+          const images = Array.isArray(b.images) ? b.images.filter((i: any) => typeof i?.data === "string" && typeof i?.mimeType === "string" && i.mimeType.startsWith("image/")).slice(0, 6) : [];
+          await host.message(id, text, images);
           return send(res, 200, { ok: true });
         }
         if (req.method === "POST" && parts[2] === "abort") {

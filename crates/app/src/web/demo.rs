@@ -90,6 +90,10 @@ pub fn get(path: &str) -> Result<Value> {
             json!(s.incidents.iter().filter(|i| (i["status"] == "resolved") == resolved).cloned().collect::<Vec<_>>())
         }),
         ["agents"] => with(|s| s.agents.clone()),
+        ["connections"] => json!({ "connections": [
+            { "id": "conn-1", "name": "Claude Code", "handle": "claude-code", "kind": "claude-code", "logo": "claude", "level": "orchestrate", "answerQuestions": true, "editFlows": false, "createdAt": now() - 50 * HOUR, "lastSeen": now() - 30_000, "online": true },
+            { "id": "conn-2", "name": "Codex", "handle": "codex", "kind": "codex", "logo": "openai", "level": "reply", "answerQuestions": false, "editFlows": false, "createdAt": now() - 200 * HOUR, "lastSeen": now() - 26 * HOUR, "online": false },
+        ] }),
         ["sdk"] => json!({ "endpoint": "https://condx.example.com", "keys": [
             { "project": "my-app", "publicKey": "ck_pub_3f9a1c0e7b2d4f8a9c6e5d4b3a2f1e0d9c8b7a6f5e4d3c2b", "createdAt": now() - 72 * HOUR, "revoked": false },
             { "project": "my-app", "publicKey": "ck_pub_0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071", "createdAt": now() - 960 * HOUR, "revoked": true },
@@ -108,9 +112,9 @@ pub fn get(path: &str) -> Result<Value> {
             ] }),
         ["agents", "roles"] => json!({ "roles": [
             { "id": "triage", "name": "Triage", "enabled": true, "mode": "read", "instructions": "You triage an error: where it happens and the most likely cause.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": { "summary": "string", "where": "list", "likely_cause": "string", "confidence": "low|medium|high" }, "builtin": true },
-            { "id": "risk", "name": "Risk", "enabled": true, "mode": "read", "instructions": "You rate the risk of a triaged error, what to check and whether it needs a fix now.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": { "risk": "low|medium|high|critical", "impact": "string", "check": "list", "immediate_fix": "boolean", "reason": "string" }, "builtin": true },
+            { "id": "risk", "name": "Risk", "enabled": true, "provider": "google", "mode": "read", "instructions": "You rate the risk of a triaged error, what to check and whether it needs a fix now.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": { "risk": "low|medium|high|critical", "impact": "string", "check": "list", "immediate_fix": "boolean", "reason": "string" }, "builtin": true },
             { "id": "fixer", "name": "Fixer", "enabled": true, "mode": "write", "instructions": "You fix the error in your own worktree.", "tools": [], "maxTokens": 150000, "maxMinutes": 15, "output": { "change": "string", "files": "list", "checks": "string" }, "builtin": true },
-            { "id": "reviewer", "name": "Reviewer", "enabled": true, "mode": "read", "instructions": "You review a fix another agent made.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": { "verdict": "approve|changes", "findings": "list" }, "builtin": true },
+            { "id": "reviewer", "name": "Reviewer", "enabled": true, "provider": "minimax", "mode": "read", "instructions": "You review a fix another agent made.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": { "verdict": "approve|changes", "findings": "list" }, "builtin": true },
             { "id": "explainer", "name": "Explainer", "enabled": true, "mode": "read", "instructions": "You answer the developer's questions.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": {}, "builtin": true },
         ], "tools": ["read_file", "list_files", "search_code", "git_log", "git_show", "condx", "edit_file", "write_file", "run_check"] }),
         ["threads"] => json!({ "runs": [
@@ -269,18 +273,19 @@ fn demo_thread() -> Value {
         "event": { "source": "convex-error", "env": DEV, "title": "Uncaught Error in payments:charge" },
         "usage": { "total": 21_840 },
         "participants": [
-            { "node": "triage", "role": "triage", "name": "Triage", "run": "r-w-triage-triage", "status": "done" },
-            { "node": "risk", "role": "risk", "name": "Risk", "run": "r-w-triage-risk", "status": "done" },
-            { "node": "explainer", "role": "explainer", "name": "Explainer", "run": "r-w-triage-explainer", "status": null },
+            { "node": "triage", "role": "triage", "name": "Triage", "run": "r-w-triage-triage", "status": "done", "logo": "claude" },
+            { "node": "risk", "role": "risk", "name": "Risk", "run": "r-w-triage-risk", "status": "done", "logo": "gemini" },
+            { "node": "explainer", "role": "explainer", "name": "Explainer", "run": "r-w-triage-explainer", "status": null, "logo": "claude" },
         ],
         "items": [
             { "at": t, "kind": "system", "text": "convex-error started it (Triage an error, notify if risky)" },
             { "at": t, "kind": "event", "event": { "source": "convex-error", "env": DEV, "title": "Uncaught Error in payments:charge", "error": "TypeError: Cannot read properties of null (reading 'last4')\n    at charge (convex/payments.ts:40:22)" } },
-            { "at": t + 60_000, "kind": "agent", "author": "Triage", "node": "triage", "text": "`charge` reads `card.last4` without checking that the user has a saved card (convex/payments.ts:40). It started with commit 51d0aa2, which made the card optional.", "result": { "summary": "payments:charge throws when the card is null", "where": "convex/payments.ts:40", "likely_cause": "missing null check on card", "confidence": "high" } },
-            { "at": t + 120_000, "kind": "agent", "author": "Risk", "node": "risk", "text": "Every checkout without a saved card fails, in production too once 51d0aa2 is promoted.", "result": { "risk": "high", "impact": "checkout fails for users without a saved card", "check": "convex/payments.ts:40; users without cards in prod", "immediate_fix": "true", "reason": "main flow broken" } },
+            { "at": t + 60_000, "kind": "agent", "author": "Triage", "logo": "claude", "node": "triage", "text": "`charge` reads `card.last4` without checking that the user has a saved card (convex/payments.ts:40). It started with commit 51d0aa2, which made the card optional.", "result": { "summary": "payments:charge throws when the card is null", "where": "convex/payments.ts:40", "likely_cause": "missing null check on card", "confidence": "high" } },
+            { "at": t + 120_000, "kind": "agent", "author": "Risk", "logo": "gemini", "node": "risk", "text": "Every checkout without a saved card fails, in production too once 51d0aa2 is promoted.", "result": { "risk": "high", "impact": "checkout fails for users without a saved card", "check": "convex/payments.ts:40; users without cards in prod", "immediate_fix": "true", "reason": "main flow broken" } },
             { "at": t + 125_000, "kind": "system", "status": "succeeded", "text": "Urgent notice: Risk high: payments:charge throws when the card is null" },
             { "at": t + 130_000, "kind": "user", "text": "@risk is production affected right now?", "to": "Risk" },
-            { "at": t + 150_000, "kind": "reply", "author": "Risk", "text": "Not yet: prod runs `7c1e93b`, before 51d0aa2. It will be when you promote it, so fix it first." },
+            { "at": t + 150_000, "kind": "reply", "author": "Risk", "logo": "gemini", "text": "Not yet: prod runs `7c1e93b`, before 51d0aa2. It will be when you promote it, so fix it first." },
+            { "at": t + 160_000, "kind": "external", "author": "Claude Code", "logo": "claude", "text": "I checked the branch I'm on: `feat/checkout` adds a null check in `charge`. I can open it as a task if you want." },
             { "at": t + 160_000, "kind": "question", "node": "ask", "text": "Risk high: payments:charge throws when the card is null. Prepare a fix now?" },
         ],
     })
@@ -324,7 +329,11 @@ fn default_agents() -> Value {
     let kind = |id: &str, label: &str, url: bool, model: &str| json!({ "id": id, "label": label, "needsBaseUrl": url, "model": model });
     json!({
         "settings": { "autonomy": { "job": "diagnose", "vercel": "fix", "ci": "notify", "convex": "notify" }, "defaultProvider": "anthropic", "defaultModel": "claude-sonnet-5-5", "dailyTokenBudget": 500_000, "maxConcurrent": 1 },
-        "providers": [{ "id": "anthropic", "kind": "anthropic", "label": "Anthropic", "model": "claude-sonnet-5-5", "baseUrl": null, "keyHint": "…x9Qa" }],
+        "providers": [
+            { "id": "anthropic", "kind": "anthropic", "label": "Anthropic", "model": "claude-sonnet-5-5", "baseUrl": null, "keyHint": "…x9Qa", "logo": "claude" },
+            { "id": "google", "kind": "google", "label": "Google Gemini", "model": "gemini-2.5-pro", "baseUrl": null, "keyHint": "…f3Kd", "logo": "gemini" },
+            { "id": "minimax", "kind": "anthropic-compatible", "label": "MiniMax", "model": "MiniMax-M3", "baseUrl": "https://api.minimax.io/anthropic", "keyHint": "…a1Zt", "logo": "minimax" },
+        ],
         "kinds": [
             kind("anthropic", "Anthropic", false, "claude-sonnet-5-5"), kind("openai", "OpenAI", false, "gpt-5"), kind("google", "Google Gemini", false, "gemini-2.5-pro"),
             kind("openrouter", "OpenRouter", false, "anthropic/claude-sonnet-5.5"), kind("xai", "xAI", false, "grok-4"), kind("groq", "Groq", false, "llama-3.3-70b-versatile"),

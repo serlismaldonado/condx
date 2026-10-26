@@ -4,9 +4,11 @@
 
 mod agent_host;
 mod agents;
+mod attachments;
 mod auth;
 mod cloud;
 mod cmd;
+mod connections;
 mod config;
 mod create;
 mod data;

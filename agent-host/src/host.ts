@@ -226,10 +226,12 @@ export class Host {
   }
 
   /** Un mensaje de la persona: si está trabajando, lo redirige; si no, sigue la conversación. */
-  async message(runId: string, text: string): Promise<void> {
+  async message(runId: string, text: string, images: { data: string; mimeType: string }[] = []): Promise<void> {
     const found = await this.#conversation(runId);
     if (!found?.conversation) throw new Error(`there's no run ${runId}`);
-    const sub = await found.conversation.submit({ type: "input", content: text, whenBusy: "steer" }, ctx);
+    // Con imágenes (adjuntos de un hilo): texto e imágenes en el mismo mensaje, para los modelos que ven.
+    const content = images.length ? [{ type: "text" as const, text }, ...images.map((i) => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }))] : text;
+    const sub = await found.conversation.submit({ type: "input", content, whenBusy: "steer" }, ctx);
     this.#settled.delete(runId);
     await this.#harness.commit(async (tx) => {
       (await tx.doc(Runs)).runs[runId]!.submissionId = sub.id as number;

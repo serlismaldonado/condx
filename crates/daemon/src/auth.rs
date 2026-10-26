@@ -24,12 +24,26 @@ pub enum Scope {
     Read,
     JobsRequest,
     JobsApprove,
+    /// Leer los hilos (agentes externos por el MCP).
+    ThreadsRead,
+    /// Escribir en los hilos donde lo mencionaron.
+    ThreadsWrite,
+    /// Orquestar: escribir en cualquier hilo, llamar a los agentes, arrancar chats y tareas, y
+    /// arrancar, cancelar y reintentar flujos.
+    Orchestrate,
+    /// Contestar las preguntas de los flujos.
+    AnswerQuestions,
+    /// Cambiar flujos y agentes del catálogo.
+    EditFlows,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Client {
     pub name: &'static str,
     pub scopes: &'static [Scope],
+    /// Un agente externo conectado con su propio token (connections.rs): quién es.
+    #[serde(skip)]
+    pub conn: Option<std::sync::Arc<crate::connections::Connection>>,
 }
 
 impl Client {
@@ -38,9 +52,9 @@ impl Client {
     }
 }
 
-pub const CLI: Client = Client { name: "cli", scopes: &[Scope::Read, Scope::JobsRequest] };
-pub const APP: Client = Client { name: "app", scopes: &[Scope::Read, Scope::JobsRequest, Scope::JobsApprove] };
-pub const AGENT: Client = Client { name: "agent", scopes: &[Scope::Read] };
+pub const CLI: Client = Client { name: "cli", scopes: &[Scope::Read, Scope::JobsRequest, Scope::ThreadsRead], conn: None };
+pub const APP: Client = Client { name: "app", scopes: &[Scope::Read, Scope::JobsRequest, Scope::JobsApprove], conn: None };
+pub const AGENT: Client = Client { name: "agent", scopes: &[Scope::Read], conn: None };
 
 /// Lo que el token de los agentes puede pedir al MCP: estado, trabajos, logs y despliegues; no
 /// registros de las bases ni telemetría de las pestañas. (El host tiene la misma lista.)
@@ -86,7 +100,7 @@ pub fn random_token() -> Result<String> {
 }
 
 /// Deja el archivo solo para su dueño.
-fn restrict(file: &Path) -> Result<()> {
+pub(crate) fn restrict(file: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

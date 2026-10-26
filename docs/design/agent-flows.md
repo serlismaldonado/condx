@@ -254,3 +254,21 @@ so nothing changes until the developer edits it.
 - React only to start (most Convex frontends), then React Native (Expo) with the same API?
 - Can one flow run several agents in parallel (triage and a log search at once), or keep it one node
   at a time as today?
+
+## 7. Chats on the phone and external agents (2026-10-26, local, not committed yet)
+
+Built after F1-F7, reviewed in the Android emulator:
+
+- **Phone:** compact tabs, incidents and approvals; a thread from an incident; markdown with code blocks
+  (copy, full screen); approve inside a thread; reply to a message (swipe or long press); a new thread
+  from the phone (`_new` row); notifications when an agent answers.
+- **Attachments and voice:** the phone encrypts each file with age for the Mac and uploads it to
+  Condx Cloud (`/files`); the daemon downloads it, deletes it from the cloud, keeps it encrypted in
+  `attachments/` and hands images to the agent as images, text inline, and voice notes transcribed
+  (OpenAI or Groq). Android only: nsh 0.2 has no file picker, so photos come from the camera.
+- **Any agent in any thread:** `@agent` from the catalog joins as a read-only guest; avatars show
+  the provider's logo (simple-icons, CC0).
+- **External agents (MCP):** one token per agent (`connections.rs`) with level read, reply (where
+  mentioned) or orchestrate (call Condx agents, chats, tasks, run/cancel/retry flows, answer flow
+  questions if allowed; editing flows and agents is a separate option). Never approvals, production
+  or keys. Their messages are marked as external; Condx agents get them as untrusted data.

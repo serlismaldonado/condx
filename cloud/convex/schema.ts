@@ -53,6 +53,15 @@ export default defineSchema({
    * sus usuarios al alcance `events:<daemonId>`. La pública va en el navegador (se puede rotar); la
    * secreta, en el componente de Convex de la app (aquí solo su SHA-256).
    */
+  /** Un adjunto de un hilo, cifrado para la Mac, hasta que el daemon lo baja (`files.ts`). */
+  files: defineTable({
+    daemonId: v.string(),
+    deviceId: v.string(),
+    storageId: v.id("_storage"),
+    size: v.number(),
+    createdAt: v.number(),
+  }).index("by_createdAt", ["createdAt"]),
+
   ingestKeys: defineTable({
     daemonId: v.string(),
     project: v.string(),

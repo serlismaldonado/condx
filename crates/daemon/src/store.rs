@@ -127,6 +127,13 @@ CREATE TABLE IF NOT EXISTS events (
   data TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_by_fingerprint ON events (fingerprint, last_at);
+CREATE TABLE IF NOT EXISTS thread_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS thread_notes_by_thread ON thread_notes (thread, id);
 CREATE INDEX IF NOT EXISTS events_by_status ON events (status, last_at);
 ";
 
@@ -351,6 +358,29 @@ impl Store {
     }
 
     /// Eventos que disparan flujos (events.rs).
+    /// Una nota de un hilo (lo que escribe un agente externo, o una mención a él); devuelve su id.
+    pub fn save_note(&self, thread: &str, at: i64, data: &Value) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("INSERT INTO thread_notes (thread, at, data) VALUES (?1, ?2, ?3)", params![thread, at, data.to_string()])?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Las notas de un hilo, en orden.
+    pub fn notes(&self, thread: &str) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare("SELECT id, at, data FROM thread_notes WHERE thread = ?1 ORDER BY id")?;
+        let rows = st.query_map(params![thread], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?;
+        Ok(rows.filter_map(|r| r.ok()).filter_map(|(id, at, d)| serde_json::from_str::<Value>(&d).ok().map(|mut v| { v["id"] = serde_json::json!(id); v["at"] = serde_json::json!(at); v })).collect())
+    }
+
+    /// Las notas después de `after` (todas los hilos), para esperar menciones.
+    pub fn notes_after(&self, after: i64) -> Result<Vec<(i64, String, Value)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare("SELECT id, thread, data FROM thread_notes WHERE id > ?1 ORDER BY id LIMIT 200")?;
+        let rows = st.query_map(params![after], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+        Ok(rows.filter_map(|r| r.ok()).filter_map(|(id, t, d)| serde_json::from_str::<Value>(&d).ok().map(|v| (id, t, v))).collect())
+    }
+
     pub fn save_event(&self, ev: &Value) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(

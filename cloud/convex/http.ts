@@ -5,6 +5,7 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { MAX_BYTES } from "./files";
 
 const http = httpRouter();
 
@@ -120,5 +121,44 @@ http.route({
     return reply(res.stored === 0 && res.dropped > 0 ? 429 : 200, res);
   }),
 });
+
+// ── Adjuntos de los hilos (files.ts) ──
+const bearerOf = (req: Request) => req.headers.get("authorization")?.match(/^Bearer\s+(\S{32,})$/)?.[1];
+
+/** Un teléfono sube un adjunto (cifrado para su Mac); devuelve su id. */
+http.route({
+  path: "/files",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const token = bearerOf(req);
+    const who = token ? await ctx.runQuery(internal.files.whoIs, { token }) : null;
+    if (!who || who.kind !== "device") return reply(401, { error: "only a paired phone uploads" });
+    const blob = await req.blob();
+    if (blob.size === 0) return reply(400, { error: "empty file" });
+    if (blob.size > MAX_BYTES) return reply(413, { error: "too large" });
+    const storageId = await ctx.storage.store(blob);
+    const id = await ctx.runMutation(internal.files.record, { daemonId: who.daemonId, deviceId: who.deviceId!, storageId, size: blob.size });
+    return reply(200, { id });
+  }),
+});
+
+/** El daemon baja (GET) o borra (DELETE) un adjunto suyo: `/files/<id>`. */
+const daemonFile = (method: "GET" | "DELETE") =>
+  httpAction(async (ctx, req) => {
+    const token = bearerOf(req);
+    const who = token ? await ctx.runQuery(internal.files.whoIs, { token }) : null;
+    if (!who || who.kind !== "daemon") return reply(401, { error: "only the daemon reads files" });
+    const id = new URL(req.url).pathname.split("/").pop() ?? "";
+    const f = await ctx.runQuery(internal.files.forDaemon, { id, daemonId: who.daemonId });
+    if (!f) return reply(404, { error: "no such file" });
+    if (method === "DELETE") {
+      await ctx.runMutation(internal.files.remove, { id: f._id });
+      return reply(200, { deleted: true });
+    }
+    const blob = await ctx.storage.get(f.storageId);
+    return blob ? new Response(blob, { status: 200, headers: { "content-type": "application/octet-stream" } }) : reply(404, { error: "gone" });
+  });
+http.route({ pathPrefix: "/files/", method: "GET", handler: daemonFile("GET") });
+http.route({ pathPrefix: "/files/", method: "DELETE", handler: daemonFile("DELETE") });
 
 export default http;

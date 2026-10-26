@@ -421,6 +421,47 @@ pub async fn start_chat(state: &Shared, text: &str, project: Option<&str>, by: &
     Ok(run)
 }
 
+/// Un chat nuevo pedido desde el teléfono: con sus imágenes (van enseguida, como un mensaje) y aviso
+/// al teléfono cuando el agente conteste.
+pub async fn start_chat_with(state: &Shared, text: &str, project: Option<&str>, by: &str, images: &[Value]) -> Result<Value> {
+    let mut run = start_chat(state, text, project, by).await?;
+    run["replyNotice"] = json!(true);
+    state.store.save_agent_run(&run)?;
+    if !images.is_empty() {
+        let id = run["id"].as_str().unwrap_or_default().to_string();
+        message(state, &id, "These are the images I attached.", images).await?;
+    }
+    Ok(run)
+}
+
+/// El hilo de un incidente (desde el teléfono): la conversación del agente que ya trabajó en él;
+/// si no hubo ninguno, el chat que se abrió antes sobre él, o uno nuevo que arranca con lo que se sabe
+/// del incidente (`about`, no `incident`: no es la corrida del incidente y no cambia su tarjeta).
+pub async fn thread_for_incident(state: &Shared, inc: &Value, by: &str) -> Result<String> {
+    if let Some(id) = inc["agent"]["runId"].as_str() {
+        return Ok(id.to_string());
+    }
+    let id = inc["id"].as_str().context("incident without id")?;
+    if let Some(r) = state.store.agent_runs(&[], None)?.into_iter().find(|r| r["about"] == id) {
+        return Ok(r["id"].as_str().unwrap_or_default().to_string());
+    }
+    let title = inc["title"].as_str().unwrap_or("an incident");
+    let mut text = format!("Look at this incident and tell me briefly what is going on and what you would check first.\n\nIncident: {title}\nSource: {}", inc["source"].as_str().unwrap_or("?"));
+    if let Some(env) = inc["env"].as_str().filter(|e| !e.is_empty()) {
+        text.push_str(&format!("\nEnvironment: {env}"));
+    }
+    text.push_str(&format!("\nSeen {} time(s)", inc["count"].as_u64().unwrap_or(1)));
+    if let Some(log) = inc["evidence"]["log"].as_str().filter(|l| !l.trim().is_empty()) {
+        text.push_str(&format!("\n\nLog (end):\n{}", devtool_core::redact(log)));
+    }
+    let mut run = start_chat(state, &text, inc["project"].as_str(), by).await?;
+    run["about"] = json!(id);
+    run["replyNotice"] = json!(true);
+    run["title"] = json!(format!("About: {}", title.chars().take(70).collect::<String>()));
+    state.store.save_agent_run(&run)?;
+    Ok(run["id"].as_str().unwrap_or_default().to_string())
+}
+
 /// Un agente de un rol para un nodo de un flujo (o un hilo): idempotente por `run_id` (si ya
 /// existe, la devuelve). Error con «already running» si no hay lugar: quien llama espera.
 pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str, text: &str, project: Option<&str>, flow: &str, base: Option<&str>) -> Result<Value> {
@@ -566,8 +607,19 @@ pub async fn poll(state: &Shared) {
     }
 }
 
+/// Avisar al teléfono cuando el agente conteste lo que se le escribió en un hilo (una vez).
+pub fn notice_on_reply(state: &Shared, run_id: &str) {
+    if let Ok(Some(mut run)) = state.store.agent_run(run_id) {
+        run["replyNotice"] = json!(true);
+        let _ = state.store.save_agent_run(&run);
+    }
+}
+
 fn finish(state: &Shared, mut run: Value, status: &str, answer: Option<String>, error: Option<String>, delta: u64) {
     add_usage(state, delta);
+    // Le habían escrito en un hilo: lo que contestó va al teléfono (si los avisos están encendidos).
+    let reply_notice = run["replyNotice"] == true;
+    run["replyNotice"] = json!(false);
     run["status"] = json!(status);
     run["endedAt"] = json!(now_ms());
     run["answer"] = json!(answer);
@@ -586,6 +638,9 @@ fn finish(state: &Shared, mut run: Value, status: &str, answer: Option<String>, 
                 crate::notify::agent_finished(state, &run, &incident);
             }
         }
+    }
+    if reply_notice && status != "aborted" {
+        crate::notify::agent_replied(state, &run);
     }
     tracing::info!("agent {} {status}", run["id"].as_str().unwrap_or("?"));
 }
@@ -606,7 +661,7 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
 }
 
 /// Un mensaje de la persona: lo redirige si trabaja, o sigue la conversación (y vuelve a correr).
-pub async fn message(state: &Shared, id: &str, text: &str) -> Result<Value> {
+pub async fn message(state: &Shared, id: &str, text: &str, images: &[Value]) -> Result<Value> {
     let mut run = state.store.agent_run(id)?.with_context(|| format!("there's no run “{id}”"))?;
     if text.trim().is_empty() {
         bail!("empty message");
@@ -616,7 +671,7 @@ pub async fn message(state: &Shared, id: &str, text: &str) -> Result<Value> {
         bail!("today's token budget is used up");
     }
     let st = state.clone();
-    let (path, body) = (format!("/runs/{id}/message"), json!({ "text": text }));
+    let (path, body) = (format!("/runs/{id}/message"), json!({ "text": text, "images": images }));
     tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", &path, Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
     if run["status"] != "running" {
         run["status"] = json!("running");

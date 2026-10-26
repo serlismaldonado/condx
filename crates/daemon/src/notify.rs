@@ -101,16 +101,13 @@ pub fn send_to(s: &Settings, token: Option<&str>, m: &Message) -> Result<()> {
     if s.topic.is_empty() {
         bail!("no topic");
     }
-    let url = format!("{}/{}", s.server, s.topic);
-    let mut req = ureq::post(&url)
-        .timeout(Duration::from_secs(10))
-        .set("Title", &clip(&m.title, 120))
-        .set("Tags", m.tags)
-        .set("Priority", &m.priority.to_string());
+    // Publicar en JSON (a la raíz del servidor): admite UTF-8 en el título (las cabeceras, solo ASCII).
+    let mut req = ureq::post(&format!("{}/", s.server)).timeout(Duration::from_secs(10));
     if let Some(t) = token {
         req = req.set("Authorization", &format!("Bearer {t}"));
     }
-    match req.send_string(&clip(&m.body, 400)) {
+    let body = serde_json::json!({ "topic": s.topic, "title": clip(&m.title, 120), "message": clip(&m.body, 400), "tags": [m.tags], "priority": m.priority });
+    match req.send_json(body) {
         Ok(_) => Ok(()),
         Err(ureq::Error::Status(code, r)) => bail!("ntfy answered {code}: {}", r.into_string().unwrap_or_default().chars().take(200).collect::<String>()),
         Err(e) => bail!("couldn't reach {}: {e}", s.server),
@@ -161,6 +158,24 @@ pub fn agent_finished(state: &Shared, run: &Value, incident: &Value) {
     send(state, "agent", Message { title, body, tags: if status == "done" { "robot" } else { "warning" }, priority: 3 });
 }
 
+/// Un agente contestó en un hilo: quién, de qué hilo y el comienzo de lo que dijo.
+pub fn agent_replied(state: &Shared, run: &Value) {
+    let who = run["role"].as_str().and_then(|r| crate::roles::get(state, r)).map(|r| r.name).unwrap_or_else(|| "The agent".to_string());
+    // Los agentes de un flujo se titulan «Risk · flujo»: sin repetir quién.
+    let title = run["title"].as_str().unwrap_or("a thread");
+    let about = title.strip_prefix(&format!("{who} · ")).unwrap_or(title);
+    let (title, body) = match run["status"].as_str() {
+        Some("done") => {
+            let text = run["answer"].as_str().unwrap_or("");
+            let first = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("```")).unwrap_or("").to_string();
+            (format!("{who} replied · {about}"), first)
+        }
+        Some(st) => (format!("{who} {st} · {about}"), run["error"].as_str().unwrap_or("").to_string()),
+        None => return,
+    };
+    send(state, "agent", Message { title, body, tags: "speech_balloon", priority: 3 });
+}
+
 /// Aprobaciones nuevas: las que ya esperaban al arrancar no avisan (sin una ola de avisos).
 static SEEN: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
@@ -196,16 +211,16 @@ mod tests {
 
     #[tokio::test]
     async fn envia_al_tema_con_titulo_corto_sin_secretos_y_con_token() {
-        use axum::{http::{HeaderMap, Uri}, routing::post, Router};
-        let got = std::sync::Arc::new(Mutex::new(Vec::<(String, String, String, String, String)>::new()));
+        use axum::{http::HeaderMap, routing::post, Json, Router};
+        let got = std::sync::Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
         let g = got.clone();
         let app = Router::new().route(
-            "/{topic}",
-            post(move |headers: HeaderMap, uri: Uri, body: String| {
+            "/",
+            post(move |headers: HeaderMap, Json(body): Json<Value>| {
                 let g = g.clone();
                 async move {
-                    let h = |n: &str| headers.get(n).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-                    g.lock().unwrap().push((uri.path().to_string(), h("title"), h("tags"), h("authorization"), body));
+                    let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                    g.lock().unwrap().push((auth, body));
                     "ok"
                 }
             }),
@@ -214,16 +229,19 @@ mod tests {
         let server = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let s = Settings { enabled: true, server, topic: "condx-test".into(), ..Default::default() };
-        let m = Message { title: "Incident: Deploy failed".into(), body: format!("CONVEX_DEPLOY_KEY=prod:abc123secretvalue {}", "x".repeat(600)), tags: "rotating_light", priority: 4 };
+        // Con caracteres fuera de ASCII en el título (por cabecera, ntfy los rechazaba).
+        let m = Message { title: "Risk replied · Triage, ask, notify".into(), body: format!("CONVEX_DEPLOY_KEY=prod:abc123secretvalue {}", "x".repeat(600)), tags: "speech_balloon", priority: 4 };
         tokio::task::spawn_blocking(move || send_to(&s, Some("tk_test"), &m)).await.unwrap().unwrap();
         let got = got.lock().unwrap();
-        let (path, title, tags, auth, body) = &got[0];
-        assert_eq!(path, "/condx-test");
-        assert_eq!(title, "Incident: Deploy failed");
-        assert_eq!(tags, "rotating_light");
+        let (auth, body) = &got[0];
+        assert_eq!(body["topic"], "condx-test");
+        assert_eq!(body["title"], "Risk replied · Triage, ask, notify");
+        assert_eq!(body["tags"], json!(["speech_balloon"]));
+        assert_eq!(body["priority"], 4);
         assert_eq!(auth, "Bearer tk_test");
-        assert!(!body.contains("abc123secretvalue"), "{body}");
-        assert!(body.chars().count() <= 401);
+        let msg = body["message"].as_str().unwrap();
+        assert!(!msg.contains("abc123secretvalue"), "{msg}");
+        assert!(msg.chars().count() <= 401);
     }
 
     #[test]

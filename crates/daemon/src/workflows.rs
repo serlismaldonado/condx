@@ -1109,7 +1109,7 @@ async fn follow_agent(state: &Shared, run: &mut Run, i: usize, agent_run: &str, 
                         run.nodes[i].message = format!("asked {} to fix its result ({e})", role.name);
                         persist(state, run);
                         let ask = format!("Your result didn't match the format ({e}). Reply again with only the ```json block.\n{}", crate::roles::output_instructions(role));
-                        crate::agent_host::message(state, agent_run, &ask).await?;
+                        crate::agent_host::message(state, agent_run, &ask, &[]).await?;
                     }
                     Err(e) => bail!("{}'s result didn't match the format: {e}", role.name),
                 }

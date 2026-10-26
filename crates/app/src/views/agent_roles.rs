@@ -115,8 +115,16 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         return card.child(ui::muted(app.roles_error.clone().unwrap_or_else(|| t!("Loading…").to_string()), cx));
     };
     let mut col = v_flex().gap_1().child(ui::muted(t!("Each agent has one responsibility. Put them in a flow (Workflows → Agent) and each one reads the event and the results of the nodes before it; its result has the fields below, which the next nodes, conditions and notices use."), cx).text_xs());
+    // El logo de cada agente: el de su proveedor, o el del predeterminado.
+    let providers = app.agents.as_ref().map(|a| a["providers"].clone()).unwrap_or(Value::Null);
+    let default_provider = app.agents.as_ref().and_then(|a| a["settings"]["defaultProvider"].as_str().map(str::to_string));
+    let logo_of = |role: &Value| -> String {
+        let id = role["provider"].as_str().filter(|p| !p.is_empty()).map(str::to_string).or_else(|| default_provider.clone()).unwrap_or_default();
+        providers.as_array().and_then(|ps| ps.iter().find(|p| p["id"] == id.as_str())).and_then(|p| p["logo"].as_str()).unwrap_or("").to_string()
+    };
     for role in data["roles"].as_array().cloned().unwrap_or_default() {
         let id = role["id"].as_str().unwrap_or_default().to_string();
+        let logo = logo_of(&role);
         let on = role["enabled"] == true;
         let (r_toggle, r_edit) = (role.clone(), role.clone());
         let del = (role["builtin"] != true).then(|| id.clone());
@@ -128,6 +136,7 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
                 .gap_2()
                 .items_center()
                 .child(ui::toggle(SharedString::from(format!("role-on-{id}")), on, cx).on_click(cx.listener(move |this, _, _, cx| this.toggle_role(r_toggle.clone(), cx))))
+                .children(crate::logos::badge(&logo, 22., cx))
                 .child(v_flex().flex_1().min_w_0().child(div().text_size(px(12.5)).child(ui::txt(&role["name"]).to_string())).child(ui::muted(detail, cx).text_xs().truncate()))
                 .child(Button::new(SharedString::from(format!("role-edit-{id}"))).xsmall().ghost().label(t!("Edit")).on_click(cx.listener(move |this, _, _, cx| this.edit_role(r_edit.clone(), cx))))
                 .when_some(del, |d, id| d.child(Button::new(SharedString::from(format!("role-del-{id}"))).xsmall().ghost().label(t!("Remove")).on_click(cx.listener(move |this, _, _, cx| this.delete_role(id.clone(), cx))))),
@@ -184,7 +193,9 @@ fn editor(app: &mut DevtoolApp, data: &Value, providers: &Value, window: &mut Wi
     let mut provs = h_flex().gap_1().flex_wrap().child(set(t!("Default").to_string(), "role-prov-default".into(), draft["provider"].as_str().is_none_or(str::is_empty), "provider", Value::Null, cx));
     for p in providers.as_array().cloned().unwrap_or_default() {
         let id = p["id"].as_str().unwrap_or_default().to_string();
-        provs = provs.child(set(ui::txt(&p["label"]).to_string(), format!("role-prov-{id}"), draft["provider"] == id.as_str(), "provider", json!(id), cx));
+        // Con el logo del proveedor, como se verá en los hilos.
+        let logo = p["logo"].as_str().unwrap_or("").to_string();
+        provs = provs.child(h_flex().gap_1().items_center().children(crate::logos::badge(&logo, 18., cx)).child(set(ui::txt(&p["label"]).to_string(), format!("role-prov-{id}"), draft["provider"] == id.as_str(), "provider", json!(id), cx)));
     }
     let mut tools = h_flex().gap_1().flex_wrap();
     for tool in data["tools"].as_array().cloned().unwrap_or_default() {

@@ -147,6 +147,48 @@ pub fn open(sealed: &str, identity: &age::x25519::Identity) -> Result<String> {
     Ok(plain)
 }
 
+/// La marca del proveedor, para mostrar su logo en los hilos (app y teléfono): por su tipo y, en los
+/// compatibles, por la URL o el nombre (Ollama, MiniMax…).
+pub fn logo(provider: &Value) -> &'static str {
+    let base = provider["baseUrl"].as_str().unwrap_or("").to_lowercase();
+    let label = provider["label"].as_str().unwrap_or("").to_lowercase();
+    let model = provider["model"].as_str().unwrap_or("").to_lowercase();
+    let any = |w: &str| base.contains(w) || label.contains(w) || model.contains(w);
+    match provider["kind"].as_str().unwrap_or("") {
+        "anthropic" => "claude",
+        "openai" => "openai",
+        "google" => "gemini",
+        "xai" => "x",
+        "groq" => "groq",
+        "mistral" => "mistral",
+        "openrouter" => "openrouter",
+        _ if any("minimax") => "minimax",
+        _ if any("ollama") || base.contains(":11434") => "ollama",
+        _ if any("deepseek") => "deepseek",
+        _ if any("claude") || any("anthropic") => "claude",
+        _ if any("gpt") || any("openai") => "openai",
+        _ if any("gemini") => "gemini",
+        _ => "other",
+    }
+}
+
+/// La marca del proveedor con que corre un agente (el suyo o el predeterminado).
+pub fn logo_for(state: &Shared, provider_id: Option<&str>) -> &'static str {
+    let id = provider_id.filter(|p| !p.is_empty()).map(str::to_string).or_else(|| settings(state).default_provider);
+    let Some(id) = id else { return "other" };
+    state.store.agent_providers().ok().and_then(|ps| ps.into_iter().find(|p| p["id"] == id.as_str())).map(|p| logo(&p)).unwrap_or("other")
+}
+
+/// Descifra bytes cifrados con age para la Mac (los adjuntos que manda el teléfono).
+pub fn open_bytes(sealed: &[u8]) -> Result<Vec<u8>> {
+    let id = identity()?;
+    let decryptor = age::Decryptor::new(sealed).map_err(|e| anyhow!("age: {e}"))?;
+    let mut reader = decryptor.decrypt(std::iter::once(&id as &dyn age::Identity)).map_err(|e| anyhow!("couldn't decrypt the attachment: {e}"))?;
+    let mut plain = vec![];
+    reader.read_to_end(&mut plain)?;
+    Ok(plain)
+}
+
 /// La identidad de la Mac (se crea la primera vez que se guarda una clave).
 fn identity() -> Result<age::x25519::Identity> {
     if let Some(raw) = crate::secrets::get(AGENT_KEY)? {
@@ -162,6 +204,7 @@ pub fn public(p: &Value) -> Value {
     let mut v = p.clone();
     if let Some(o) = v.as_object_mut() {
         o.remove("sealedKey");
+        o.insert("logo".into(), json!(logo(p)));
     }
     v
 }
@@ -391,6 +434,20 @@ pub fn json(state: &Shared) -> Value {
         "tools": crate::templates::TOOLS,
         "usageToday": crate::agent_host::usage_today(state),
     })
+}
+
+#[cfg(test)]
+mod logo_tests {
+    use super::*;
+
+    #[test]
+    fn marca_por_tipo_y_por_url() {
+        assert_eq!(logo(&json!({ "kind": "anthropic" })), "claude");
+        assert_eq!(logo(&json!({ "kind": "anthropic-compatible", "baseUrl": "https://api.minimax.io/anthropic", "label": "MiniMax" })), "minimax");
+        assert_eq!(logo(&json!({ "kind": "openai-compatible", "baseUrl": "http://localhost:11434/v1" })), "ollama");
+        assert_eq!(logo(&json!({ "kind": "google" })), "gemini");
+        assert_eq!(logo(&json!({ "kind": "openai-compatible", "baseUrl": "https://example.com" })), "other");
+    }
 }
 
 #[cfg(test)]

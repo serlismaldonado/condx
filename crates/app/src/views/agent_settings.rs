@@ -346,6 +346,7 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
             h_flex()
                 .gap_2()
                 .items_center()
+                .children(crate::logos::badge(p["logo"].as_str().unwrap_or(""), 18., cx))
                 .child(ui::status_tag(if is_default { Health::Ok } else { Health::Unknown }, ui::txt(&p["label"]).to_string()))
                 .child(div().flex_1().min_w_0().truncate().child(ui::muted(detail, cx)))
                 .when(!is_default, |d| {

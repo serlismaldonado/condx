@@ -25,6 +25,9 @@ use crate::state::Shared;
 use crate::store::now_ms;
 
 const TICK: Duration = Duration::from_secs(3);
+/// Después de un pedido de un teléfono, se mira más seguido un rato (alguien está usando la app).
+const BUSY_TICK: Duration = Duration::from_secs(1);
+const BUSY_FOR_MS: i64 = 30_000;
 const RECENT_JOBS: usize = 50;
 /// Campos que el daemon escribe en cada alcance (los demás son de otros: el teléfono).
 const ENV_FIELDS: &[&str] = &["name", "kind", "project", "deployment", "reachable", "checkedAt"];
@@ -41,7 +44,13 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "result", "resultFor"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "result", "resultFor", "recipient"];
+/// La fila de los hilos que no es un hilo: la llave age de la Mac, para que el teléfono le cifre los adjuntos.
+pub const MAC_ROW: &str = "_mac";
+/// La fila donde el teléfono pide un hilo nuevo (un chat): su primer mensaje firmado va aquí.
+pub const NEW_ROW: &str = "_new";
+/// La fila con el catálogo de agentes (para mencionarlos desde el teléfono).
+pub const AGENTS_ROW: &str = "_agents";
 /// Cada cuánto se vuelven a armar los hilos (cada uno lee las conversaciones de sus agentes).
 const THREADS_EVERY_MS: i64 = 8_000;
 
@@ -519,7 +528,7 @@ pub fn request_message(daemon_id: &str, incident_id: &str, request: &str, reques
     format!("condx-incident:v1|{daemon_id}|{incident_id}|{request}|{request_id}|{at}|{arg}")
 }
 
-const REQUESTS: &[&str] = &["diagnose", "fix", "ignore", "resolve", "deploy", "discard", "message"];
+const REQUESTS: &[&str] = &["diagnose", "fix", "ignore", "resolve", "deploy", "discard", "message", "thread"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhoneRequest {
@@ -527,6 +536,8 @@ pub struct PhoneRequest {
     pub arg: String,
     pub request_id: String,
     pub device: TrustedDevice,
+    /// Los adjuntos de un mensaje en un hilo (JSON de `attachments::FileRef`), firmados con el texto.
+    pub files: Option<String>,
 }
 
 /// Verifica el pedido de una fila de incidente: firma de un teléfono de confianza, para este daemon
@@ -542,7 +553,17 @@ pub fn thread_request_message(daemon_id: &str, thread_id: &str, request_id: &str
 }
 
 pub fn verify_thread_request(daemon_id: &str, thread_id: &str, row: &Values, devices: &[TrustedDevice], now: i64) -> Result<PhoneRequest, String> {
-    verify_signed(row, devices, now, &["message"], |_, request_id, at, arg| thread_request_message(daemon_id, thread_id, request_id, at, arg))
+    // Los adjuntos (`requestFiles`) van firmados junto con el texto: «texto␟archivos».
+    let files = row.get("requestFiles").and_then(Value::as_str).filter(|f| !f.is_empty()).map(str::to_string);
+    let mut r = verify_signed(row, devices, now, &["message"], |_, request_id, at, arg| {
+        let arg = match &files {
+            Some(f) => format!("{arg}\u{1f}{f}"),
+            None => arg.to_string(),
+        };
+        thread_request_message(daemon_id, thread_id, request_id, at, &arg)
+    })?;
+    r.files = files;
+    Ok(r)
 }
 
 fn verify_signed(row: &Values, devices: &[TrustedDevice], now: i64, allowed: &[&str], message: impl Fn(&str, &str, i64, &str) -> String) -> Result<PhoneRequest, String> {
@@ -564,7 +585,7 @@ fn verify_signed(row: &Values, devices: &[TrustedDevice], now: i64, allowed: &[&
     let bytes: [u8; 32] = unhex(key).and_then(|b| b.try_into().ok()).ok_or("bad key")?;
     let vk = VerifyingKey::from_bytes(&bytes).map_err(|_| "bad key")?;
     vk.verify(message(request, request_id, at, arg).as_bytes(), &sig).map_err(|_| "signature doesn't match".to_string())?;
-    Ok(PhoneRequest { request: request.into(), arg: arg.into(), request_id: request_id.into(), device: device.clone() })
+    Ok(PhoneRequest { request: request.into(), arg: arg.into(), request_id: request_id.into(), device: device.clone(), files: None })
 }
 
 /// Hace lo que pidió el teléfono, con las mismas reglas que la app (la plantilla, el presupuesto,
@@ -580,9 +601,11 @@ fn apply_request(state: &Shared, rt: &tokio::runtime::Handle, incident_id: &str,
         "diagnose" | "fix" => rt.block_on(crate::agent_host::start(state, incident_id, &by, &r.request)).map(|run| format!("started {}", run["id"].as_str().unwrap_or("?"))),
         "ignore" | "resolve" => crate::incidents::act(state, incident_id, &r.request).map(|_| r.request.clone() + "d"),
         "message" => match &run_id {
-            Some(id) => rt.block_on(crate::agent_host::message(state, id, &r.arg)).map(|_| "sent to the agent".into()),
+            Some(id) => rt.block_on(crate::agent_host::message(state, id, &r.arg, &[])).map(|_| "sent to the agent".into()),
             None => Err(anyhow::anyhow!("no agent has worked on this incident")),
         },
+        // El hilo del incidente: el teléfono lo abre con el id que vuelve («thread <id>»).
+        "thread" => rt.block_on(crate::agent_host::thread_for_incident(state, &inc, &by)).map(|id| format!("thread {id}")),
         "discard" => match &run_id {
             Some(id) => crate::agent_host::discard(state, id).map(|_| "fix discarded".into()),
             None => Err(anyhow::anyhow!("there's no fix")),
@@ -680,7 +703,13 @@ async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
     let list = crate::threads::list(state).ok().and_then(|v| v["runs"].as_array().cloned()).unwrap_or_default();
     for t in list.into_iter().take(15) {
         let Some(id) = t["id"].as_str().map(str::to_string) else { continue };
-        let Ok(th) = crate::threads::get(state, &id).await else { continue };
+        let th = match crate::threads::get(state, &id).await {
+            Ok(th) => th,
+            Err(e) => {
+                tracing::warn!("cloud: couldn't build thread {id}: {e:#}");
+                continue;
+            }
+        };
         let cut = |s: &str, n: usize| -> String { if s.chars().count() > n { format!("{}…", s.chars().take(n).collect::<String>()) } else { s.to_string() } };
         let items: Vec<Value> = if th["thread"] == true {
             th["items"].as_array().cloned().unwrap_or_default().iter().rev().take(40).rev().map(|it| {
@@ -696,16 +725,28 @@ async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
                     let fields: Vec<String> = res.iter().map(|(k, v)| format!("{k}: {}", v.as_str().unwrap_or_default())).collect();
                     text = format!("{text}\n{}", fields.join("\n"));
                 }
-                json!({ "kind": it["kind"], "author": it["author"], "to": it["to"], "at": it["at"], "status": it["status"], "job": it["job"], "source": it["event"]["source"], "answered": it["answered"], "text": cut(text.trim(), 700) })
+                json!({ "kind": it["kind"], "author": it["author"], "logo": it["logo"], "to": it["to"], "at": it["at"], "status": it["status"], "job": it["job"], "source": it["event"]["source"], "answered": it["answered"], "text": cut(text.trim(), 700) })
             }).collect()
         } else {
             let msgs: Vec<Value> = th["transcript"].as_array().cloned().unwrap_or_default().into_iter().filter(|x| x["role"] != "tool").collect();
-            msgs[msgs.len().saturating_sub(30)..].iter().filter_map(|x| {
+            // Un chat abierto sobre un incidente: su primer mensaje es el contexto que armó el daemon.
+            let about = state.store.agent_run(&id).ok().flatten().is_some_and(|r| r["about"].is_string());
+            let skip = msgs.len().saturating_sub(30);
+            msgs[skip..].iter().enumerate().filter_map(|(ix, x)| {
                 let text: String = x["text"].as_str()?.lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n");
-                (!text.trim().is_empty()).then(|| json!({ "kind": if x["role"] == "user" { "user" } else { "reply" }, "author": "Agent", "at": x["at"], "text": cut(text.trim(), 700) }))
+                let kind = match x["role"].as_str() {
+                    Some("user") if about && skip + ix == 0 => "context",
+                    Some("user") => "user",
+                    _ => "reply",
+                };
+                (!text.trim().is_empty()).then(|| json!({ "kind": kind, "author": "Agent", "at": x["at"], "text": cut(text.trim(), 700) }))
             }).collect()
         };
-        let participants: Vec<Value> = th["participants"].as_array().cloned().unwrap_or_default().iter().map(|p| json!({ "node": p["node"], "name": p["name"] })).collect();
+        let mut participants: Vec<Value> = th["participants"].as_array().cloned().unwrap_or_default().iter().map(|p| json!({ "node": p["node"], "name": p["name"], "logo": p["logo"] })).collect();
+        // Un chat de un solo agente: él es el participante (con la marca de su proveedor).
+        if participants.is_empty() && th["thread"] != true {
+            participants.push(json!({ "node": "agent", "name": "Agent", "logo": th["logo"] }));
+        }
         let mut row = Values::new();
         row.insert("title".into(), json!(t["title"]));
         row.insert("kind".into(), json!(t["kind"]));
@@ -732,10 +773,33 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
         let id = row.row.id.clone();
         let result = match verify_thread_request(&s.link.daemon_id, &id, &row.row.values, &devices, now_ms()) {
             Ok(r) => {
-                let _rt = s.rt.enter();
-                match s.rt.block_on(crate::threads::message(state, &id, &r.arg)) {
-                    Ok(v) => format!("sent to {}", v["to"].as_str().unwrap_or("the thread")),
-                    Err(e) => format!("rejected: {e:#}"),
+                // Los adjuntos: bajarlos de la nube (cifrados para esta Mac) y prepararlos para el agente.
+                let refs = crate::attachments::parse(r.files.as_deref());
+                let prepared = if refs.is_empty() {
+                    Ok(Default::default())
+                } else {
+                    let token = load_token().unwrap_or_default();
+                    crate::attachments::receive(state, &site_url(&s.link.url), &token, &id, &refs)
+                };
+                match prepared {
+                    Err(e) => format!("rejected: couldn't receive the attachments: {e:#}"),
+                    Ok(p) => {
+                        let text = [r.arg.trim(), p.text.as_str()].iter().filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join("\n\n");
+                        let _rt = s.rt.enter();
+                        if id == NEW_ROW {
+                            // Un hilo nuevo: un chat con el agente, que arranca con este mensaje.
+                            let by = format!("phone:{}", r.device.name);
+                            match s.rt.block_on(crate::agent_host::start_chat_with(state, &text, None, &by, &p.images)) {
+                                Ok(run) => format!("thread {}", run["id"].as_str().unwrap_or("?")),
+                                Err(e) => format!("rejected: {e:#}"),
+                            }
+                        } else {
+                            match s.rt.block_on(crate::threads::message_with(state, &id, &text, &p.images)) {
+                                Ok(v) => format!("sent to {}", v["to"].as_str().unwrap_or("the thread")),
+                                Err(e) => format!("rejected: {e:#}"),
+                            }
+                        }
+                    }
                 }
             }
             Err(e) => format!("rejected: {e}"),
@@ -826,6 +890,9 @@ struct Session {
     events_scope: String,
     /// Los hilos ya armados (cuándo, y sus filas) y el resultado del último mensaje del teléfono en cada uno.
     threads_built: (i64, IndexMap<String, Values>),
+    /// Otra vuelta enseguida (se atendió un pedido) y hasta cuándo mirar seguido.
+    again: bool,
+    busy_until: i64,
     thread_results: IndexMap<String, (String, String)>,
 }
 
@@ -856,7 +923,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0 })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -908,6 +975,18 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         s.threads_built = (now_ms(), s.rt.block_on(thread_rows(state)));
     }
     let mut trows = s.threads_built.1.clone();
+    if let Ok(mac) = crate::agents::mac_recipient() {
+        trows.insert(MAC_ROW.into(), obj(json!({ "recipient": mac.to_string() })));
+    }
+    // El catálogo de agentes (encendidos), para llamarlos a cualquier hilo con @ desde el teléfono.
+    let agents: Vec<Value> = crate::roles::list(state).into_iter().filter(|r| r.enabled).map(|r| json!({ "id": r.id, "name": r.name, "logo": crate::agents::logo_for(state, r.provider.as_deref()) })).collect();
+    trows.insert(AGENTS_ROW.into(), obj(json!({ "title": "agents", "participants": serde_json::to_string(&agents).unwrap_or_default() })));
+    let mut new_row = obj(json!({ "title": "new" }));
+    if let Some((rid, result)) = s.thread_results.get(NEW_ROW) {
+        new_row.insert("result".into(), Value::String(result.clone()));
+        new_row.insert("resultFor".into(), Value::String(rid.clone()));
+    }
+    trows.insert(NEW_ROW.into(), new_row);
     for (id, (rid, result)) in &s.thread_results {
         if let Some(row) = trows.get_mut(id) {
             row.insert("result".into(), Value::String(result.clone()));
@@ -935,9 +1014,16 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         Err(e) => error = Some(e.to_string()),
     }
     let report = block_on(sync_once(&mut s.engine, &s.transport, now_ms, 200)).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let seen = s.seen.len();
     process_decisions(state, s);
     process_requests(state, s);
     process_thread_requests(state, s);
+    // Se hizo algo que pidió un teléfono: la próxima vuelta va enseguida (publica el resultado) y,
+    // por un rato, más seguido.
+    s.again = s.seen.len() > seen;
+    if s.again {
+        s.busy_until = now_ms() + BUSY_FOR_MS;
+    }
     process_events(state, s);
     let st = s.engine.sync_status();
     let proposals: Vec<Value> = s.results.iter().filter(|(_, r)| r.as_str() == NEEDS_MAC).map(|(j, _)| json!(j)).collect();
@@ -994,7 +1080,12 @@ pub fn spawn(state: Shared) {
                         }
                     }
                 }
-                std::thread::sleep(TICK);
+                let wait = match session.as_mut().map(|s| (std::mem::take(&mut s.again), s.busy_until)) {
+                    Some((true, _)) => Duration::ZERO,
+                    Some((false, until)) if now_ms() < until => BUSY_TICK,
+                    _ => TICK,
+                };
+                std::thread::sleep(wait);
             }
         })
         .expect("couldn't start the cloud thread");

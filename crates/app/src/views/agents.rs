@@ -352,6 +352,9 @@ fn thread_view(app: &mut DevtoolApp, r: Value, window: &mut Window, cx: &mut Con
         };
         let started = p["status"].is_string();
         let mention = format!("@{handle} ");
+        if let Some(b) = crate::logos::badge(p["logo"].as_str().unwrap_or(""), 16., cx) {
+            people = people.child(b);
+        }
         people = people.child(
             Button::new(SharedString::from(format!("thread-p-{i}")))
                 .xsmall()
@@ -447,7 +450,7 @@ fn thread_item(i: usize, item: &Value, cx: &mut Context<DevtoolApp>) -> AnyEleme
             striped(
                 rgb(0x60a5fa).into(),
                 card()
-                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.fg).child(ui::txt(&item["author"]).to_string()))
+                    .child(h_flex().gap_1p5().items_center().children(crate::logos::badge(item["logo"].as_str().unwrap_or(""), 18., cx)).child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.fg).child(ui::txt(&item["author"]).to_string())))
                     .when(!text.trim().is_empty(), |c| c.child(super::incidents::answer_view(&text, cx)))
                     .child(chips),
             )
@@ -479,9 +482,17 @@ fn thread_item(i: usize, item: &Value, cx: &mut Context<DevtoolApp>) -> AnyEleme
                     .child(div().px_3().py_2().bg(t.card).border_1().border_color(t.card_border).text_size(px(12.5)).text_color(t.fg).child(text)),
             )
             .into_any_element(),
-        Some("reply") => v_flex()
+        Some("reply") | Some("external") => v_flex()
             .gap_0p5()
-            .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(0x60a5fa)).child(ui::txt(&item["author"]).to_string()))
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .children(crate::logos::badge(item["logo"].as_str().unwrap_or(""), 18., cx))
+                    .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(0x60a5fa)).child(ui::txt(&item["author"]).to_string()))
+                    // Un agente de fuera (por el MCP).
+                    .when(item["kind"] == "external", |d| d.child(div().px_1().border_1().border_color(t.card_border).text_size(px(10.)).text_color(t.muted).child(t!("external")))),
+            )
             .child(super::incidents::answer_view(&text, cx))
             .into_any_element(),
         _ => {

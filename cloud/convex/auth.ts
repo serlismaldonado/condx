@@ -20,7 +20,7 @@ const DEVICE_READS: readonly ScopeKind[] = ["env", "jobs", "approvals", "inciden
 export const DECISION_FIELDS = ["decision", "decidedAt", "deviceKey", "signature", "confirmText"] as const;
 /** Los únicos campos que un teléfono escribe en `incidents`: un pedido firmado. */
 export const REQUEST_FIELDS = ["request", "requestArg", "requestId", "requestedAt", "deviceKey", "signature"] as const;
-export const REQUESTS = ["diagnose", "fix", "ignore", "resolve", "deploy", "discard", "message"] as const;
+export const REQUESTS = ["diagnose", "fix", "ignore", "resolve", "deploy", "discard", "message", "thread"] as const;
 
 export type Principal =
   | { kind: "daemon"; daemonId: string; key: string }
@@ -82,7 +82,12 @@ export function writeDenied(principal: Principal, op: Op): string | null {
   if (principal.kind === "daemon") return null;
   if (parsed.kind === "incidents") return requestDenied(principal, op);
   // En un hilo, el teléfono solo escribe mensajes (firmados; el daemon verifica y decide a quién van).
-  if (parsed.kind === "threads") return requestDenied(principal, op) ?? (op.set?.request === "message" ? null : "A phone can only send messages in a thread");
+  if (parsed.kind === "threads") {
+    // Los adjuntos (ids de `/files`, firmados con el texto) solo van con un mensaje en un hilo.
+    const { requestFiles, ...rest } = op.set ?? {};
+    if (requestFiles !== undefined && requestFiles !== null && (typeof requestFiles !== "string" || requestFiles.length > 8000)) return "requestFiles must be text (at most 8000 characters)";
+    return requestDenied(principal, { ...op, set: rest }) ?? (op.set?.request === "message" ? null : "A phone can only send messages in a thread");
+  }
   if (parsed.kind !== "approvals" || op.kind !== "patch") return "A phone can only decide on approvals";
   if (op.sets && Object.keys(op.sets).length > 0) return "A phone can only decide on approvals";
   const set = op.set ?? {};

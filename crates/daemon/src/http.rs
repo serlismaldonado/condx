@@ -63,11 +63,11 @@ async fn guard(AxState(state): AxState<Shared>, mut req: Request, next: Next) ->
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "));
-    let Some(client) = token.and_then(|t| state.tokens.resolve(t)) else {
+    let Some(client) = token.and_then(|t| state.tokens.resolve(t).or_else(|| crate::connections::resolve(t))) else {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Missing token (~/.condx/daemon/token)" }))).into_response();
     };
     // El token de los agentes solo habla por el MCP (que además limita sus herramientas).
-    if client.name == crate::auth::AGENT.name && req.uri().path() != "/mcp" {
+    if matches!(client.name, "agent" | "external") && req.uri().path() != "/mcp" {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "agents only use the MCP" }))).into_response();
     }
     req.extensions_mut().insert(client);
@@ -598,6 +598,45 @@ async fn post_task(AxState(state): AxState<Shared>, Extension(client): Extension
     }
 }
 
+// ---------- Agentes externos por el MCP (connections.rs) ----------
+
+async fn get_connections(Extension(client): Extension<Client>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    Json(json!({ "connections": crate::connections::list().iter().map(|c| c.json()).collect::<Vec<_>>() })).into_response()
+}
+
+/// Una conexión nueva: el token se ve solo en esta respuesta, con lo que hay que pegar en el agente.
+async fn post_connection(AxState(state): AxState<Shared>, Extension(client): Extension<Client>, Json(body): Json<Value>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    let (name, kind, level) = (body["name"].as_str().unwrap_or_default(), body["kind"].as_str().unwrap_or("other"), body["level"].as_str().unwrap_or("reply"));
+    match crate::connections::create(&state, name, kind, level, body["answerQuestions"].as_bool(), body["editFlows"].as_bool().unwrap_or(false)) {
+        Ok((c, token)) => {
+            let url = format!("http://127.0.0.1:{}/mcp", state.config.port);
+            let mut v = c.json();
+            v["token"] = json!(token);
+            v["url"] = json!(url);
+            v["claudeCode"] = json!(format!("claude mcp add --transport http condx {url} --header \"Authorization: Bearer {token}\""));
+            v["mcpJson"] = json!({ "mcpServers": { "condx": { "type": "http", "url": url, "headers": { "Authorization": format!("Bearer {token}") } } } });
+            Json(v).into_response()
+        }
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn delete_connection(Extension(client): Extension<Client>, Path(id): Path<String>) -> Response {
+    if let Some(r) = deny(&client, Scope::JobsApprove) {
+        return r;
+    }
+    match crate::connections::revoke(&id) {
+        Ok(()) => Json(json!({ "revoked": id })).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
 async fn get_sdk() -> Response {
     match tokio::task::spawn_blocking(crate::cloud::sdk_keys).await {
         Ok(Ok(v)) => Json(v).into_response(),
@@ -690,7 +729,7 @@ async fn post_agent_run_action(AxState(state): AxState<Shared>, Extension(client
     let res = match action.as_str() {
         "message" => {
             let text = body.as_ref().and_then(|b| b["text"].as_str()).unwrap_or_default().chars().take(4_000).collect::<String>();
-            crate::agent_host::message(&state, &id, &text).await
+            crate::agent_host::message(&state, &id, &text, &[]).await
         }
         "abort" => crate::agent_host::abort(&state, &id).await,
         "discard" => crate::agent_host::discard(&state, &id),
@@ -1265,6 +1304,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/projects", get(get_projects).post(post_project))
         .route("/api/projects/discover", get(get_discover))
         .route("/api/doctor", get(get_doctor))
+        .route("/api/connections", get(get_connections).post(post_connection))
+        .route("/api/connections/{id}", axum::routing::delete(delete_connection))
         .route("/api/cloud", get(get_cloud))
         .route("/api/cloud/link", post(post_cloud_link))
         .route("/api/cloud/unlink", post(post_cloud_unlink))

@@ -199,7 +199,7 @@ async fn el_token_de_los_agentes_solo_lee_por_el_mcp_y_solo_lo_operativo() {
     for name in ["request_job", "cancel_job", "get_snapshot", "list_approvals", "report_event"] {
         let (_, res) = call(Method::POST, "/mcp", &host, Some(agent), Some(mcp(name))).await;
         assert_eq!(res["result"]["isError"], true, "{name}: {res}");
-        assert!(res["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("isn't available to agents"), "{name}: {res}");
+        assert!(res["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("isn't available to this token"), "{name}: {res}");
     }
 }
 

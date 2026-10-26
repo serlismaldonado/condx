@@ -56,7 +56,7 @@ const RECENT_JOBS: usize = 50;
 /// Campos que el daemon escribe en cada alcance (los demás son de otros: el teléfono).
 /// Sin la hora de la última revisión: cambiaba cada 30 s y nadie la lee (cuatro escrituras por vuelta).
 const ENV_FIELDS: &[&str] = &["name", "kind", "project", "deployment", "reachable"];
-const JOB_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status", "approval", "requestedBy", "createdAt", "endedAt", "error", "commit"];
+const JOB_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status", "approval", "requestedBy", "createdAt", "startedAt", "endedAt", "error", "commit"];
 /// `phoneResult`: qué hizo el daemon con la decisión de un teléfono (aplicada, rechazada y por qué, o
 /// a la espera de Touch ID en la Mac).
 const APPROVAL_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status", "approval", "requestedBy", "createdAt", "phoneResult"];
@@ -321,7 +321,7 @@ pub fn desired(daemon_id: &str, environments: &[devtool_core::Environment], prob
             let probe = probes(&format!("convex:{}", e.name));
             let reachable = probe.as_ref().map(|p| p["data"]["reachable"] == true || (p["ok"] == true && p["data"]["reachable"].is_null()));
             let kind = serde_json::to_value(e.kind).unwrap_or(Value::Null);
-            (e.name.clone(), obj(json!({ "name": e.name, "kind": kind, "project": e.project, "deployment": e.convex_deployment, "reachable": reachable })))
+            (e.name.clone(), obj(json!({ "name": e.name, "kind": kind, "project": e.project.as_deref().unwrap_or(crate::projects::DEFAULT), "deployment": e.convex_deployment, "reachable": reachable })))
         })
         .collect();
     out.insert(format!("env:{daemon_id}"), env);
@@ -333,7 +333,7 @@ pub fn desired(daemon_id: &str, environments: &[devtool_core::Environment], prob
         let row = obj(json!({
             "recipe": job["recipe"], "title": job["title"], "env": job["env"], "envKind": job["envKind"], "status": job["status"],
             "approval": job["approval"]["level"].as_str().or(job["approval"].as_str()), "requestedBy": job["requestedBy"],
-            "createdAt": job["createdAt"], "endedAt": job["endedAt"], "error": short_error(&job["error"]), "commit": job["commit"],
+            "createdAt": job["createdAt"], "startedAt": job["startedAt"], "endedAt": job["endedAt"], "error": short_error(&job["error"]), "commit": job["commit"],
         }));
         if job["status"] == "waiting-approval" {
             approvals.insert(id.to_string(), APPROVAL_FIELDS.iter().filter_map(|f| row.get(*f).map(|v| (f.to_string(), v.clone()))).collect());

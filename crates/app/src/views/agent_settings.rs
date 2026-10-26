@@ -41,6 +41,7 @@ impl DevtoolApp {
     fn save_provider(&mut self, cx: &mut Context<Self>) {
         let value = |app: &Self, key: &str, cx: &Context<Self>| app.inputs.get(key).map(|s| s.read(cx).value().trim().to_string()).filter(|v| !v.is_empty());
         let body = json!({
+            "id": self.agent_editing.as_ref().map(|p| p["id"].clone()),
             "kind": self.agent_kind,
             "label": value(self, "agent-label", cx),
             "baseUrl": value(self, "agent-url", cx),
@@ -54,6 +55,7 @@ impl DevtoolApp {
                 for k in ["agent-label", "agent-url", "agent-model", "agent-key"] {
                     app.inputs.remove(k);
                 }
+                app.agent_editing = None;
                 app.load_agents(cx);
             }
             Load::Failed(e) => app.agents_error = Some(e),
@@ -152,7 +154,12 @@ fn level_label(level: &str) -> &'static str {
 }
 
 fn input(app: &mut DevtoolApp, key: &str, placeholder: String, masked: bool, window: &mut Window, cx: &mut Context<DevtoolApp>) -> Entity<InputState> {
-    app.inputs.entry(key.to_string()).or_insert_with(|| cx.new(|cx| InputState::new(window, cx).masked(masked).placeholder(placeholder))).clone()
+    input_with(app, key, placeholder, String::new(), masked, window, cx)
+}
+
+/// Como `input`, con un valor inicial (al editar un proveedor).
+fn input_with(app: &mut DevtoolApp, key: &str, placeholder: String, value: String, masked: bool, window: &mut Window, cx: &mut Context<DevtoolApp>) -> Entity<InputState> {
+    app.inputs.entry(key.to_string()).or_insert_with(|| cx.new(|cx| InputState::new(window, cx).masked(masked).placeholder(placeholder).default_value(value))).clone()
 }
 
 fn tokens_label(n: u64) -> String {
@@ -344,6 +351,7 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
             .collect::<Vec<_>>()
             .join(" · ");
         let (id_def, id_del, model) = (id.clone(), id.clone(), p["model"].clone());
+        let editing = p.clone();
         saved = saved.child(
             h_flex()
                 .gap_2()
@@ -351,6 +359,15 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
                 .children(crate::logos::badge(p["logo"].as_str().unwrap_or(""), 18., cx))
                 .child(ui::status_tag(if is_default { Health::Ok } else { Health::Unknown }, ui::txt(&p["label"]).to_string()))
                 .child(div().flex_1().min_w_0().truncate().child(ui::muted(detail, cx)))
+                // Editar: sus campos van al formulario de abajo (modelos, nombre, URL, clave nueva).
+                .child(Button::new(SharedString::from(format!("prov-edit-{id}"))).xsmall().ghost().label(t!("Edit")).on_click(cx.listener(move |this, _, _, cx| {
+                    for k in ["agent-label", "agent-url", "agent-model", "agent-key"] {
+                        this.inputs.remove(k);
+                    }
+                    this.agent_kind = editing["kind"].as_str().unwrap_or("anthropic").to_string();
+                    this.agent_editing = Some(editing.clone());
+                    cx.notify();
+                })))
                 .when(!is_default, |d| {
                     d.child(Button::new(SharedString::from(format!("prov-default-{id}"))).xsmall().ghost().label(t!("Use by default")).on_click(cx.listener(move |this, _, _, cx| {
                         let (id, model) = (id_def.clone(), model.clone());
@@ -406,23 +423,49 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         }));
         kind_buttons = kind_buttons.child(ui::brand_if(selected, b, cx));
     }
-    let label = input(app, "agent-label", kind["label"].as_str().unwrap_or("").to_string(), false, window, cx);
-    let model = input(app, "agent-model", kind["model"].as_str().filter(|m| !m.is_empty()).unwrap_or("model").to_string(), false, window, cx);
-    let key = input(app, "agent-key", t!("API key (stored encrypted)").to_string(), true, window, cx);
+    let editing = app.agent_editing.clone();
+    let prefill = |k: &str| editing.as_ref().and_then(|p| p[k].as_str().map(str::to_string)).unwrap_or_default();
+    let models_text = editing.as_ref().and_then(|p| p["models"].as_array().map(|l| l.iter().filter_map(|m| m.as_str()).collect::<Vec<_>>().join(", "))).filter(|m| !m.is_empty()).unwrap_or_else(|| prefill("model"));
+    let label = input_with(app, "agent-label", kind["label"].as_str().unwrap_or("").to_string(), prefill("label"), false, window, cx);
+    let model = input_with(app, "agent-model", kind["model"].as_str().filter(|m| !m.is_empty()).unwrap_or("model").to_string(), models_text, false, window, cx);
+    let key_hint = if editing.is_some() { t!("Leave empty to keep the saved key").to_string() } else { t!("API key (stored encrypted)").to_string() };
+    let key = input(app, "agent-key", key_hint, true, window, cx);
     let needs_url = kind["needsBaseUrl"] == true;
-    let url = needs_url.then(|| input(app, "agent-url", "http://127.0.0.1:11434/v1".into(), false, window, cx));
+    let url = needs_url.then(|| input_with(app, "agent-url", "http://127.0.0.1:11434/v1".into(), prefill("baseUrl"), false, window, cx));
+    let title = match &editing {
+        Some(p) => t!("Edit {a}", a = ui::txt(&p["label"])).to_string(),
+        None => t!("Add a provider").to_string(),
+    };
     let add = v_flex()
         .gap_1p5()
-        .child(ui::section(t!("Add a provider"), cx))
-        .child(kind_buttons)
+        .child(ui::section(title, cx))
+        .when(editing.is_none(), |c| c.child(kind_buttons))
         .child(ui::kv(t!("Name"), Input::new(&label).small(), cx))
         .when_some(url, |c, url| c.child(ui::kv(t!("Base URL"), Input::new(&url).small(), cx)))
         .child(ui::kv(t!("Models"), Input::new(&model).small(), cx))
         .child(ui::muted(t!("Several at once, separated by commas: the first one is the default; each agent can use another."), cx).text_xs())
         .when(kind["needsKey"] != false, |c| c.child(ui::kv(if needs_url { t!("API key (optional)") } else { t!("API key") }, Input::new(&key).small(), cx)))
-        // Claude Code: sin clave; usa la sesión de `claude` de esta Mac (tu plan).
-        .when(kind["needsKey"] == false, |c| c.child(ui::muted(t!("No API key: agents run `claude -p` with this Mac's Claude Code login (your plan). Model: sonnet, opus or a full model id."), cx).text_xs()))
-        .child(h_flex().child(ui::brand(Button::new("prov-save").small().icon(IconName::Check).label(t!("Save provider")), cx).on_click(cx.listener(|this, _, _, cx| this.save_provider(cx)))));
+        // Claude Code: sin clave; usa la sesión de `claude` de esta Mac (tu plan). El token de
+        // `claude setup-token`, opcional, es para el sitio en la nube (allá no hay sesión).
+        .when(kind["needsKey"] == false, |c| {
+            c.child(ui::muted(t!("No API key: agents run `claude -p` with this Mac's Claude Code login (your plan). Model: sonnet, opus or a full model id."), cx).text_xs())
+                .child(ui::kv(t!("Token (optional)"), Input::new(&key).small(), cx))
+                .child(ui::muted(t!("For the cloud site, which has no Claude Code login: run `claude setup-token` in a terminal and paste the token here. It's stored encrypted and only goes to your devices and the cloud site."), cx).text_xs())
+        })
+        .child(
+            h_flex()
+                .gap_2()
+                .child(ui::brand(Button::new("prov-save").small().icon(IconName::Check).label(t!("Save provider")), cx).on_click(cx.listener(|this, _, _, cx| this.save_provider(cx))))
+                .when(editing.is_some(), |h| {
+                    h.child(Button::new("prov-cancel").small().ghost().label(t!("Cancel")).on_click(cx.listener(|this, _, _, cx| {
+                        for k in ["agent-label", "agent-url", "agent-model", "agent-key"] {
+                            this.inputs.remove(k);
+                        }
+                        this.agent_editing = None;
+                        cx.notify();
+                    })))
+                }),
+        );
 
     // Presupuesto y cuántos a la vez.
     let budget = settings["dailyTokenBudget"].as_u64().unwrap_or(0);

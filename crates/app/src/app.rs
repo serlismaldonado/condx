@@ -341,6 +341,8 @@ pub struct DevtoolApp {
     pub roles_error: Option<String>,
     pub agents_error: Option<String>,
     pub agent_kind: String,
+    /// El proveedor que se está editando (sus campos llenan el formulario; guardar lo actualiza).
+    pub agent_editing: Option<Value>,
     /// Lo que trajo «Importar de pi» (o por qué no).
     pub agents_import: Option<Load>,
     /// La plantilla de agente que se está editando (borrador; `id` vacío = nueva).
@@ -551,6 +553,7 @@ impl DevtoolApp {
             agents: None,
             agents_error: None,
             agent_kind: "anthropic".into(),
+            agent_editing: None,
             agents_import: None,
             template_edit: None,
             notify_cfg: None,

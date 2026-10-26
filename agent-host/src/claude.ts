@@ -16,6 +16,8 @@ import type { StartRun, TranscriptItem } from "./host.ts";
 interface ClaudeRun {
   runId: string;
   mode: StartRun["mode"];
+  /** El proveedor (su token, si tiene, se lee al lanzar: nunca se guarda en disco). */
+  providerId?: string;
   cwd: string;
   model: string;
   system: string;
@@ -73,8 +75,12 @@ export class ClaudeCode {
   #condx: readonly string[];
   #bin: string;
 
-  constructor(dir: string, daemonUrl: string, daemonToken: string, condxTools: readonly string[]) {
+  /** El token de `claude setup-token` de un proveedor (en el sitio en la nube no hay sesión de Claude Code). */
+  #token: (providerId: string | undefined) => string | undefined;
+
+  constructor(dir: string, daemonUrl: string, daemonToken: string, condxTools: readonly string[], token: (providerId: string | undefined) => string | undefined = () => undefined) {
     this.#dir = dir;
+    this.#token = token;
     this.#condx = condxTools;
     this.#bin = claudeBin();
     mkdirSync(dir, { recursive: true });
@@ -102,7 +108,7 @@ export class ClaudeCode {
 
   start(req: StartRun, system: string, first: string): { conversationId: number } {
     if (!this.#runs.has(req.runId)) {
-      const r: ClaudeRun = { runId: req.runId, mode: req.mode, cwd: req.cwd, model: req.model, system, transcript: [], status: "running", usage: { input: 0, output: 0, total: 0, cost: 0 }, createdAt: Date.now() };
+      const r: ClaudeRun = { runId: req.runId, mode: req.mode, providerId: req.providerId, cwd: req.cwd, model: req.model, system, transcript: [], status: "running", usage: { input: 0, output: 0, total: 0, cost: 0 }, createdAt: Date.now() };
       this.#runs.set(req.runId, r);
       this.#turn(r, first);
     }
@@ -131,7 +137,11 @@ export class ClaudeCode {
     r.transcript.push({ role: "user", text, at: Date.now() });
     this.#save(r);
     this.#live.set(r.runId, { text: "", tools: [] });
-    const child = spawn(this.#bin, claudeArgs(r, text, this.#mcpConfig, this.#condx), { cwd: r.cwd, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: "condx" } });
+    // Con token (el sitio en la nube), solo para este proceso; sin él, la sesión de Claude Code de la Mac.
+    const token = this.#token(r.providerId);
+    const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CODE_ENTRYPOINT: "condx" };
+    if (token) env.CLAUDE_CODE_OAUTH_TOKEN = token;
+    const child = spawn(this.#bin, claudeArgs(r, text, this.#mcpConfig, this.#condx), { cwd: r.cwd, stdio: ["ignore", "pipe", "pipe"], env });
     this.#procs.set(r.runId, child);
     let buf = "";
     let err = "";

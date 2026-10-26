@@ -157,7 +157,7 @@ export class Host {
 
   static async open(path: string, providers: Providers, daemonUrl: string, daemonToken: string): Promise<Host> {
     const host = new Host(providers);
-    host.#claude = new ClaudeCode(`${path}.claude-runs`, daemonUrl, daemonToken, CONDX_TOOLS);
+    host.#claude = new ClaudeCode(`${path}.claude-runs`, daemonUrl, daemonToken, CONDX_TOOLS, (id) => (id ? providers.get(id)?.apiKey ?? undefined : undefined));
     const registry = createRegistry();
     const condx = condxTool(daemonUrl, daemonToken);
     // Una extensión por modo; cada conversación elige la suya (y solo ve esas herramientas).

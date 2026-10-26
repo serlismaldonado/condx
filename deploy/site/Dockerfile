@@ -24,6 +24,10 @@ RUN arch=$(uname -m | sed 's/arm64/aarch64/') \
     && curl -fsSL -o /tmp/backend.zip "https://github.com/get-convex/convex-backend/releases/download/${CONVEX_BACKEND}/convex-local-backend-${arch}-unknown-linux-gnu.zip" \
     && unzip -q /tmp/backend.zip -d /usr/local/bin && chmod +x /usr/local/bin/convex-local-backend && rm /tmp/backend.zip \
     && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "${BUN_VERSION}"
+# Claude Code para los agentes con el proveedor «Claude Code» (versión fija). Se autentica con el token
+# de `claude setup-token` que manda la Mac (no hay sesión interactiva en el sitio).
+ARG CLAUDE_CODE_VERSION=2.1.296
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cache clean --force
 WORKDIR /opt/condx/agent-host
 COPY agent-host/package.json agent-host/package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force

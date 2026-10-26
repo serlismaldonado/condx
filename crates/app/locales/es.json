@@ -940,5 +940,9 @@
   "{a} is ready: deploy key saved in the Keychain": "{a} listo: deploy key guardada en el Llavero",
   "No API key: agents run `claude -p` with this Mac's Claude Code login (your plan). Model: sonnet, opus or a full model id.": "Sin API key: los agentes corren `claude -p` con la sesión de Claude Code de esta Mac (tu plan). Modelo: sonnet, opus o un id completo.",
   "Models": "Modelos",
-  "Several at once, separated by commas: the first one is the default; each agent can use another.": "Varios a la vez, separados por coma: el primero es el predeterminado; cada agente puede usar otro."
+  "Several at once, separated by commas: the first one is the default; each agent can use another.": "Varios a la vez, separados por coma: el primero es el predeterminado; cada agente puede usar otro.",
+  "Edit {a}": "Editar {a}",
+  "Leave empty to keep the saved key": "Vacío: se queda la clave guardada",
+  "Token (optional)": "Token (opcional)",
+  "For the cloud site, which has no Claude Code login: run `claude setup-token` in a terminal and paste the token here. It's stored encrypted and only goes to your devices and the cloud site.": "Para el sitio en la nube, que no tiene sesión de Claude Code: corre `claude setup-token` en una terminal y pega el token aquí. Se guarda cifrado y solo va a tus dispositivos y al sitio en la nube."
 }

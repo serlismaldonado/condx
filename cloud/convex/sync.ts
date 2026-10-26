@@ -11,6 +11,7 @@ import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/s
 import type { Doc } from "./_generated/dataModel";
 import { applySetDelta, planOp, PROTOCOL_VERSION, type Op, type OpResult, type Row } from "localfirst/server";
 import { canAccess, principalFromToken, reviewFields, writeDenied } from "./auth";
+import { wakeIfMacGone } from "./boat";
 
 /** Versión mínima del protocolo que se acepta (§5.3 bis). */
 export const MIN_PROTOCOL_VERSION = PROTOCOL_VERSION;
@@ -155,6 +156,8 @@ export const push = mutation({
       if (denied) reject("denied", denied);
       results.push(await applyOp(ctx, principal.key, op));
     }
+    // Un teléfono dejó trabajo: si la Mac no está, se despierta al sitio en la nube (`boat.ts`).
+    if (principal.kind === "device") await wakeIfMacGone(ctx, principal.daemonId);
     return { status: "ok", results };
   },
 });

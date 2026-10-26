@@ -9,6 +9,7 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as boat from "../boat.js";
 import type * as daemons from "../daemons.js";
 import type * as files from "../files.js";
 import type * as http from "../http.js";
@@ -25,6 +26,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  boat: typeof boat;
   daemons: typeof daemons;
   files: typeof files;
   http: typeof http;

@@ -22,6 +22,9 @@ export default defineSchema({
    * activa la Mac al confirmar. `publicKey`: su llave Ed25519 (hex), con la que firma decisiones;
    * `tokenHash`: SHA-256 de su token (el token y la llave privada viven en su Keychain/Keystore).
    */
+  /// El último intento de despertar al sitio en la nube en boat (`boat.ts`), por daemon.
+  siteWakes: defineTable({ daemonId: v.string(), at: v.number(), result: v.string() }).index("by_daemonId", ["daemonId"]),
+
   devices: defineTable({
     deviceId: v.string(),
     daemonId: v.string(),

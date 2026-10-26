@@ -251,8 +251,8 @@ pub fn check_deploy_key(env: &devtool_core::Environment, key: &str) -> Result<St
 
 /// Valida el nombre de una cuenta que el usuario puede escribir con el CLI.
 pub fn writable_account(account: &str) -> Result<()> {
-    if ![PROD_DEPLOY_KEY, DEV_DEPLOY_KEY, crate::gitflow::TOKEN_ACCOUNT, crate::mail::KEY_ACCOUNT, crate::mail::RESEND_ACCOUNT, crate::update::CLOUD_KEY].contains(&account) {
-        bail!("only “{PROD_DEPLOY_KEY}”, “{DEV_DEPLOY_KEY}”, “{}”, “{}”, “{}” or “{}” can be stored", crate::gitflow::TOKEN_ACCOUNT, crate::mail::KEY_ACCOUNT, crate::mail::RESEND_ACCOUNT, crate::update::CLOUD_KEY);
+    if ![PROD_DEPLOY_KEY, DEV_DEPLOY_KEY, crate::gitflow::TOKEN_ACCOUNT, crate::mail::KEY_ACCOUNT, crate::mail::RESEND_ACCOUNT, crate::update::CLOUD_KEY, crate::site::BOAT_KEY].contains(&account) {
+        bail!("only “{PROD_DEPLOY_KEY}”, “{DEV_DEPLOY_KEY}”, “{}”, “{}”, “{}”, “{}” or “{}” can be stored", crate::gitflow::TOKEN_ACCOUNT, crate::mail::KEY_ACCOUNT, crate::mail::RESEND_ACCOUNT, crate::update::CLOUD_KEY, crate::site::BOAT_KEY);
     }
     Ok(())
 }

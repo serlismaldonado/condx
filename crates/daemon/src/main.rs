@@ -85,6 +85,7 @@ Usage:
   condxd serve --site cloud   the cloud site (Linux): no production, secrets in files
   condxd site pair <the QR’s text or link> [--url U] [--name N]   pairs the cloud site like a phone
   condxd site status | unpair
+  condxd site boat <sandbox id> | --clear   on boat: it stops itself without work (key: secret set boat-key)
 
 Files: ~/.condx/daemon/{config.json,token,devd.sqlite3,devd.log}
 ";
@@ -138,12 +139,26 @@ fn site_cmd(args: &[String]) -> Result<()> {
             println!("{} · {} · fingerprint {} · {}", id.name, id.url, site::fingerprint(&id), site::status(&id)?);
             Ok(())
         }
+        Some("boat") => {
+            let mut id = site::load().context("not paired yet (condxd site pair first)")?;
+            id.boat_sandbox = match args.get(1).map(String::as_str) {
+                Some("--clear") => None,
+                Some(sb) if !sb.starts_with("--") => Some(sb.to_string()),
+                _ => bail!("use: condxd site boat <sandbox id> | --clear"),
+            };
+            site::save(&id)?;
+            match &id.boat_sandbox {
+                Some(sb) => println!("Runs on boat sandbox {sb}: it stops itself without work. Store its key: condxd secret set boat-key"),
+                None => println!("Not on boat anymore: it won't stop itself."),
+            }
+            Ok(())
+        }
         Some("unpair") => {
             let _ = std::fs::remove_file(config::home().join("site.json"));
             println!("Forgotten here. Remove it on the Mac too (Condx → Settings → Condx Cloud).");
             Ok(())
         }
-        _ => bail!("use: condxd site pair \"<the QR's text>\" | status | unpair"),
+        _ => bail!("use: condxd site pair \"<the QR's text>\" | status | boat <sandbox> | unpair"),
     }
 }
 
@@ -436,6 +451,18 @@ fn secret_cmd(args: &[String]) -> Result<()> {
         Some("set") => {
             let account = args.get(1).context("missing account (prod-deploy-key, dev-deploy-key, github-token, agentmail-key, resend-key or condx-cloud-key)")?;
             secrets::writable_account(account)?;
+            if account == site::BOAT_KEY {
+                eprintln!("Paste the boat API key of this sandbox (boat_…, scoped to it: sandbox.read,sandbox.stop,sandbox.resume) and press Enter (it isn't shown):");
+                let mut value = String::new();
+                std::io::stdin().read_line(&mut value)?;
+                let value = value.trim();
+                if !value.starts_with("boat_") || value.contains(char::is_whitespace) {
+                    bail!("that doesn't look like a boat API key (boat_…)");
+                }
+                secrets::set(account, value)?;
+                eprintln!("Saved. The site stops itself on boat when it has no work.");
+                return Ok(());
+            }
             if account == update::CLOUD_KEY {
                 eprintln!("Paste the production deploy key of your Condx Cloud's Convex project (dashboard → Settings → Deploy keys) and press Enter (it isn't shown):");
                 let mut value = String::new();
@@ -504,7 +531,7 @@ fn secret_cmd(args: &[String]) -> Result<()> {
             println!("Borrada.");
         }
         Some("status") | None => {
-            for account in [secrets::PROD_DEPLOY_KEY, secrets::DEV_DEPLOY_KEY, secrets::BACKUP_KEY, gitflow::TOKEN_ACCOUNT, mail::KEY_ACCOUNT, mail::RESEND_ACCOUNT, update::CLOUD_KEY] {
+            for account in [secrets::PROD_DEPLOY_KEY, secrets::DEV_DEPLOY_KEY, secrets::BACKUP_KEY, gitflow::TOKEN_ACCOUNT, mail::KEY_ACCOUNT, mail::RESEND_ACCOUNT, update::CLOUD_KEY, site::BOAT_KEY] {
                 println!("{account:<16} {}", if secrets::exists(account) { "stored" } else { "missing" });
             }
         }

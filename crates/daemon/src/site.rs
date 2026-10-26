@@ -7,6 +7,11 @@
 //
 // `condxd site pair "<texto o enlace del QR>"` reclama el código; `condxd serve --site cloud`
 // arranca el daemon en modo sitio y sincroniza las claves (con el timbre en vivo).
+//
+// En boat (`condxd site boat <sandbox>` y el secreto `boat-key`, una key solo de esa máquina con
+// `sandbox.read,sandbox.stop,sandbox.resume`): el sitio se detiene solo cuando lleva un rato sin
+// trabajo, o poco después de que la Mac vuelve a latir. Detenido no cobra; Condx Cloud lo despierta
+// cuando llega trabajo y la Mac no está.
 
 use std::time::Duration;
 
@@ -27,6 +32,14 @@ const SAFETY_RING_MS: i64 = 60_000;
 const FALLBACK_RING_MS: i64 = 15_000;
 /// Qué claves ya se aplicaron (por proveedor, su `updatedAt` en la Mac).
 const APPLIED_KEY: &str = "meta:site-keys";
+/// La key de boat del sitio (solo de su máquina: leer, detener, reanudar).
+pub const BOAT_KEY: &str = "boat-key";
+/// Sin trabajo este rato, el sitio se detiene (boat guarda el disco y deja de cobrar).
+const IDLE_STOP_MS: i64 = 30 * 60_000;
+/// Con la Mac latiendo (ella atiende), se detiene antes: este rato sin trabajo alcanza.
+const HANDBACK_STOP_MS: i64 = 2 * 60_000;
+/// Un latido de la Mac más viejo que esto: la Mac está apagada (late cada 5 min).
+const MAC_GONE_MS: i64 = 12 * 60_000;
 
 /// Si este daemon corre como sitio en la nube (`serve --site cloud`).
 pub fn is_cloud() -> bool {
@@ -45,6 +58,9 @@ pub struct Identity {
     pub seed: String,
     /// Identidad age (`AGE-SECRET-KEY-…`): abre las claves que la Mac le cifra.
     pub age: String,
+    /// La máquina de boat donde corre (para detenerse sola), si corre en boat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boat_sandbox: Option<String>,
 }
 
 fn path() -> std::path::PathBuf {
@@ -53,6 +69,10 @@ fn path() -> std::path::PathBuf {
 
 pub fn load() -> Option<Identity> {
     std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str(&t).ok())
+}
+
+pub fn save(id: &Identity) -> Result<()> {
+    crate::cloud::write_private(&path(), &serde_json::to_string_pretty(id)?)
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {
@@ -144,9 +164,10 @@ pub fn pair(text: &str, url: Option<&str>, name: &str) -> Result<Identity> {
         token,
         seed: hex(&seed),
         age: enc.to_string().expose_secret().to_string(),
+        boat_sandbox: None,
     };
     std::fs::create_dir_all(home())?;
-    crate::cloud::write_private(&path(), &serde_json::to_string_pretty(&id)?)?;
+    save(&id)?;
     Ok(id)
 }
 
@@ -165,6 +186,10 @@ struct Session {
     age: age::x25519::Identity,
     bell: crate::bell::Bell,
     rung_at: i64,
+    /// La última vez que tuvo trabajo (al abrir cuenta como trabajo: recién despertado).
+    busy_at: i64,
+    /// Ya le pidió a boat que lo detenga (una vez).
+    stopping: bool,
 }
 
 fn open(id: &Identity) -> Result<Session> {
@@ -181,7 +206,7 @@ fn open(id: &Identity) -> Result<Session> {
     engine.enable_scope(&threads_scope, None).map_err(|e| anyhow!("{e}"))?;
     let age = id.age.parse::<age::x25519::Identity>().map_err(|e| anyhow!("bad encryption identity in site.json: {e}"))?;
     let bell = crate::bell::Bell::start(&id.url, &id.token, &[keys_scope.clone(), threads_scope.clone()], localfirst_core::PROTOCOL_VERSION);
-    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0 })
+    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0, busy_at: now_ms(), stopping: false })
 }
 
 /// Una vuelta: timbre (en vivo o por HTTP) y sincronizar; luego aplicar las claves que cambiaron.
@@ -208,7 +233,43 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     // Primero las claves: la configuración nombra al proveedor por defecto.
     let applied = apply_keys(state, s)?;
     let settings = apply_settings(state, s)?;
-    Ok(json!({ "liveBell": s.bell.is_live(), "keys": applied, "settingsFromMac": settings }))
+    // ¿Detenerse? Con trabajo (agentes o trabajos en marcha) no; sin trabajo un rato, sí.
+    let busy = !state.store.agent_runs(&["running"], None)?.is_empty() || !state.store.jobs(&["running", "queued"], 1)?.is_empty();
+    if busy {
+        s.busy_at = now;
+    }
+    let mac_alive_at = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::MAC_ROW).and_then(|r| r.row.values.get("aliveAt").and_then(Value::as_i64));
+    let stop = should_stop(now, s.busy_at, mac_alive_at);
+    if stop && !s.stopping {
+        if let (Some(id), Some(key)) = (load().and_then(|i| i.boat_sandbox), crate::secrets::get(BOAT_KEY).ok().flatten()) {
+            tracing::info!("site: no work for a while: asking boat to stop {id}");
+            boat(&key, "POST", &format!("/sandboxes/{id}/stop"))?;
+            s.stopping = true;
+        }
+    }
+    Ok(json!({ "liveBell": s.bell.is_live(), "keys": applied, "settingsFromMac": settings, "idleFor": now - s.busy_at, "macAliveAt": mac_alive_at, "stopping": s.stopping }))
+}
+
+/// Si el sitio se detiene: sin trabajo media hora, o dos minutos si la Mac está latiendo (ella atiende).
+fn should_stop(now: i64, busy_at: i64, mac_alive_at: Option<i64>) -> bool {
+    let idle = now - busy_at;
+    let mac_here = mac_alive_at.is_some_and(|at| now - at < MAC_GONE_MS);
+    idle >= IDLE_STOP_MS || (mac_here && idle >= HANDBACK_STOP_MS)
+}
+
+fn boat_api() -> String {
+    std::env::var("CONDX_BOAT_API").unwrap_or_else(|_| "https://boat.dev/api/v1".into())
+}
+
+/// Una llamada a la API de boat con la key del sitio.
+pub fn boat(key: &str, method: &str, path: &str) -> Result<Value> {
+    let req = ureq::request(method, &format!("{}{path}", boat_api())).timeout(Duration::from_secs(20)).set("Authorization", &format!("Bearer {}", key.trim()));
+    let reply = if method == "GET" { req.call() } else { req.send_json(json!({})) };
+    match reply {
+        Ok(r) => Ok(r.into_json().unwrap_or(Value::Null)),
+        Err(ureq::Error::Status(code, r)) => bail!("boat answered {code}: {}", devtool_core::redact(&r.into_string().unwrap_or_default()).chars().take(200).collect::<String>()),
+        Err(e) => bail!("couldn't reach boat: {e}"),
+    }
 }
 
 /// Las claves que llegaron cifradas para el sitio, como proveedores propios (solo las que cambiaron);
@@ -314,6 +375,19 @@ pub fn spawn(state: Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn se_detiene_sin_trabajo_o_cuando_la_mac_volvio() {
+        let now = 100 * 60_000;
+        // Con trabajo reciente y sin Mac: sigue.
+        assert!(!should_stop(now, now - 60_000, None));
+        // Media hora sin trabajo: se detiene.
+        assert!(should_stop(now, now - IDLE_STOP_MS, None));
+        // La Mac late (hace 3 min) y lleva 2 min sin trabajo: se detiene.
+        assert!(should_stop(now, now - HANDBACK_STOP_MS, Some(now - 3 * 60_000)));
+        // El latido es viejo (Mac apagada): espera la media hora.
+        assert!(!should_stop(now, now - HANDBACK_STOP_MS, Some(now - MAC_GONE_MS)));
+    }
 
     #[test]
     fn lee_el_qr_de_la_mac() {

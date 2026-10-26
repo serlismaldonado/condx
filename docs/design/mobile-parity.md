@@ -28,7 +28,8 @@ Badges stay on the tab (what waits). The thread view keeps the whole screen.
 
 ## 3. Phases
 
-1. **Visibility** (no backend change): enable `env:` and `jobs:` on the phone; Environments
+1. ✅ **Visibility** (done 2026-10-26; the daemon now also publishes `startedAt` and the default
+   project's name): enable `env:` and `jobs:` on the phone; Environments
    (grouped by project, a dot for reachable, production in red) and Jobs (recent, status, error,
    who asked, how long), bottom tab bar, Settings spacing.
 2. **Job logs**: the daemon publishes the tail of a job's log (redacted, last ~60 lines) only for

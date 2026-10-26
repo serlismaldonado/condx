@@ -82,7 +82,8 @@ fn is_frontend(name: &str) -> bool {
 
 /// Mode del proyecto: solo heskala-erp puede seguir en Docker.
 fn project_mode(state: &Shared, project: &Project) -> Mode {
-    if project.is_default() {
+    // En el sitio en la nube no hay Docker: todo corre como procesos del daemon.
+    if project.is_default() && !crate::site::is_cloud() {
         native::mode(state)
     } else {
         Mode::Native
@@ -337,14 +338,21 @@ fn frontend_spec(project: &Project) -> Result<Spec> {
         bail!("couldn't find {}: install the repo's dependencies (bun install / npm install)", program.display());
     }
     let mut env = vec![];
-    if !project.is_default() {
-        let convex = format!("http://127.0.0.1:{}", native::backend_port(project));
-        let site = format!("http://127.0.0.1:{}", native::backend_port(project) + 1);
+    let cloud = crate::site::is_cloud();
+    if !project.is_default() || cloud {
+        // En el sitio en la nube el navegador del teléfono llega al backend por su URL de boat.
+        let backend = native::backend_port(project);
+        let convex = crate::site::public_url(backend).unwrap_or_else(|| format!("http://127.0.0.1:{backend}"));
+        let site = crate::site::public_url(backend + 1).unwrap_or_else(|| format!("http://127.0.0.1:{}", backend + 1));
         for prefix in ["VITE_", "NEXT_PUBLIC_", "EXPO_PUBLIC_", ""] {
             env.push((format!("{prefix}CONVEX_URL"), convex.clone()));
             env.push((format!("{prefix}CONVEX_SITE_URL"), site.clone()));
         }
         env.push(("PORT".into(), port.to_string()));
+    }
+    // Vite rechaza los Host que no son localhost: el de boat se agrega.
+    if let Some(host) = crate::site::public_url(port).and_then(|u| u.split("://").nth(1).map(|h| h.trim_end_matches('/').to_string())) {
+        env.push(("__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS".into(), host));
     }
     Ok(Spec {
         name: project.proc("frontend"),
@@ -357,7 +365,33 @@ fn frontend_spec(project: &Project) -> Result<Spec> {
     })
 }
 
+/// En el sitio en la nube el clon llega sin dependencias: se instalan la primera vez (bun si el repo
+/// usa bun, si no npm).
+async fn ensure_deps(project: &Project, log: &str) -> Result<()> {
+    if !crate::site::is_cloud() || project.repo.join("node_modules").is_dir() {
+        return Ok(());
+    }
+    let bun = project.repo.join("bun.lock").exists() || project.repo.join("bun.lockb").exists();
+    let (program, args): (&str, &[&str]) = match (bun, project.repo.join("package-lock.json").exists()) {
+        (true, _) => ("bun", &["install"]),
+        (false, true) => ("npm", &["ci"]),
+        _ => ("npm", &["install"]),
+    };
+    append(log, &format!("$ {program} {}", args.join(" ")));
+    let out = run(program, args, Some(&project.repo), &[], Duration::from_secs(900)).await;
+    for line in out.stdout.lines().chain(out.stderr.lines()).rev().take(20).collect::<Vec<_>>().into_iter().rev() {
+        append(log, line);
+    }
+    if !out.ok {
+        bail!("installing dependencies failed: {}", out.error());
+    }
+    Ok(())
+}
+
 async fn start_proc(state: &Shared, project: &Project, name: &str) -> Result<()> {
+    if name != "backend" {
+        ensure_deps(project, &key(project, name)).await?;
+    }
     match name {
         "backend" => {
             if state.procs.get(&project.proc("backend")).is_none() {

@@ -47,6 +47,29 @@ pub fn is_cloud() -> bool {
     std::env::var("CONDX_SITE").is_ok_and(|s| s == "cloud")
 }
 
+/// Las URLs de boat de los puertos de la máquina (`hosts.json`: `{"3000": "https://…-3000.on.boat.dev?_token=…"}`),
+/// creadas con `boat host` (son fijas): el frontend con su token, el backend público.
+fn hosts() -> serde_json::Map<String, Value> {
+    std::fs::read_to_string(crate::config::home().join("hosts.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default()
+}
+
+/// La URL de boat de un puerto, sin el token (el origen que ven el backend y Vite).
+pub fn public_url(port: u16) -> Option<String> {
+    if !is_cloud() {
+        return None;
+    }
+    let url = hosts().get(&port.to_string())?.as_str()?.to_string();
+    Some(url.split('?').next().unwrap_or_default().trim_end_matches('/').to_string())
+}
+
+/// La URL para abrir un puerto desde el teléfono (con su token si es privada).
+pub fn open_url(port: u16) -> Option<String> {
+    hosts().get(&port.to_string())?.as_str().map(str::to_string)
+}
+
+/// Lo que publica el sitio sobre sí mismo (sus servicios locales), para el teléfono con la Mac apagada.
+pub const OVERVIEW_ROW: &str = "site-overview";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
@@ -199,6 +222,9 @@ struct Session {
     taken: std::collections::HashSet<String>,
     /// Proyectos que se están clonando o que fallaron (no se reintenta en cada vuelta).
     cloning: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, i64>>>,
+    /// Cuándo publicó su resumen y cuándo un teléfono le pidió algo a un servicio.
+    overview_at: i64,
+    service_asked_at: i64,
 }
 
 /// Un mensaje de teléfono que el sitio está contestando: en qué fila va la respuesta (un hilo nuevo ya
@@ -224,7 +250,7 @@ fn open(id: &Identity, rt: tokio::runtime::Handle) -> Result<Session> {
     engine.enable_scope(&threads_scope, None).map_err(|e| anyhow!("{e}"))?;
     let age = id.age.parse::<age::x25519::Identity>().map_err(|e| anyhow!("bad encryption identity in site.json: {e}"))?;
     let bell = crate::bell::Bell::start(&id.url, &id.token, &[keys_scope.clone(), threads_scope.clone()], localfirst_core::PROTOCOL_VERSION);
-    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0, busy_at: now_ms(), stopping: false, rt, answering: IndexMap::new(), taken: Default::default(), cloning: Default::default() })
+    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0, busy_at: now_ms(), stopping: false, rt, answering: IndexMap::new(), taken: Default::default(), cloning: Default::default(), overview_at: 0, service_asked_at: 0 })
 }
 
 /// Una vuelta: timbre (en vivo o por HTTP) y sincronizar; luego aplicar las claves que cambiaron.
@@ -255,8 +281,12 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let mac_away = !mac_alive_at.is_some_and(|at| now - at < MAC_GONE_MS);
     clone_projects(state, s);
     answer_threads(state, s, mac_away);
-    // ¿Detenerse? Con trabajo (agentes o trabajos en marcha) no; sin trabajo un rato, sí.
-    let busy = !state.store.agent_runs(&["running"], None)?.is_empty() || !state.store.jobs(&["running", "queued"], 1)?.is_empty();
+    run_services(state, s, mac_away);
+    publish_overview(state, s)?;
+    // ¿Detenerse? Con trabajo (agentes o trabajos en marcha) no; sin trabajo un rato, sí. Los servicios
+    // locales encendidos cuentan como trabajo hasta 3 h después del último pedido de un teléfono.
+    let services_on = now - s.service_asked_at < SERVICES_KEEP_MS && state.procs.any_running();
+    let busy = services_on || !state.store.agent_runs(&["running"], None)?.is_empty() || !state.store.jobs(&["running", "queued"], 1)?.is_empty();
     if busy {
         s.busy_at = now;
     }
@@ -269,6 +299,78 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         }
     }
     Ok(json!({ "liveBell": s.bell.is_live(), "keys": applied, "settingsFromMac": settings, "idleFor": now - s.busy_at, "macAliveAt": mac_alive_at, "macAway": mac_away, "answering": s.answering.len(), "stopping": s.stopping }))
+}
+
+/// Cuánto mantienen encendida la máquina los servicios locales sin pedidos nuevos.
+const SERVICES_KEEP_MS: i64 = 3 * 3_600_000;
+
+/// Los pedidos de servicios (`_run` con `service`) con la Mac apagada: levantar, detener o reiniciar
+/// el backend, el deployer o el frontend de un proyecto en esta máquina. Lo demás (recetas, flujos,
+/// ajustes) espera a la Mac.
+fn run_services(state: &Shared, s: &mut Session, mac_away: bool) {
+    if !mac_away {
+        return;
+    }
+    let rows = s.engine.rows(&s.threads_scope);
+    let Some(r) = rows.iter().find(|r| r.row.id == crate::cloud::RUN_ROW) else { return };
+    let v = &r.row.values;
+    let Some(request_id) = v.get("requestId").and_then(Value::as_str).map(str::to_string) else { return };
+    let answered = [v.get("resultFor"), v.get("siteFor")].iter().any(|f| f.and_then(|x| x.as_str()) == Some(request_id.as_str()));
+    if r.pending || answered || !s.taken.insert(format!("_run:{request_id}")) {
+        return;
+    }
+    let devices: Vec<crate::cloud::TrustedDevice> = rows
+        .iter()
+        .find(|r| r.row.id == crate::cloud::DEVICES_ROW)
+        .and_then(|r| r.row.values.get("devices").and_then(Value::as_str))
+        .and_then(|t| serde_json::from_str(t).ok())
+        .unwrap_or_default();
+    let daemon_id = s.threads_scope.trim_start_matches("threads:").to_string();
+    let result = match crate::cloud::verify_run(&daemon_id, v, &devices, now_ms()) {
+        Err(e) => format!("rejected: {e}"),
+        Ok(req) => {
+            let ask: Value = serde_json::from_str(&req.arg).unwrap_or(Value::Null);
+            match ask["service"].as_object() {
+                None => "rejected: the Mac is off; from the cloud site only local services can be started or stopped".into(),
+                Some(svc) => {
+                    let name = svc.get("name").and_then(Value::as_str).unwrap_or_default();
+                    let action = svc.get("action").and_then(Value::as_str).unwrap_or_default();
+                    let _rt = s.rt.enter();
+                    s.service_asked_at = now_ms();
+                    s.overview_at = 0;
+                    match crate::projects::get(state, svc.get("project").and_then(Value::as_str)).and_then(|p| crate::services::action(state, &p, name, action)) {
+                        Ok(_) => format!("{action} {name}: on its way (cloud site)"),
+                        Err(e) => format!("rejected: {e:#}"),
+                    }
+                }
+            }
+        }
+    };
+    tracing::info!("site: phone run request: {result}");
+    let mut set = Values::new();
+    set.insert("siteResult".into(), Value::String(result));
+    set.insert("siteFor".into(), Value::String(request_id));
+    if let Err(e) = s.engine.commit(vec![OpDraft::patch(&s.threads_scope, crate::cloud::RUN_ROW, set)], now_ms()) {
+        tracing::warn!("site: couldn't answer the run request: {e}");
+    }
+}
+
+/// El resumen del sitio (sus proyectos clonados y sus servicios): cada 20 s, cada 3 s mientras cambia.
+fn publish_overview(state: &Shared, s: &mut Session) -> Result<()> {
+    let quiet = !state.services.busy_any() && now_ms() - s.service_asked_at > 60_000;
+    if now_ms() - s.overview_at < if quiet { 20_000 } else { 3_000 } {
+        return Ok(());
+    }
+    s.overview_at = now_ms();
+    let overview = s.rt.block_on(crate::cloud::overview(state));
+    let mut set = Values::new();
+    set.insert("title".into(), json!("overview"));
+    set.insert("kind".into(), json!("overview"));
+    set.insert("overview".into(), Value::String(overview.to_string()));
+    let exists = s.engine.rows(&s.threads_scope).iter().any(|r| r.row.id == OVERVIEW_ROW);
+    let op = if exists { OpDraft::patch(&s.threads_scope, OVERVIEW_ROW, set) } else { OpDraft::create(&s.threads_scope, set).with_row(OVERVIEW_ROW) };
+    s.engine.commit(vec![op], now_ms()).map_err(|e| anyhow!("{e}"))?;
+    Ok(())
 }
 
 /// Los mensajes de los teléfonos que le tocan al sitio (S5): los de sus hilos (`site-…`) siempre; los

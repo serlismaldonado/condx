@@ -58,3 +58,12 @@ test("la Mac se despide: el sitio contesta enseguida, sin esperar a que venza el
   await expect(t.mutation(api.sync.goodbye, { token: SITE.token })).rejects.toThrow(/Invalid token/);
 });
 
+
+test("con la Mac apagada contesta los pedidos de servicios en _run y publica su resumen", async () => {
+  const t = await setup(Date.now() - 60 * 60_000);
+  await t.mutation(api.sync.push, { token: A.token, group: group(op({ kind: "create", rowId: "_run", set: { title: "run" } })), protocolVersion: PV });
+  await expect(site(t, op({ kind: "patch", rowId: "_run", set: { siteFor: "r9", siteResult: "start all: on its way" } }))).resolves.toMatchObject({ status: "ok" });
+  await expect(site(t, op({ kind: "patch", rowId: "_run", set: { siteItems: "[]" } }))).rejects.toThrow(/can't write “siteItems”/);
+  await expect(site(t, op({ kind: "patch", rowId: "_run", set: { result: "x" } }))).rejects.toThrow(/can't write “result”/);
+  await expect(site(t, op({ kind: "create", rowId: "site-overview", set: { title: "overview", overview: "{}" } }))).resolves.toMatchObject({ status: "ok" });
+});

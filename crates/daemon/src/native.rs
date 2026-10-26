@@ -64,6 +64,10 @@ pub fn local_env_file() -> PathBuf {
 /// El binario, copiado fuera del repo (~/Documents está protegido por macOS
 /// y un binario lanzado desde ahí por launchd se traba esperando permiso).
 pub fn binary(state: &Shared) -> Result<PathBuf> {
+    // El sitio en la nube trae el de Linux en la imagen.
+    if let Some(p) = bundled() {
+        return Ok(p);
+    }
     let installed = home().join("bin").join("convex-local-backend");
     let triple = if cfg!(target_arch = "aarch64") { "aarch64-apple-darwin" } else { "x86_64-apple-darwin" };
     // El del repo de heskala-erp si está; si no, el que ya bajó el CLI de Convex (`convex dev --local`).
@@ -91,6 +95,11 @@ pub fn binary(state: &Shared) -> Result<PathBuf> {
     Ok(installed)
 }
 
+/// El binario que trae la imagen del sitio en la nube (`CONDX_CONVEX_BACKEND`).
+fn bundled() -> Option<PathBuf> {
+    std::env::var_os("CONDX_CONVEX_BACKEND").map(PathBuf::from).filter(|p| p.is_file())
+}
+
 /// El binario más nuevo que dejó el CLI de Convex en ~/.cache/convex/binaries/<versión>/.
 pub fn cli_cached_binary() -> Option<PathBuf> {
     let dir = crate::config::user_home().join(".cache/convex/binaries");
@@ -103,6 +112,9 @@ pub fn cli_cached_binary() -> Option<PathBuf> {
 /// Dónde está el binario, sin copiar nada (para el chequeo del primer arranque): el instalado,
 /// el del repo o el que dejó el CLI de Convex.
 pub fn find_binary(state: &Shared) -> Option<PathBuf> {
+    if let Some(p) = bundled() {
+        return Some(p);
+    }
     let installed = home().join("bin").join("convex-local-backend");
     let triple = if cfg!(target_arch = "aarch64") { "aarch64-apple-darwin" } else { "x86_64-apple-darwin" };
     let repo = state.config.repo.as_ref().map(|r| r.join(format!("src-tauri/binaries/convex-local-backend-{triple}")));
@@ -176,9 +188,9 @@ pub fn backend_spec(state: &Shared, proc_name: &str, dir: &Path, env_file: &Path
             "--instance-secret".into(),
             get("CONVEX_INSTANCE_SECRET")?,
             "--convex-origin".into(),
-            format!("http://127.0.0.1:{port}"),
+            crate::site::public_url(port).unwrap_or_else(|| format!("http://127.0.0.1:{port}")),
             "--convex-site".into(),
-            format!("http://127.0.0.1:{site}"),
+            crate::site::public_url(site).unwrap_or_else(|| format!("http://127.0.0.1:{site}")),
             "--local-storage".into(),
             dir.join("storage").display().to_string(),
             "--disable-beacon".into(),
@@ -243,7 +255,7 @@ pub fn deployer_spec(state: &Shared, project: &Project) -> Result<Spec> {
     let file = project.env_file();
     let get = |k: &str| env_file_value(&file, k).ok_or_else(|| anyhow!("missing {k} in {}", file.display()));
     let local_cli = project.repo.join("node_modules/.bin/convex");
-    let (bin, prefix) = if project.is_default() {
+    let (bin, prefix) = if project.is_default() && !crate::site::is_cloud() {
         convex_bin(state)
     } else if local_cli.exists() {
         (local_cli.display().to_string(), vec![])

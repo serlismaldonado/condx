@@ -118,7 +118,7 @@ fn clip(v: &Value, max: usize) -> Value {
     short_text(v, max)
 }
 
-async fn overview(state: &Shared) -> Value {
+pub async fn overview(state: &Shared) -> Value {
     let mut projects = vec![];
     for p in state.store.projects().unwrap_or_default() {
         let o = crate::overview::build_for(state, Some(&p.name)).await;
@@ -130,6 +130,8 @@ async fn overview(state: &Shared) -> Value {
                     "name": v["name"], "title": v["title"], "status": v["status"], "busy": v["busy"], "error": clip(&v["error"], 300),
                     "detail": clip(&v["detail"], 160), "healthy": v["healthy"], "phase": v["phase"], "port": v["port"], "mode": v["mode"],
                     "cpu": v["cpu"], "memory": v["memory"],
+                    // En el sitio en la nube, el frontend se abre desde el teléfono (URL de boat con token).
+                    "openUrl": if crate::site::is_cloud() && v["name"] != "backend" && v["name"] != "deployer" { v["port"].as_u64().and_then(|p| crate::site::open_url(p as u16)).map(Value::String).unwrap_or(Value::Null) } else { Value::Null },
                 })
             })
             .collect();
@@ -825,6 +827,11 @@ pub fn verify_thread_request(daemon_id: &str, thread_id: &str, row: &Values, dev
     })?;
     r.files = files;
     Ok(r)
+}
+
+/// Verifica un pedido de correr algo (fila `_run`) firmado por un teléfono de confianza.
+pub fn verify_run(daemon_id: &str, row: &Values, devices: &[TrustedDevice], now: i64) -> Result<PhoneRequest, String> {
+    verify_signed(row, devices, now, &["run"], |request, rid, at, arg| request_message(daemon_id, RUN_ROW, request, rid, at, arg))
 }
 
 fn verify_signed(row: &Values, devices: &[TrustedDevice], now: i64, allowed: &[&str], message: impl Fn(&str, &str, i64, &str) -> String) -> Result<PhoneRequest, String> {

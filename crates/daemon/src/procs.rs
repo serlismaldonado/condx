@@ -79,6 +79,12 @@ pub async fn http_ok(url: String) -> bool {
 }
 
 impl Procs {
+    /// Si corre algún proceso del daemon (los servicios locales).
+    pub fn any_running(&self) -> bool {
+        let names: Vec<String> = self.map.lock().unwrap().keys().cloned().collect();
+        names.iter().any(|n| self.get(n).is_some())
+    }
+
     pub fn get(&self, name: &str) -> Option<Managed> {
         let mut map = self.map.lock().unwrap();
         match map.get(name).copied() {

@@ -381,7 +381,19 @@ fn frontend_spec(state: &Shared, project: &Project) -> Result<Spec> {
     Ok(Spec {
         name: project.proc("frontend"),
         program: program.display().to_string(),
-        args: parts.collect(),
+        args: {
+            let mut args: Vec<String> = parts.collect();
+            // En boat el relé de `boat host` ocupa el puerto en las interfaces de afuera: el frontend
+            // escucha solo en 127.0.0.1 (el relé le pasa lo de afuera).
+            if crate::site::is_cloud() {
+                match project.frontend_kind.as_deref() {
+                    Some("next") => args.extend(["-H".to_string(), "127.0.0.1".to_string()]),
+                    Some("vite") => args.extend(["--host".to_string(), "127.0.0.1".to_string()]),
+                    _ => {}
+                }
+            }
+            args
+        },
         env,
         cwd: project.repo.clone(),
         ready_url: Some(format!("http://127.0.0.1:{port}/")),

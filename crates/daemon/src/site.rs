@@ -357,6 +357,10 @@ fn run_services(state: &Shared, s: &mut Session, mac_away: bool) {
 
 /// El resumen del sitio (sus proyectos clonados y sus servicios): cada 20 s, cada 3 s mientras cambia.
 fn publish_overview(state: &Shared, s: &mut Session) -> Result<()> {
+    // Sin los puertos publicados (scripts/boat-hosts.sh) no hay servicios que ofrecer.
+    if hosts().is_empty() {
+        return Ok(());
+    }
     let quiet = !state.services.busy_any() && now_ms() - s.service_asked_at > 60_000;
     if now_ms() - s.overview_at < if quiet { 20_000 } else { 3_000 } {
         return Ok(());

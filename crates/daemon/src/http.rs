@@ -1149,9 +1149,9 @@ async fn post_cloud_pair_cancel(Extension(client): Extension<Client>) -> Respons
     cloud_app_only(&client, || crate::cloud::pair_cancel().map(|_| json!({ "ok": true }))).await
 }
 
-/// Los teléfonos de confianza de esta Mac (nombre y huella; la llave es pública).
+/// Los teléfonos y el sitio en la nube de confianza de esta Mac (nombre, huella y tipo; la llave es pública).
 async fn get_cloud_devices() -> Json<Value> {
-    Json(json!(crate::cloud::trusted_devices().into_iter().map(|d| json!({ "deviceId": d.device_id, "name": d.name, "fingerprint": crate::cloud::fingerprint(&d.public_key), "pairedAt": d.paired_at })).collect::<Vec<_>>()))
+    Json(json!(crate::cloud::trusted_devices().into_iter().map(|d| json!({ "deviceId": d.device_id, "name": d.name, "fingerprint": crate::cloud::fingerprint(&d.public_key), "pairedAt": d.paired_at, "kind": d.kind.as_deref().unwrap_or("phone") })).collect::<Vec<_>>()))
 }
 
 async fn delete_cloud_device(Extension(client): Extension<Client>, Path(id): Path<String>) -> Response {

@@ -52,7 +52,7 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings"];
 /// Lo más largo de un mensaje de un hilo en el teléfono (antes 700: las respuestas se cortaban).
 const ITEM_CHARS: usize = 12_000;
 /// Lo que ocupan los mensajes de un hilo en su fila: si se pasa, se dejan afuera los más viejos.
@@ -81,6 +81,9 @@ pub const NEW_ROW: &str = "_new";
 pub const AGENTS_ROW: &str = "_agents";
 /// La última versión de la app del teléfono (versión, número y enlace de descarga).
 pub const APK_ROW: &str = "_apk";
+/// La configuración de los agentes de la Mac (proveedor y modelo por defecto, presupuesto, cuántos a
+/// la vez, autonomía, política de Git; nada secreto): el sitio en la nube la copia.
+pub const SETTINGS_ROW: &str = "_settings";
 /// Cada cuánto se vuelven a armar los hilos (cada uno lee las conversaciones de sus agentes).
 const THREADS_EVERY_MS: i64 = 8_000;
 /// Cada cuánto se rearman los hilos mientras un agente trabaja (lo que escribe va llegando).
@@ -366,6 +369,9 @@ pub struct TrustedDevice {
     /// cifra las claves de los proveedores (fase A6). Los vinculados antes no la tienen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption_key: Option<String>,
+    /// `site` para el sitio en la nube (la app lo muestra aparte); sin valor, un teléfono.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 fn devices_path() -> PathBuf {
@@ -496,7 +502,7 @@ pub fn pair_confirm(device_id: &str) -> Result<TrustedDevice> {
     let public_key = device["publicKey"].as_str().filter(|k| k.len() == 64).context("the phone's key is missing")?.to_string();
     let encryption_key = device["encryptionKey"].as_str().filter(|k| k.parse::<age::x25519::Recipient>().is_ok()).map(str::to_string);
     call("mutation", "pairing:confirm", json!({ "deviceId": device_id }))?;
-    let trusted = TrustedDevice { device_id: device_id.to_string(), name: device["name"].as_str().unwrap_or("Phone").to_string(), public_key, paired_at: now_ms(), encryption_key };
+    let trusted = TrustedDevice { device_id: device_id.to_string(), name: device["name"].as_str().unwrap_or("Phone").to_string(), public_key, paired_at: now_ms(), encryption_key, kind: device["kind"].as_str().map(str::to_string) };
     let mut list = trusted_devices();
     list.retain(|d| d.device_id != device_id);
     list.push(trusted.clone());
@@ -1152,6 +1158,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     // Y los agentes externos conectados por el MCP (Claude Code, Codex…): también se los menciona.
     agents.extend(crate::connections::list().iter().map(|c| json!({ "id": c.handle(), "name": c.name, "logo": c.logo(), "external": true })));
     trows.insert(AGENTS_ROW.into(), obj(json!({ "title": "agents", "participants": serde_json::to_string(&agents).unwrap_or_default() })));
+    trows.insert(SETTINGS_ROW.into(), obj(json!({ "title": "settings", "settings": serde_json::to_string(&crate::agents::settings(state)).unwrap_or_default() })));
     if let Some(apk) = crate::update::latest_apk(state) {
         trows.insert(APK_ROW.into(), obj(json!({ "title": "apk", "version": apk["version"], "versionCode": apk["versionCode"], "url": apk["url"] })));
     }
@@ -1413,7 +1420,7 @@ mod tests {
         use ed25519_dalek::{Signer, SigningKey};
         let key = SigningKey::from_bytes(&[7u8; 32]);
         let pk = key.verifying_key().as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let device = TrustedDevice { device_id: "phone-1".into(), name: "iPhone".into(), public_key: pk.clone(), paired_at: 0, encryption_key: None };
+        let device = TrustedDevice { device_id: "phone-1".into(), name: "iPhone".into(), public_key: pk.clone(), paired_at: 0, encryption_key: None, kind: None };
         let now = 10_000_000;
         let row = |decision: &str, at: i64, job: &str, key_hex: &str| -> Values {
             let sig = key.sign(decision_message("mac-1", job, decision, at).as_bytes());
@@ -1440,7 +1447,7 @@ mod tests {
         use ed25519_dalek::{Signer, SigningKey};
         let key = SigningKey::from_bytes(&[9u8; 32]);
         let pk = key.verifying_key().as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let device = TrustedDevice { device_id: "phone-1".into(), name: "iPhone".into(), public_key: pk.clone(), paired_at: 0, encryption_key: None };
+        let device = TrustedDevice { device_id: "phone-1".into(), name: "iPhone".into(), public_key: pk.clone(), paired_at: 0, encryption_key: None, kind: None };
         let now = 10_000_000;
         let row = |request: &str, arg: &str, at: i64, incident: &str| -> Values {
             let sig = key.sign(request_message("mac-1", incident, request, "rq0123456789abcd", at, arg).as_bytes());
@@ -1486,7 +1493,7 @@ mod tests {
         let mac = age::x25519::Identity::generate();
         let phone = age::x25519::Identity::generate();
         let old_phone = age::x25519::Identity::generate();
-        let device = |id: &str, key: Option<String>| TrustedDevice { device_id: id.into(), name: id.into(), public_key: "0".repeat(64), paired_at: 0, encryption_key: key };
+        let device = |id: &str, key: Option<String>| TrustedDevice { device_id: id.into(), name: id.into(), public_key: "0".repeat(64), paired_at: 0, encryption_key: key, kind: None };
         let devices = vec![device("phone-1", Some(phone.to_public().to_string())), device("phone-legacy", None), device("phone-old", Some(old_phone.to_public().to_string()))];
         let recipients = key_recipients(&mac.to_public(), &devices);
         assert_eq!(recipients.len(), 3, "the Mac and the two phones with an identity");

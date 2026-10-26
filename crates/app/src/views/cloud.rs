@@ -149,10 +149,16 @@ fn phones(app: &mut DevtoolApp, cx: &mut Context<DevtoolApp>) -> Div {
         load_devices(app, cx);
     }
     let t = crate::theme::Tokens::current(cx);
+    let all = match &app.cloud_devices {
+        Some(Load::Ready(list)) => list.as_array().cloned().unwrap_or_default(),
+        _ => vec![],
+    };
+    // El sitio en la nube va aparte: se empareja con el mismo código, pero no es un teléfono.
+    let (sites, phones): (Vec<Value>, Vec<Value>) = all.into_iter().partition(|d| d["kind"] == "site");
     let mut col = v_flex().gap_2().pt_2().child(ui::section(t!("Phones"), cx));
     // Los de confianza de esta Mac.
-    if let Some(Load::Ready(list)) = &app.cloud_devices {
-        let list = list.as_array().cloned().unwrap_or_default();
+    if let Some(Load::Ready(_)) = &app.cloud_devices {
+        let list = phones;
         if list.is_empty() && app.cloud_pair.is_none() {
             col = col.child(ui::muted(t!("No phones yet. A paired phone sees what waits for approval and can approve it; production still needs Touch ID here."), cx));
         }
@@ -177,7 +183,7 @@ fn phones(app: &mut DevtoolApp, cx: &mut Context<DevtoolApp>) -> Div {
             );
         }
     }
-    match app.cloud_pair.clone() {
+    col = match app.cloud_pair.clone() {
         None => col.child(h_flex().child(
             Button::new("phone-pair").small().outline().label(t!("Pair a phone")).on_click(cx.listener(|this, _, _, cx| {
                 this.post("/api/cloud/pair".into(), json!({}), |app, res, cx| {
@@ -194,7 +200,39 @@ fn phones(app: &mut DevtoolApp, cx: &mut Context<DevtoolApp>) -> Div {
             })),
         )),
         Some(open) => col.child(pairing_panel(app, &open, cx)),
+    };
+    col.child(cloud_sites(&sites, cx))
+}
+
+/// El sitio en la nube (`condxd serve --site cloud`): sigue trabajando con la Mac apagada. Se empareja
+/// con el código de «Vincular un teléfono» y `condxd site pair <código>`; recibe las claves cifradas.
+fn cloud_sites(sites: &[Value], cx: &mut Context<DevtoolApp>) -> Div {
+    let t = crate::theme::Tokens::current(cx);
+    let mut col = v_flex().gap_2().pt_3().child(ui::section(t!("Cloud site"), cx));
+    if sites.is_empty() {
+        return col.child(ui::muted(t!("None yet. On a Linux machine, run condxd serve --site cloud, open “Pair a phone” here and run condxd site pair <the code> there; it gets the provider keys sealed to it and your agent settings."), cx));
     }
+    for d in sites {
+        let id = d["deviceId"].as_str().unwrap_or_default().to_string();
+        col = col.child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().text_color(t.fg).child(ui::txt(&d["name"])))
+                .child(ui::mono(ui::txt(&d["fingerprint"])))
+                .child(div().flex_1())
+                .child(Button::new(SharedString::from(format!("site-revoke-{id}"))).xsmall().ghost().label(t!("Remove")).on_click(cx.listener(move |this, _, _, cx| {
+                    let id = id.clone();
+                    this.delete(format!("/api/cloud/devices/{id}"), |app, res, cx| {
+                        if let Load::Failed(e) = res {
+                            app.action = Some(Load::Failed(e));
+                        }
+                        load_devices(app, cx);
+                    }, cx);
+                }))),
+        );
+    }
+    col.child(ui::muted(t!("It gets the provider keys sealed to it and copies your agent settings. It never touches production."), cx))
 }
 
 /// El QR (con el código debajo) mientras nadie lo reclama; después, el teléfono para confirmar.

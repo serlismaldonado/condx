@@ -39,6 +39,13 @@ const push = (t: T, g: OpGroup, token: string) => t.mutation(api.sync.push, { to
 const decision = (extra: Record<string, unknown> = {}) => ({ decision: "approve", decidedAt: Date.now(), deviceKey: PHONE.publicKey, signature: SIG, ...extra });
 
 describe("vincular", () => {
+  test("el sitio en la nube se reclama como «site» y la Mac lo ve así", async () => {
+    const t = await setup();
+    const { code } = await t.mutation(api.pairing.open, { token: A.token });
+    await t.mutation(api.pairing.claim, { code, ...PHONE, name: "Cloud site", kind: "site" });
+    expect(await t.query(api.pairing.status, { token: A.token })).toMatchObject({ status: "claimed", device: { name: "Cloud site", kind: "site" } });
+  });
+
   test("abrir, reclamar con el código (con o sin guiones), confirmar", async () => {
     const t = await setup();
     const { code, expiresAt } = await t.mutation(api.pairing.open, { token: A.token });

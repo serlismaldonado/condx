@@ -126,7 +126,7 @@ pub fn pair(text: &str, url: Option<&str>, name: &str) -> Result<Identity> {
     let key = SigningKey::from_bytes(&seed);
     let token = crate::cloud::random_hex(32)?;
     let enc = age::x25519::Identity::generate();
-    let v = call(&url, "mutation", "pairing:claim", json!({ "code": code, "publicKey": hex(key.verifying_key().as_bytes()), "token": token, "name": name, "encryptionKey": enc.to_public().to_string() }))?;
+    let v = call(&url, "mutation", "pairing:claim", json!({ "code": code, "publicKey": hex(key.verifying_key().as_bytes()), "token": token, "name": name, "encryptionKey": enc.to_public().to_string(), "kind": "site" }))?;
     let id = Identity {
         url: url.trim_end_matches('/').to_string(),
         daemon_id: v["daemonId"].as_str().context("unexpected answer")?.to_string(),
@@ -146,11 +146,13 @@ pub fn status(id: &Identity) -> Result<String> {
     Ok(call(&id.url, "query", "pairing:me", json!({ "token": id.token }))?["status"].as_str().unwrap_or("unknown").to_string())
 }
 
-/// Lo que el sitio lee de Condx Cloud: por ahora las claves (`keys:`).
+/// Lo que el sitio lee de Condx Cloud: las claves (`keys:`) y los hilos (`threads:`, donde la Mac
+/// publica su configuración de agentes en la fila `_settings`).
 struct Session {
     engine: crate::cloud::CloudEngine,
     transport: ConvexHttpTransport,
     keys_scope: String,
+    threads_scope: String,
     age: age::x25519::Identity,
     bell: crate::bell::Bell,
     rung_at: i64,
@@ -166,9 +168,11 @@ fn open(id: &Identity) -> Result<Session> {
     .map_err(|e| anyhow!("{e}"))?;
     let keys_scope = format!("keys:{}", id.daemon_id);
     engine.enable_scope(&keys_scope, None).map_err(|e| anyhow!("{e}"))?;
+    let threads_scope = format!("threads:{}", id.daemon_id);
+    engine.enable_scope(&threads_scope, None).map_err(|e| anyhow!("{e}"))?;
     let age = id.age.parse::<age::x25519::Identity>().map_err(|e| anyhow!("bad encryption identity in site.json: {e}"))?;
-    let bell = crate::bell::Bell::start(&id.url, &id.token, std::slice::from_ref(&keys_scope), localfirst_core::PROTOCOL_VERSION);
-    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, age, bell, rung_at: 0 })
+    let bell = crate::bell::Bell::start(&id.url, &id.token, &[keys_scope.clone(), threads_scope.clone()], localfirst_core::PROTOCOL_VERSION);
+    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0 })
 }
 
 /// Una vuelta: timbre (en vivo o por HTTP) y sincronizar; luego aplicar las claves que cambiaron.
@@ -178,7 +182,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let rung = if due {
         s.bell.take();
         s.rung_at = now;
-        Some(s.transport.doorbell(std::slice::from_ref(&s.keys_scope), localfirst_core::PROTOCOL_VERSION).map_err(|e| anyhow!("{e}"))?)
+        Some(s.transport.doorbell(&[s.keys_scope.clone(), s.threads_scope.clone()], localfirst_core::PROTOCOL_VERSION).map_err(|e| anyhow!("{e}"))?)
     } else {
         match s.bell.take() {
             Some(v) if v["status"] == "upgradeRequired" => Some(Doorbell::UpgradeRequired),
@@ -192,8 +196,10 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         None => {}
     }
     crate::cloud::block_on(sync_once(&mut s.engine, &s.transport, now_ms, 50)).map_err(|e| anyhow!("{e}"))?;
+    // Primero las claves: la configuración nombra al proveedor por defecto.
     let applied = apply_keys(state, s)?;
-    Ok(json!({ "liveBell": s.bell.is_live(), "keys": applied }))
+    let settings = apply_settings(state, s)?;
+    Ok(json!({ "liveBell": s.bell.is_live(), "keys": applied, "settingsFromMac": settings }))
 }
 
 /// Las claves que llegaron cifradas para el sitio, como proveedores propios (solo las que cambiaron);
@@ -234,6 +240,18 @@ fn apply_keys(state: &Shared, s: &Session) -> Result<usize> {
         state.store.save_probe(APPLIED_KEY, &serde_json::to_value(&applied)?)?;
     }
     Ok(applied.len())
+}
+
+/// La configuración de agentes de la Mac (fila `_settings`), si cambió. Devuelve si hay una.
+fn apply_settings(state: &Shared, s: &Session) -> Result<bool> {
+    let Some(row) = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::SETTINGS_ROW) else { return Ok(false) };
+    let Some(text) = row.row.values.get("settings").and_then(Value::as_str) else { return Ok(false) };
+    let wanted: Value = serde_json::from_str(text)?;
+    if serde_json::to_value(crate::agents::settings(state))? != wanted {
+        crate::agents::save_settings(state, &wanted)?;
+        tracing::info!("site: agent settings copied from the Mac");
+    }
+    Ok(true)
 }
 
 /// El hilo del sitio: espera la confirmación de la Mac y después sincroniza las claves.

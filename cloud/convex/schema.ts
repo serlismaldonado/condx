@@ -29,6 +29,8 @@ export default defineSchema({
     publicKey: v.string(),
     /// Identidad de cifrado (age X25519) del teléfono: el daemon le cifra las claves de los proveedores.
     encryptionKey: v.optional(v.string()),
+    /// Un teléfono, o el sitio en la nube (`condxd serve --site cloud`): la Mac los muestra aparte.
+    kind: v.optional(v.union(v.literal("phone"), v.literal("site"))),
     tokenHash: v.string(),
     status: v.union(v.literal("pending"), v.literal("active"), v.literal("revoked")),
     createdAt: v.number(),

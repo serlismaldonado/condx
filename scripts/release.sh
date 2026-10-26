@@ -47,7 +47,8 @@ fi
 
 sed -i '' "s/^version = \"$CURRENT\"/version = \"$VERSION\"/" Cargo.toml
 cargo build --release -p devtool-app -p devtool-daemon
-cargo test --workspace -q
+# Los tests: su salida solo si fallan (el resumen del release queda limpio).
+if ! TESTS="$(cargo test --workspace -q 2>&1)"; then echo "$TESTS" | tail -40 >&2; echo "tests failed: nothing was released" >&2; git checkout -- Cargo.toml Cargo.lock; exit 1; fi
 
 DIST="$(mktemp -d)"
 trap 'rm -rf "$DIST"' EXIT

@@ -7,6 +7,8 @@
 #   CONDX_DRY_RUN=1 scripts/cloud-deploy.sh   # solo muestra qué haría
 #   CONDX_DEPLOY_ONLY=1 scripts/cloud-deploy.sh   # solo despliega (el daemon ya está vinculado: no lo
 #                                                 # vuelve a registrar, el teléfono no se re-vincula)
+#   Sin correrlo a mano: `condxd secret set condx-cloud-key` una vez y la receta `deploy-condx-cloud`
+#   (se aprueba en la app o el teléfono) despliega con esa key.
 #   CONDX_SITE=https://condx.example.com scripts/cloud-deploy.sh   # con un dominio propio para el sitio
 #     (el QR, /pair, /ingest, /files); la API sigue en <deployment>.convex.cloud
 set -euo pipefail
@@ -17,8 +19,15 @@ BIN="${CONDX_BIN:-$HOME/.condx/daemon/bin/condxd}"
 CURRENT="$(sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' "$HOME/.condx/daemon/cloud.json" 2>/dev/null | head -1)"
 NAME="${CONDX_NAME:-${CURRENT:-$(scutil --get ComputerName 2>/dev/null || hostname)}}"
 
-read -rsp "Production deploy key of your Convex project (dashboard → Settings → Deploy keys; not shown): " KEY
-echo
+# La receta `deploy-condx-cloud` la pasa por el entorno (la guardada con `condxd secret set
+# condx-cloud-key`); a mano, se pega.
+if [ -n "${CONDX_CLOUD_DEPLOY_KEY:-}" ]; then
+  KEY="$CONDX_CLOUD_DEPLOY_KEY"
+  unset CONDX_CLOUD_DEPLOY_KEY
+else
+  read -rsp "Production deploy key of your Convex project (dashboard → Settings → Deploy keys; not shown): " KEY
+  echo
+fi
 case "$KEY" in
   prod:*\|*) ;;
   *) echo "That doesn't look like a production deploy key (prod:<deployment>|…)." >&2; exit 1 ;;

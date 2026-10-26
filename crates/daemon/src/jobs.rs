@@ -862,6 +862,11 @@ async fn builtin_step(
             }
             Ok(done)
         }
+        // Condx Cloud (`cloud/`) con la deploy key guardada: sin pegarla cada vez.
+        "condx-cloud-deploy" => {
+            let repo = crate::update::condx_repo(state).ok_or_else(|| anyhow!("there's no Condx repo (set Mayer's repos)"))?;
+            tokio::task::spawn_blocking(move || crate::update::deploy_cloud(&repo)).await.map_err(|e| anyhow!(e.to_string()))?
+        }
         // Una versión nueva de la app del teléfono: en esta Mac, publicada en Condx Cloud, con aviso.
         "mobile-release" => {
             let version = job.args.get("version").cloned().unwrap_or_default();

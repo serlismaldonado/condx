@@ -337,6 +337,35 @@ pub fn condx_repo(state: &Shared) -> Option<PathBuf> {
     crate::roles::get(state, "mayer").and_then(|r| r.repos.first().map(|x| PathBuf::from(x.path.trim()))).filter(|p| p.join(".git").exists())
 }
 
+/// Las últimas líneas de la salida de un script (para el registro del trabajo).
+fn tail(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")
+}
+
+/// La deploy key de Condx Cloud, guardada una vez (`condxd secret set condx-cloud-key`).
+pub const CLOUD_KEY: &str = "condx-cloud-key";
+
+/// Despliega `cloud/` con la key guardada, solo al deployment al que está vinculada esta Mac.
+pub fn deploy_cloud(repo: &Path) -> Result<String> {
+    let key = crate::secrets::get(CLOUD_KEY)?.ok_or_else(|| anyhow!("there's no Condx Cloud deploy key (condxd secret set condx-cloud-key, once)"))?;
+    let deployment = key.trim().strip_prefix("prod:").and_then(|k| k.split('|').next()).unwrap_or_default().to_string();
+    let linked = crate::cloud::load_link().map(|l| l.url).ok_or_else(|| anyhow!("this Mac isn't linked to Condx Cloud"))?;
+    if linked.trim_end_matches('/') != format!("https://{deployment}.convex.cloud") {
+        bail!("the stored key is for another deployment than the one this Mac is linked to");
+    }
+    let out = Command::new("bash")
+        .arg("scripts/cloud-deploy.sh")
+        .current_dir(repo)
+        .env("CONDX_DEPLOY_ONLY", "1")
+        .env("CONDX_CLOUD_DEPLOY_KEY", key.trim())
+        .output()
+        .context("couldn't run scripts/cloud-deploy.sh")?;
+    if !out.status.success() {
+        bail!("the deploy failed:\n{}", devtool_core::redact(&tail(&out.stderr)));
+    }
+    Ok(format!("Condx Cloud deployed.\n{}", devtool_core::redact(&tail(&out.stdout))))
+}
+
 /// Publica un release: compila en esta Mac o, si no hay, lanza el del CI. Devuelve dónde y qué pasó.
 pub fn release(repo: &Path, version: &str) -> Result<String> {
     let token = crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT)?.ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?;
@@ -350,7 +379,6 @@ pub fn release(repo: &Path, version: &str) -> Result<String> {
         cmd.arg(version.trim());
     }
     let out = cmd.output().with_context(|| format!("couldn't run {script}"))?;
-    let tail = |b: &[u8]| String::from_utf8_lossy(b).lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
     if !out.status.success() {
         bail!("{why}, but {script} failed:\n{}", devtool_core::redact(&tail(&out.stderr)));
     }

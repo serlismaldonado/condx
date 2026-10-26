@@ -1,0 +1,14 @@
+name = "deploy-condx-cloud"
+title = "Deploy Condx Cloud"
+description = "Deploys cloud/ (Condx Cloud) to the Convex project this Mac is linked to, with the deploy key stored once (condxd secret set condx-cloud-key). It doesn't relink the daemon or the phones."
+kinds = ["devbox"]
+projects = true
+writes = true
+
+[approval]
+devbox = "simple"
+
+[[step]]
+name = "Deploy cloud/ to Condx Cloud"
+builtin = "condx-cloud-deploy"
+timeout_secs = 900

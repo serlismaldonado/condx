@@ -126,7 +126,16 @@ pub fn pair(text: &str, url: Option<&str>, name: &str) -> Result<Identity> {
     let key = SigningKey::from_bytes(&seed);
     let token = crate::cloud::random_hex(32)?;
     let enc = age::x25519::Identity::generate();
-    let v = call(&url, "mutation", "pairing:claim", json!({ "code": code, "publicKey": hex(key.verifying_key().as_bytes()), "token": token, "name": name, "encryptionKey": enc.to_public().to_string(), "kind": "site" }))?;
+    let mut args = json!({ "code": code, "publicKey": hex(key.verifying_key().as_bytes()), "token": token, "name": name, "encryptionKey": enc.to_public().to_string(), "kind": "site" });
+    // Un Condx Cloud anterior no conoce `kind` (rechaza los argumentos antes de tocar el código): se
+    // reclama como un teléfono y la Mac lo muestra entre ellos hasta que se despliegue el nuevo.
+    let v = match call(&url, "mutation", "pairing:claim", args.clone()) {
+        Ok(v) => v,
+        Err(_) => {
+            args.as_object_mut().unwrap().remove("kind");
+            call(&url, "mutation", "pairing:claim", args)?
+        }
+    };
     let id = Identity {
         url: url.trim_end_matches('/').to_string(),
         daemon_id: v["daemonId"].as_str().context("unexpected answer")?.to_string(),

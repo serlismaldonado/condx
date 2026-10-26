@@ -201,11 +201,13 @@ struct Session {
     cloning: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, i64>>>,
 }
 
-/// Un mensaje de teléfono que el sitio está contestando.
+/// Un mensaje de teléfono que el sitio está contestando: en qué fila va la respuesta (un hilo nuevo ya
+/// es su `site-…`), lo que había antes en el hilo, el mensaje y lo último que se publicó.
 struct Answering {
     row: String,
-    request_id: String,
+    base: Vec<Value>,
     user: Value,
+    shown: Value,
 }
 
 fn open(id: &Identity, rt: tokio::runtime::Handle) -> Result<Session> {
@@ -316,25 +318,106 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
                 let at = v.get("requestedAt").and_then(Value::as_i64).unwrap_or_else(now_ms);
                 let user = json!({ "kind": "user", "author": null, "at": at, "text": req.arg.trim() });
                 tracing::info!("site: answering a phone message on {id}");
-                s.answering.insert(run["id"].as_str().unwrap_or_default().to_string(), Answering { row: id.to_string(), request_id: request_id.to_string(), user });
+                // Enseguida, como la Mac: el mensaje recibido (se va el «Sending…») y la respuesta pensando.
+                match take(s, id, request_id, user, v) {
+                    Ok(a) => {
+                        s.answering.insert(run["id"].as_str().unwrap_or_default().to_string(), a);
+                    }
+                    Err(e) => tracing::warn!("site: couldn't take the message on {id}: {e:#}"),
+                }
             }
             Err(e) => tracing::warn!("site: couldn't start an agent for {id}: {e:#}"),
         }
     }
-    // Las corridas que terminaron: la respuesta a su hilo.
-    let done: Vec<(String, Value)> = s.answering.keys().filter_map(|run_id| state.store.agent_run(run_id).ok().flatten().filter(|r| r["status"] != "running").map(|r| (run_id.clone(), r))).collect();
-    for (run_id, run) in done {
-        let Some(a) = s.answering.shift_remove(&run_id) else { continue };
-        let text = match run["status"].as_str() {
-            Some("done") => run["answer"].as_str().unwrap_or("").trim().to_string(),
-            Some(st) => format!("The agent {st}: {}", run["error"].as_str().unwrap_or("no details")),
+    // Las corridas en marcha: su avance en vivo (texto a medias, qué hace); las que terminaron, la
+    // respuesta final.
+    let runs: Vec<String> = s.answering.keys().cloned().collect();
+    for run_id in runs {
+        let Some(run) = state.store.agent_run(&run_id).ok().flatten() else { continue };
+        let at = s.answering[&run_id].user["at"].as_i64().unwrap_or(0);
+        let (reply, done) = match run["status"].as_str() {
+            Some("running") => (crate::threads::live_item(&run, SITE_AUTHOR, SITE_LOGO, at).unwrap_or_else(|| thinking(at)), false),
+            Some("done") => (json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": SITE_LOGO, "at": now_ms(), "text": run["answer"].as_str().unwrap_or("").trim() }), true),
+            Some(st) => (json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": SITE_LOGO, "at": now_ms(), "text": format!("The agent {st}: {}", run["error"].as_str().unwrap_or("no details")) }), true),
             None => continue,
         };
-        let reply = json!({ "kind": "reply", "author": "Cloud site", "at": now_ms(), "text": text });
-        if let Err(e) = write_answer(s, &a, reply) {
-            tracing::warn!("site: couldn't write the answer on {}: {e:#}", a.row);
+        if !done && s.answering[&run_id].shown == reply {
+            continue;
+        }
+        let a = if done { s.answering.shift_remove(&run_id) } else { None };
+        let row = a.as_ref().map(|a| a.row.clone()).unwrap_or_else(|| s.answering[&run_id].row.clone());
+        let mut items = a.as_ref().map(|a| a.base.clone()).unwrap_or_else(|| s.answering[&run_id].base.clone());
+        items.push(a.as_ref().map(|a| a.user.clone()).unwrap_or_else(|| s.answering[&run_id].user.clone()));
+        items.push(reply.clone());
+        if let Err(e) = publish(s, &row, items, done) {
+            tracing::warn!("site: couldn't write the answer on {row}: {e:#}");
+        }
+        if let Some(a) = s.answering.get_mut(&run_id) {
+            a.shown = reply;
         }
     }
+}
+
+const SITE_AUTHOR: &str = "Cloud site";
+const SITE_LOGO: &str = "minimax";
+
+/// La respuesta mientras el agente todavía no escribió nada.
+fn thinking(at: i64) -> Value {
+    json!({ "at": at + 1, "kind": "reply", "live": true, "author": SITE_AUTHOR, "logo": SITE_LOGO, "activity": "Thinking…", "text": "" })
+}
+
+/// Toma un mensaje: lo marca recibido y publica el mensaje con la respuesta pensando. Un hilo pedido
+/// con «New thread» se crea ya como `site-…` (el teléfono lo abre enseguida).
+fn take(s: &mut Session, id: &str, request_id: &str, user: Value, v: &Values) -> Result<Answering> {
+    let now = now_ms();
+    let list = |k: &str| v.get(k).and_then(Value::as_str).and_then(|t| serde_json::from_str::<Vec<Value>>(t).ok()).unwrap_or_default();
+    let at = user["at"].as_i64().unwrap_or(now);
+    let items = |base: &[Value]| json!(Value::Array(base.iter().cloned().chain([user.clone(), thinking(at)]).collect()).to_string());
+    let mut set = Values::new();
+    let (row, base, drafts) = if id == crate::cloud::NEW_ROW {
+        let row = format!("site-{}", crate::cloud::random_hex(6)?);
+        let title: String = user["text"].as_str().unwrap_or("Chat").chars().take(60).collect();
+        let participants = json!([{ "node": "agent", "name": SITE_AUTHOR, "logo": SITE_LOGO }]).to_string();
+        let mut new = Values::new();
+        for (k, val) in [("title", json!(title)), ("kind", json!("chat")), ("status", json!("running")), ("updatedAt", json!(now)), ("items", items(&[])), ("participants", json!(participants)), ("waitingAnswer", json!(false))] {
+            new.insert(k.into(), val);
+        }
+        set.insert("siteFor".into(), json!(request_id));
+        set.insert("siteResult".into(), json!(format!("thread {row}")));
+        let drafts = vec![OpDraft::create(&s.threads_scope, new).with_row(&row), OpDraft::patch(&s.threads_scope, crate::cloud::NEW_ROW, set)];
+        (row, vec![], drafts)
+    } else if id.starts_with("site-") {
+        let base = list("items");
+        set.insert("items".into(), items(&base));
+        set.insert("status".into(), json!("running"));
+        set.insert("updatedAt".into(), json!(now));
+        set.insert("result".into(), json!("sent to Cloud site"));
+        set.insert("resultFor".into(), json!(request_id));
+        (id.to_string(), base, vec![OpDraft::patch(&s.threads_scope, id, set)])
+    } else {
+        let base = list("siteItems");
+        set.insert("siteItems".into(), items(&base));
+        set.insert("siteFor".into(), json!(request_id));
+        (id.to_string(), base, vec![OpDraft::patch(&s.threads_scope, id, set)])
+    };
+    s.engine.commit(drafts, now).map_err(|e| anyhow!("{e}"))?;
+    Ok(Answering { row, base, user: user.clone(), shown: thinking(at) })
+}
+
+/// Publica el hilo con la respuesta (en vivo o final): en un hilo del sitio, como la Mac en los suyos;
+/// en uno de la Mac, aparte (`siteItems`).
+fn publish(s: &mut Session, row: &str, items: Vec<Value>, done: bool) -> Result<()> {
+    let now = now_ms();
+    let mut set = Values::new();
+    if row.starts_with("site-") {
+        set.insert("items".into(), json!(Value::Array(items).to_string()));
+        set.insert("status".into(), json!(if done { "done" } else { "running" }));
+        set.insert("updatedAt".into(), json!(now));
+    } else {
+        set.insert("siteItems".into(), json!(Value::Array(items).to_string()));
+    }
+    s.engine.commit(vec![OpDraft::patch(&s.threads_scope, row, set)], now).map_err(|e| anyhow!("{e}"))?;
+    Ok(())
 }
 
 /// Los proyectos de la Mac (`_projects`) que el sitio todavía no tiene: los clona en segundo plano
@@ -442,45 +525,6 @@ fn transcript(v: &Values) -> String {
         .map(|i| format!("{}: {}", if i["kind"] == "user" { "User" } else { i["author"].as_str().unwrap_or("Agent") }, i["text"].as_str().unwrap_or("").chars().take(2000).collect::<String>()))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// Escribe la respuesta: en un hilo del sitio, como la Mac en los suyos; en un hilo de la Mac, aparte
-/// (`siteItems`, `siteFor`); un hilo nuevo se crea como `site-…` y `_new` dice cuál.
-fn write_answer(s: &mut Session, a: &Answering, reply: Value) -> Result<()> {
-    let now = now_ms();
-    let rows = s.engine.rows(&s.threads_scope);
-    let row = rows.iter().find(|r| r.row.id == a.row).map(|r| r.row.values.clone()).unwrap_or_default();
-    let list = |k: &str| row.get(k).and_then(Value::as_str).and_then(|t| serde_json::from_str::<Vec<Value>>(t).ok()).unwrap_or_default();
-    let mut set = Values::new();
-    let drafts = if a.row == crate::cloud::NEW_ROW {
-        let id = format!("site-{}", crate::cloud::random_hex(6)?);
-        let title: String = a.user["text"].as_str().unwrap_or("Chat").chars().take(60).collect();
-        let participants = json!([{ "node": "agent", "name": "Cloud site", "logo": "minimax" }]).to_string();
-        let mut new = Values::new();
-        for (k, v) in [("title", json!(title)), ("kind", json!("chat")), ("status", json!("done")), ("updatedAt", json!(now)), ("items", json!(json!([a.user, reply]).to_string())), ("participants", json!(participants)), ("waitingAnswer", json!(false))] {
-            new.insert(k.into(), v);
-        }
-        set.insert("siteFor".into(), json!(a.request_id));
-        set.insert("siteResult".into(), json!(format!("thread {id}")));
-        vec![OpDraft::create(&s.threads_scope, new).with_row(&id), OpDraft::patch(&s.threads_scope, crate::cloud::NEW_ROW, set)]
-    } else if a.row.starts_with("site-") {
-        let mut items = list("items");
-        items.extend([a.user.clone(), reply]);
-        set.insert("items".into(), json!(Value::Array(items).to_string()));
-        set.insert("status".into(), json!("done"));
-        set.insert("updatedAt".into(), json!(now));
-        set.insert("result".into(), json!("sent to Cloud site"));
-        set.insert("resultFor".into(), json!(a.request_id));
-        vec![OpDraft::patch(&s.threads_scope, &a.row, set)]
-    } else {
-        let mut items = list("siteItems");
-        items.extend([a.user.clone(), reply]);
-        set.insert("siteItems".into(), json!(Value::Array(items).to_string()));
-        set.insert("siteFor".into(), json!(a.request_id));
-        vec![OpDraft::patch(&s.threads_scope, &a.row, set)]
-    };
-    s.engine.commit(drafts, now).map_err(|e| anyhow!("{e}"))?;
-    Ok(())
 }
 
 /// Si el sitio se detiene: sin trabajo media hora, o dos minutos si la Mac está latiendo (ella atiende).
@@ -593,8 +637,9 @@ pub fn spawn(state: Shared) {
                             Ok(data) => state.set_probe("site", true, data, None),
                             Err(e) => state.set_probe("site", false, Value::Null, Some(format!("{e:#}"))),
                         }
-                        // Lo que cambie en la nube despierta enseguida (el timbre en vivo).
-                        s.bell.wait(Duration::from_secs(30));
+                        // Lo que cambie en la nube despierta enseguida (el timbre en vivo); contestando, el
+                        // avance del agente se publica cada segundo y medio.
+                        s.bell.wait(if s.answering.is_empty() { Duration::from_secs(30) } else { Duration::from_millis(1500) });
                         Duration::ZERO
                     }
                 };

@@ -90,6 +90,22 @@ pub fn get(path: &str) -> Result<Value> {
             json!(s.incidents.iter().filter(|i| (i["status"] == "resolved") == resolved).cloned().collect::<Vec<_>>())
         }),
         ["agents"] => with(|s| s.agents.clone()),
+        ["sdk"] => json!({ "endpoint": "https://condx.example.com", "keys": [
+            { "project": "my-app", "publicKey": "ck_pub_3f9a1c0e7b2d4f8a9c6e5d4b3a2f1e0d9c8b7a6f5e4d3c2b", "createdAt": now() - 72 * HOUR, "revoked": false },
+            { "project": "my-app", "publicKey": "ck_pub_0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071", "createdAt": now() - 960 * HOUR, "revoked": true },
+        ] }),
+        ["agents", "outcomes"] => json!({ "days": 30,
+            "agents": [
+                { "id": "triage", "name": "Triage", "runs": 42, "okRate": 95.0, "avgTokens": 6100, "cost": 1.84, "avgMinutes": 0.8, "changes": 0, "discarded": 0 },
+                { "id": "risk", "name": "Risk", "runs": 40, "okRate": 100.0, "avgTokens": 4200, "cost": 1.12, "avgMinutes": 0.5, "changes": 0, "discarded": 0 },
+                { "id": "fixer", "name": "Fixer", "runs": 9, "okRate": 78.0, "avgTokens": 38000, "cost": 4.90, "avgMinutes": 6.2, "changes": 7, "discarded": 2 },
+                { "id": "reviewer", "name": "Reviewer", "runs": 7, "okRate": 100.0, "avgTokens": 9100, "cost": 0.66, "avgMinutes": 1.1, "changes": 0, "discarded": 0 },
+                { "id": "mode:chat", "name": "Chats", "runs": 15, "okRate": 100.0, "avgTokens": 11000, "cost": 1.70, "avgMinutes": 0.9, "changes": 0, "discarded": 0 },
+            ],
+            "flows": [
+                { "id": "w-triage", "name": "Triage an error, notify if risky", "runs": 31, "okRate": 97.0, "fromEvents": 31, "tokens": 320000, "cost": 2.96, "fixes": 0, "deployed": 0 },
+                { "id": "w-fix", "name": "Fix an error", "runs": 9, "okRate": 67.0, "fromEvents": 9, "tokens": 610000, "cost": 6.21, "fixes": 7, "deployed": 4 },
+            ] }),
         ["agents", "roles"] => json!({ "roles": [
             { "id": "triage", "name": "Triage", "enabled": true, "mode": "read", "instructions": "You triage an error: where it happens and the most likely cause.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": { "summary": "string", "where": "list", "likely_cause": "string", "confidence": "low|medium|high" }, "builtin": true },
             { "id": "risk", "name": "Risk", "enabled": true, "mode": "read", "instructions": "You rate the risk of a triaged error, what to check and whether it needs a fix now.", "tools": [], "maxTokens": 80000, "maxMinutes": 10, "output": { "risk": "low|medium|high|critical", "impact": "string", "check": "list", "immediate_fix": "boolean", "reason": "string" }, "builtin": true },
@@ -174,6 +190,7 @@ pub fn post(path: &str, body: Value) -> Result<Value> {
         }),
         ["agent-chats"] => demo_chat(),
         ["tasks"] => json!({ "id": "ev-demo-task", "status": "running", "runs": ["r-w-triage"] }),
+        ["sdk", "keys"] => json!({ "endpoint": "https://condx.example.com", "project": body["project"].as_str().unwrap_or(PROJECT), "publicKey": "ck_pub_7e6d5c4b3a291807f6e5d4c3b2a1908f7e6d5c4b3a291807", "secret": "ck_sec_demo-only-not-a-real-secret-0000000000000000000" }),
         ["threads", _, "message"] => json!({ "to": "explainer" }),
         ["agent-runs", "chat-demo-1", _] => demo_chat(),
         ["agent-runs", _, _] => demo_run(),

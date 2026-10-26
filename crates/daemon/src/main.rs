@@ -22,6 +22,7 @@ mod probes;
 mod recipes;
 mod native;
 mod notify;
+mod outcomes;
 mod procs;
 mod projects;
 mod frontend;

@@ -480,6 +480,10 @@ async fn post_agent_templates_reset(AxState(state): AxState<Shared>, Extension(c
     }
 }
 
+async fn get_agent_outcomes(AxState(state): AxState<Shared>) -> Response {
+    Json(crate::outcomes::json(&state)).into_response()
+}
+
 async fn get_agent_roles(AxState(state): AxState<Shared>) -> Response {
     Json(crate::roles::json(&state)).into_response()
 }
@@ -1242,6 +1246,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agents/templates/reset", post(post_agent_templates_reset))
         .route("/api/agents/templates/{id}", delete(delete_agent_template))
         .route("/api/agents/roles", get(get_agent_roles).post(post_agent_role))
+        .route("/api/agents/outcomes", get(get_agent_outcomes))
         .route("/api/agents/roles/reset", post(post_agent_roles_reset))
         .route("/api/agents/roles/{id}", delete(delete_agent_role))
         .route("/api/agent-runs", get(get_agent_runs))

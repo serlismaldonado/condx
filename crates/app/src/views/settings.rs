@@ -68,7 +68,7 @@ pub fn render(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devtoo
                     .child(ui::kv(t!("Daemon"), ui::mono(app.daemon.as_ref().map(|d| d.base.clone()).unwrap_or_else(|| t!("not connected").to_string())), cx)),
             ),
         SettingsTab::Data => data_rules(app, cx),
-        SettingsTab::Agents => v_flex().gap_3().child(super::agent_settings::card(app, window, cx)).child(super::agent_roles::card(app, window, cx)),
+        SettingsTab::Agents => v_flex().gap_3().child(super::agent_settings::card(app, window, cx)).child(super::agent_roles::card(app, window, cx)).child(super::agent_outcomes::card(app, cx)),
         SettingsTab::Connect => agents(app, cx),
         SettingsTab::Cloud => super::cloud::card(app, window, cx),
         SettingsTab::Sdk => super::sdk::card(app, window, cx),

@@ -318,6 +318,8 @@ pub struct DevtoolApp {
     pub agents: Option<Value>,
     /// El catálogo de agentes para flujos (views::agent_roles) y el que se edita.
     pub agent_roles: Option<Value>,
+    /// Configuración → Agentes → cómo les va (views::agent_outcomes).
+    pub outcomes: Option<Load>,
     /// Configuración → Condx SDK: llaves de ingesta y la recién creada (su secreta solo se ve una vez).
     pub sdk: Option<Load>,
     pub sdk_new: Option<Value>,
@@ -494,6 +496,7 @@ impl DevtoolApp {
             agent_run: None,
             agent_run_at: 0,
             agent_roles: None,
+            outcomes: None,
             sdk: None,
             sdk_new: None,
             sdk_error: None,

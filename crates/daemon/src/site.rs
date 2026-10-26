@@ -312,21 +312,31 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
             t => format!("(Earlier in this conversation:)\n{t}\n\n(New message from {}:)\n{text}", req.device.name),
         };
         let project = v.get("project").and_then(Value::as_str).map(str::to_string);
+        let at = v.get("requestedAt").and_then(Value::as_i64).unwrap_or_else(now_ms);
+        let user = json!({ "kind": "user", "author": null, "at": at, "text": req.arg.trim() });
+        tracing::info!("site: answering a phone message on {id}");
+        // Primero, como la Mac: el mensaje recibido (✓✓ en el teléfono) y la respuesta pensando; el
+        // agente arranca después (si el host está frío tarda unos segundos).
+        let a = match take(s, id, request_id, user, v) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!("site: couldn't take the message on {id}: {e:#}");
+                continue;
+            }
+        };
+        // Sale ya (sin esperar a la próxima vuelta).
+        let _ = crate::cloud::block_on(sync_once(&mut s.engine, &s.transport, now_ms, 50));
         let _rt = s.rt.enter();
         match s.rt.block_on(crate::agent_host::start_chat(state, &prompt, project.as_deref(), &format!("phone:{}", req.device.name))) {
             Ok(run) => {
-                let at = v.get("requestedAt").and_then(Value::as_i64).unwrap_or_else(now_ms);
-                let user = json!({ "kind": "user", "author": null, "at": at, "text": req.arg.trim() });
-                tracing::info!("site: answering a phone message on {id}");
-                // Enseguida, como la Mac: el mensaje recibido (se va el «Sending…») y la respuesta pensando.
-                match take(s, id, request_id, user, v) {
-                    Ok(a) => {
-                        s.answering.insert(run["id"].as_str().unwrap_or_default().to_string(), a);
-                    }
-                    Err(e) => tracing::warn!("site: couldn't take the message on {id}: {e:#}"),
-                }
+                s.answering.insert(run["id"].as_str().unwrap_or_default().to_string(), a);
             }
-            Err(e) => tracing::warn!("site: couldn't start an agent for {id}: {e:#}"),
+            Err(e) => {
+                tracing::warn!("site: couldn't start an agent for {id}: {e:#}");
+                let failed = json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": SITE_LOGO, "at": now_ms(), "text": format!("Couldn't start an agent on the cloud site: {e:#}") });
+                let items: Vec<Value> = a.base.iter().cloned().chain([a.user.clone(), failed]).collect();
+                let _ = publish(s, &a.row, items, true);
+            }
         }
     }
     // Las corridas en marcha: su avance en vivo (texto a medias, qué hace); las que terminaron, la

@@ -39,7 +39,8 @@ fn slug(dir: &Path) -> Option<(String, String)> {
 
 /// Una llamada a la API de GitHub probando cada token hasta que uno vea el repo.
 fn call(method: &str, path: &str, body: Option<Value>) -> Result<Value> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
+    // Un repo renombrado redirige: el token se conserva dentro de api.github.com.
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).redirect_auth_headers(ureq::RedirectAuthHeaders::SameHost).build();
     let mut last = anyhow!("there's no GitHub token (condxd secret set github-token)");
     for token in tokens() {
         let req = agent.request(method, &format!("{}{path}", api())).set("Authorization", &format!("Bearer {token}")).set("Accept", "application/vnd.github+json").set("User-Agent", "condx");
@@ -87,10 +88,27 @@ fn head_branch(owner: &str, repo: &str) -> Option<String> {
 /// GitHub o no tiene rama de desarrollo.
 pub fn preview(dir: &Path) -> Value {
     let Some((owner, repo)) = slug(dir) else { return Value::Null };
-    let Ok(info) = call("GET", &format!("/repos/{owner}/{repo}"), None) else { return Value::Null };
+    let info = match call("GET", &format!("/repos/{owner}/{repo}"), None) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::info!("promote: {owner}/{repo}: {e:#}");
+            return Value::Null;
+        }
+    };
+    // Un repo renombrado: la API redirige; se sigue con el nombre actual.
+    let (owner, repo) = info["full_name"].as_str().and_then(|f| f.split_once('/')).map(|(o, r)| (o.to_string(), r.to_string())).unwrap_or((owner, repo));
     let base = info["default_branch"].as_str().unwrap_or("main").to_string();
-    let Some(head) = head_branch(&owner, &repo) else { return Value::Null };
-    let Ok(cmp) = call("GET", &format!("/repos/{owner}/{repo}/compare/{base}...{head}"), None) else { return Value::Null };
+    let Some(head) = head_branch(&owner, &repo) else {
+        tracing::info!("promote: {owner}/{repo} has no dev branch");
+        return Value::Null;
+    };
+    let cmp = match call("GET", &format!("/repos/{owner}/{repo}/compare/{base}...{head}"), None) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::info!("promote: {owner}/{repo} compare: {e:#}");
+            return Value::Null;
+        }
+    };
     let commits: Vec<Value> = cmp["commits"]
         .as_array()
         .into_iter()
@@ -132,8 +150,8 @@ pub fn preview_cached(dir: &Path) -> Value {
 /// Fusiona la rama de desarrollo en la principal (abre el PR si no hay uno). No fusiona si el CI
 /// falló o sigue corriendo. Devuelve qué hizo.
 pub fn merge(dir: &Path, by: &str) -> Result<String> {
-    let (owner, repo) = slug(dir).ok_or_else(|| anyhow!("the repo isn't on GitHub"))?;
     let p = preview(dir);
+    let (owner, repo) = p["repo"].as_str().and_then(|r| r.split_once('/')).map(|(o, r)| (o.to_string(), r.to_string())).or_else(|| slug(dir)).ok_or_else(|| anyhow!("the repo isn't on GitHub"))?;
     if p.is_null() {
         bail!("{owner}/{repo} has no dev branch on GitHub to pass to production");
     }

@@ -366,6 +366,47 @@ pub fn deploy_cloud(repo: &Path) -> Result<String> {
     Ok(format!("Condx Cloud deployed.\n{}", devtool_core::redact(&tail(&out.stdout))))
 }
 
+/// Variables del deployment de Condx Cloud (`npx convex env set`) con la deploy key guardada: los
+/// valores van por stdin del CLI, no en la línea de comandos.
+pub fn set_cloud_env(repo: &Path, vars: &[(&str, &str)]) -> Result<()> {
+    let key = crate::secrets::get(CLOUD_KEY)?.ok_or_else(|| anyhow!("there's no Condx Cloud deploy key (condxd secret set condx-cloud-key, once)"))?;
+    let cli = repo.join("cloud/node_modules/.bin/convex");
+    if !cli.exists() {
+        bail!("there's no Convex CLI at {} (pass --repo, or run bun install in cloud/)", cli.display());
+    }
+    // Desde una carpeta vacía: el `.env.local` de `cloud/` apunta al backend de prueba y la key
+    // decide a qué deployment va.
+    let dir = std::env::temp_dir().join(format!("condx-env-{}", crate::cloud::random_hex(6)?));
+    std::fs::create_dir_all(&dir)?;
+    let res = set_vars(&cli, &dir, key.trim(), vars);
+    let _ = std::fs::remove_dir_all(&dir);
+    res
+}
+
+fn set_vars(cli: &Path, dir: &Path, key: &str, vars: &[(&str, &str)]) -> Result<()> {
+    for (name, value) in vars {
+        use std::io::Write;
+        let mut child = Command::new(cli)
+            .args(["env", "set", name])
+            .current_dir(dir)
+            .env_remove("CONVEX_SELF_HOSTED_URL")
+            .env_remove("CONVEX_SELF_HOSTED_ADMIN_KEY")
+            .env_remove("CONVEX_DEPLOYMENT")
+            .env("CONVEX_DEPLOY_KEY", key)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .context("couldn't run convex env set")?;
+        child.stdin.take().context("no stdin")?.write_all(value.as_bytes())?;
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            bail!("couldn't set {name}:\n{}", devtool_core::redact(&tail(&out.stderr)));
+        }
+    }
+    Ok(())
+}
+
 /// Publica un release: compila en esta Mac o, si no hay, lanza el del CI. Devuelve dónde y qué pasó.
 pub fn release(repo: &Path, version: &str) -> Result<String> {
     let token = crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT)?.ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?;

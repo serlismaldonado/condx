@@ -82,6 +82,7 @@ Usage:
   condxd cloud link --url <URL> [--name N] [--site URL]   links to Condx Cloud (reads an admin or deploy key from stdin, once)
   condxd cloud site <https://…> | --clear     custom domain for the QR, /pair, /ingest and /files
   condxd cloud status | unlink
+  condxd cloud boat <sandbox id> [--repo R]   Condx Cloud wakes the cloud site on boat (boat key from stdin)
   condxd serve --site cloud   the cloud site (Linux): no production, secrets in files
   condxd site pair <the QR’s text or link> [--url U] [--name N]   pairs the cloud site like a phone
   condxd site status | unpair
@@ -647,6 +648,22 @@ fn stop_service(domain: &str, label: &str) {
 
 fn cloud_cmd(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
+        // El sitio en boat: Condx Cloud lo despierta cuando la Mac no está. Pone BOAT_SANDBOX_ID y
+        // BOAT_API_KEY en el deployment con la deploy key guardada (`secret set condx-cloud-key`).
+        Some("boat") => {
+            let sandbox = args.get(1).filter(|a| !a.starts_with("--")).context("use: condxd cloud boat <sandbox id> (the boat key comes from stdin)")?;
+            let repo = flag(args, "--repo").map(std::path::PathBuf::from).unwrap_or_else(|| config::user_home().join("Documents/Software/condx"));
+            eprintln!("Paste the boat API key for Condx Cloud (boat_…, scoped to this sandbox: sandbox.read,sandbox.resume) and press Enter (it isn't shown):");
+            let mut key = String::new();
+            std::io::stdin().read_line(&mut key)?;
+            let key = key.trim();
+            if !key.starts_with("boat_") || key.contains(char::is_whitespace) {
+                bail!("that doesn't look like a boat API key (boat_…)");
+            }
+            update::set_cloud_env(&repo, &[("BOAT_SANDBOX_ID", sandbox), ("BOAT_API_KEY", key)])?;
+            println!("Condx Cloud wakes boat sandbox {sandbox} when a phone writes and the Mac is away.");
+            Ok(())
+        }
         Some("link") => {
             let url = flag(args, "--url").context("missing --url (the Condx Cloud deployment URL)")?;
             let name = flag(args, "--name").unwrap_or_else(|| "Condx".into());

@@ -31,10 +31,6 @@ pub fn current() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-fn releases() -> String {
-    std::env::var("CONDX_RELEASES_URL").unwrap_or_else(|_| format!("https://github.com/{REPO}/releases/latest/download"))
-}
-
 /// `1.2.3` mayor que `1.2.0` (sin sufijos: los releases son `vX.Y.Z`).
 pub fn newer(candidate: &str, than: &str) -> bool {
     let parse = |v: &str| v.trim_start_matches('v').split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
@@ -70,14 +66,42 @@ fn get(url: &str, limit: u64) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// El último release firmado, si es más nuevo que este daemon.
-pub fn latest() -> Result<Option<Value>> {
-    let base = releases();
+/// La versión del último release según la API de GitHub (al día; el enlace «latest/download» sale
+/// de una caché que tarda minutos en cambiar después de publicar).
+fn latest_version() -> Result<String> {
+    if let Ok(base) = std::env::var("CONDX_RELEASES_URL") {
+        let m: Value = serde_json::from_slice(&get(&format!("{base}/manifest.json"), 64 * 1024)?)?;
+        return Ok(m["version"].as_str().unwrap_or_default().to_string());
+    }
+    let mut req = ureq::get(&format!("https://api.github.com/repos/{REPO}/releases/latest")).timeout(Duration::from_secs(20)).set("Accept", "application/vnd.github+json").set("User-Agent", "condx");
+    if let Some(t) = crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT).ok().flatten() {
+        req = req.set("Authorization", &format!("Bearer {}", t.trim()));
+    }
+    let r: Value = req.call().map_err(|e| anyhow!("couldn't ask GitHub for the latest release: {e}"))?.into_json()?;
+    Ok(r["tag_name"].as_str().unwrap_or_default().trim_start_matches('v').to_string())
+}
+
+/// El manifiesto firmado de una versión (su propio enlace, sin caché de «latest»).
+fn manifest_of(version: &str) -> Result<Value> {
+    let base = std::env::var("CONDX_RELEASES_URL").unwrap_or_else(|_| format!("https://github.com/{REPO}/releases/download/v{version}"));
     let manifest = get(&format!("{base}/manifest.json"), 64 * 1024)?;
     let sig = get(&format!("{base}/manifest.json.sig"), 1024)?;
-    let m = verify(&manifest, &sig)?;
+    verify(&manifest, &sig)
+}
+
+/// El último release firmado (o `version`, recién publicado), si es más nuevo que este daemon.
+pub fn latest_or(version: Option<&str>) -> Result<Option<Value>> {
+    let v = match version {
+        Some(v) => v.to_string(),
+        None => latest_version()?,
+    };
+    if v.is_empty() || !newer(&v, current()) {
+        return Ok(None);
+    }
+    let m = manifest_of(&v)?;
     Ok(newer(m["version"].as_str().unwrap_or("0"), current()).then_some(m))
 }
+
 
 fn saved(state: &Shared) -> Value {
     state.store.probes().ok().and_then(|l| l.into_iter().find(|(k, _)| k == STATE_KEY)).map(|(_, v)| v).unwrap_or(json!({}))
@@ -91,7 +115,12 @@ pub fn status(state: &Shared) -> Value {
 
 /// Revisa y, si hay una versión nueva que no se ofreció, pide la aprobación para instalarla.
 pub async fn check(state: &Shared) -> Result<Value> {
-    let found = tokio::task::spawn_blocking(latest).await??;
+    check_for(state, None).await
+}
+
+/// Como `check`, para una versión que se acaba de publicar (sin esperar a que GitHub la dé como la última).
+pub async fn check_for(state: &Shared, version: Option<String>) -> Result<Value> {
+    let found = tokio::task::spawn_blocking(move || latest_or(version.as_deref())).await??;
     let mut s = saved(state);
     s["checkedAt"] = json!(crate::store::now_ms());
     s["available"] = found.clone().unwrap_or(Value::Null);
@@ -155,10 +184,7 @@ pub fn apply(version: &str) -> Result<String> {
     use sha2::{Digest, Sha256};
     // El manifiesto de esa versión (no el de «latest»: GitHub lo sirve desde una caché que puede
     // seguir en la anterior unos minutos después de publicar).
-    let base = std::env::var("CONDX_RELEASES_URL").unwrap_or_else(|_| format!("https://github.com/{REPO}/releases/download/v{version}"));
-    let manifest = get(&format!("{base}/manifest.json"), 64 * 1024)?;
-    let sig = get(&format!("{base}/manifest.json.sig"), 1024)?;
-    let m = verify(&manifest, &sig)?;
+    let m = manifest_of(version)?;
     if m["version"].as_str() != Some(version) {
         bail!("the latest release is {}, not {version}", m["version"].as_str().unwrap_or("?"));
     }

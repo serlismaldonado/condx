@@ -843,10 +843,13 @@ async fn builtin_step(
         "condx-release" => {
             let version = job.args.get("version").cloned().unwrap_or_default();
             let repo = crate::update::condx_repo(state).ok_or_else(|| anyhow!("there's no Condx repo (set Mayer's repos)"))?;
-            let done = tokio::task::spawn_blocking(move || crate::update::release(&repo, &version)).await.map_err(|e| anyhow!(e.to_string()))??;
-            // Hecho aquí: el release ya está publicado; se ofrece enseguida como actualización.
+            let r = repo.clone();
+            let done = tokio::task::spawn_blocking(move || crate::update::release(&r, &version)).await.map_err(|e| anyhow!(e.to_string()))??;
+            // Hecho aquí: el release ya está publicado; se ofrece enseguida como actualización (esa
+            // versión, sin esperar a que GitHub la dé como la última).
             if done.starts_with("built on this Mac") {
-                let _ = crate::update::check(state).await;
+                let released = std::fs::read_to_string(repo.join("Cargo.toml")).ok().and_then(|t| t.lines().find(|l| l.starts_with("version")).and_then(|l| l.split('"').nth(1)).map(str::to_string));
+                let _ = crate::update::check_for(state, released).await;
             }
             Ok(done)
         }

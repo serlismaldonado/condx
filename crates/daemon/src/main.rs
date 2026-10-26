@@ -6,6 +6,7 @@ mod agent_host;
 mod agents;
 mod attachments;
 mod auth;
+mod bell;
 mod cloud;
 mod cmd;
 mod connections;

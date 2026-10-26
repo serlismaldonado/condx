@@ -28,12 +28,11 @@ const TICK: Duration = Duration::from_secs(3);
 /// Después de un pedido de un teléfono, se mira más seguido un rato (alguien está usando la app).
 const BUSY_TICK: Duration = Duration::from_secs(1);
 const BUSY_FOR_MS: i64 = 30_000;
-/// Sin un teléfono con la app abierta, el timbre (¿cambió algo en la nube?) suena cada 30 s en vez de
-/// cada vuelta: lo de aquí sube igual enseguida, y lo que mande un teléfono llega con la app abierta.
-const IDLE_RING_MS: i64 = 30_000;
-/// La app avisa que está abierta cada minuto (`seenAt` en la fila `_new`); sin aviso en este rato, se
-/// da por cerrada.
-const PHONE_AWAY_MS: i64 = 90_000;
+/// El timbre (¿cambió algo en la nube?) va en vivo: una suscripción de Convex que suena cuando un
+/// teléfono escribe (`bell.rs`). Por HTTP, solo cada minuto por las dudas, o cada 15 s si el socket
+/// no anda.
+const SAFETY_RING_MS: i64 = 60_000;
+const FALLBACK_RING_MS: i64 = 15_000;
 const RECENT_JOBS: usize = 50;
 /// Campos que el daemon escribe en cada alcance (los demás son de otros: el teléfono).
 /// Sin la hora de la última revisión: cambiaba cada 30 s y nadie la lee (cuatro escrituras por vuelta).
@@ -1019,9 +1018,10 @@ struct Session {
     again: bool,
     busy_until: i64,
     thread_results: IndexMap<String, (String, String)>,
-    /// Cuándo sonó el timbre, y el último aviso de app abierta con la hora (de esta Mac) en que cambió.
+    /// El timbre en vivo, el token para abrirlo y cuándo sonó por HTTP.
+    bell: Option<crate::bell::Bell>,
+    token: String,
     rung_at: i64,
-    phone_seen: (Option<Value>, i64),
 }
 
 fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<Session> {
@@ -1051,7 +1051,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, rung_at: 0, phone_seen: (None, 0) })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0 })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -1170,19 +1170,24 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     }
     let mut error = None;
     let ring: Vec<String> = s.scopes.iter().cloned().chain(std::iter::once(s.events_scope.clone())).collect();
-    if ring_due(now, s.rung_at, s.busy_until, s.phone_seen.1) {
+    let bell = s.bell.get_or_insert_with(|| crate::bell::Bell::start(&s.link.url, &s.token, &ring, localfirst_core::PROTOCOL_VERSION));
+    let rung = if ring_due(now, s.rung_at, bell.is_live()) {
+        bell.take();
         s.rung_at = now;
-        match s.transport.doorbell(&ring, localfirst_core::PROTOCOL_VERSION) {
-            Ok(Doorbell::Versions(v)) => s.engine.on_doorbell(&v, now).map_err(|e| anyhow::anyhow!("{e}"))?,
-            Ok(Doorbell::UpgradeRequired) => error = Some("Condx Cloud needs a newer Condx".to_string()),
-            Err(e) => error = Some(e.to_string()),
-        }
+        Some(s.transport.doorbell(&ring, localfirst_core::PROTOCOL_VERSION).map_err(|e| e.to_string()))
+    } else {
+        bell.take().map(|v| match v["status"].as_str() {
+            Some("upgradeRequired") => Ok(Doorbell::UpgradeRequired),
+            _ => serde_json::from_value(v["versions"].clone()).map(Doorbell::Versions).map_err(|e| format!("unexpected doorbell: {e}")),
+        })
+    };
+    match rung {
+        Some(Ok(Doorbell::Versions(v))) => s.engine.on_doorbell(&v, now).map_err(|e| anyhow::anyhow!("{e}"))?,
+        Some(Ok(Doorbell::UpgradeRequired)) => error = Some("Condx Cloud needs a newer Condx".to_string()),
+        Some(Err(e)) => error = Some(e),
+        None => {}
     }
     let report = block_on(sync_once(&mut s.engine, &s.transport, now_ms, 200)).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let seen_at = s.engine.rows(&format!("threads:{}", s.link.daemon_id)).into_iter().find(|r| r.row.id == NEW_ROW).and_then(|r| r.row.values.get("seenAt").cloned());
-    if seen_at.is_some() && seen_at != s.phone_seen.0 {
-        s.phone_seen = (seen_at, now_ms());
-    }
     let seen = s.seen.len();
     process_decisions(state, s);
     process_requests(state, s);
@@ -1199,15 +1204,15 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     Ok(json!({
         "url": s.link.url, "daemonId": s.link.daemon_id, "name": s.link.name,
         "pending": st.pending, "recovery": st.recovery, "paused": st.paused,
-        "pushes": report.pushes, "pulls": report.pulls, "error": error, "phoneProposals": proposals,
+        "pushes": report.pushes, "pulls": report.pulls, "liveBell": s.bell.as_ref().is_some_and(|b| b.is_live()), "error": error, "phoneProposals": proposals,
         "scopes": s.scopes.iter().map(|sc| json!({ "scope": sc, "rows": s.engine.rows(sc).len(), "cursor": s.engine.scope_state(sc).and_then(|x| x.cursor) })).collect::<Vec<_>>(),
     }))
 }
 
-/// Si toca el timbre en esta vuelta: siempre con un teléfono con la app abierta (o recién usado); si
-/// no, cada `IDLE_RING_MS`.
-fn ring_due(now: i64, rung_at: i64, busy_until: i64, phone_seen_at: i64) -> bool {
-    now < busy_until || now - phone_seen_at < PHONE_AWAY_MS || now - rung_at >= IDLE_RING_MS
+/// Si toca el timbre por HTTP en esta vuelta: con el timbre en vivo andando, cada minuto (un socket
+/// caído que no se notó); sin él, cada 15 s.
+fn ring_due(now: i64, rung_at: i64, live: bool) -> bool {
+    now - rung_at >= if live { SAFETY_RING_MS } else { FALLBACK_RING_MS }
 }
 
 /// Arranca el hilo. Sin vínculo, solo mira cada tanto si apareció uno.
@@ -1260,7 +1265,13 @@ pub fn spawn(state: Shared) {
                     Some((false, until)) if now_ms() < until => BUSY_TICK,
                     _ => TICK,
                 };
-                std::thread::sleep(wait);
+                // Lo que mande un teléfono despierta enseguida (el timbre en vivo); si no, la espera.
+                match session.as_ref().and_then(|s| s.bell.as_ref()) {
+                    Some(bell) if !wait.is_zero() => {
+                        bell.wait(wait);
+                    }
+                    _ => std::thread::sleep(wait),
+                }
             }
         })
         .expect("couldn't start the cloud thread");
@@ -1342,16 +1353,14 @@ mod tests {
     }
 
     #[test]
-    fn el_timbre_va_seguido_solo_con_la_app_abierta() {
+    fn el_timbre_por_http_solo_de_respaldo() {
         let now = 10_000_000;
-        // Sin teléfono: cada 30 s.
-        assert!(!ring_due(now, now - 3_000, 0, 0));
-        assert!(ring_due(now, now - IDLE_RING_MS, 0, 0));
-        // Con la app abierta (avisó hace poco) o recién usada: en cada vuelta.
-        assert!(ring_due(now, now - 3_000, 0, now - 60_000));
-        assert!(ring_due(now, now - 3_000, now + 1, 0));
-        // El aviso es viejo: se da por cerrada.
-        assert!(!ring_due(now, now - 3_000, 0, now - PHONE_AWAY_MS));
+        // Con el timbre en vivo: cada minuto.
+        assert!(!ring_due(now, now - 30_000, true));
+        assert!(ring_due(now, now - SAFETY_RING_MS, true));
+        // Sin él: cada 15 s.
+        assert!(!ring_due(now, now - 3_000, false));
+        assert!(ring_due(now, now - FALLBACK_RING_MS, false));
     }
 
     #[test]

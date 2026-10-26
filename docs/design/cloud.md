@@ -1,6 +1,7 @@
 # Design: Condx Cloud (local-first, optional)
 
-Status: draft, 2026-10-25. Nothing here is built yet except where a phase says so.
+Status: draft, 2026-10-25. Nothing here is built yet except where a phase says so. Working with
+the Mac off (Condx Cloud on Convex cloud, a cloud site, boat workers, Claude): `cloud-site.md`.
 
 ## 1. Goal
 

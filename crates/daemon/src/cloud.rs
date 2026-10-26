@@ -91,6 +91,30 @@ pub struct Link {
     pub daemon_id: String,
     pub name: String,
     pub linked_at: i64,
+    /// El sitio (HTTP actions: el QR, `/pair`, `/ingest`, `/files`) con un dominio propio, si se
+    /// configuró (`condxd cloud site`); si no, el que corresponde a la URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+}
+
+impl Link {
+    /// Dónde responden las rutas HTTP de este deployment.
+    pub fn site(&self) -> String {
+        self.site.clone().unwrap_or_else(|| site_url(&self.url))
+    }
+}
+
+/// Pone (o quita, con `None`) el dominio propio del sitio. Las rutas del sitio tienen que responder
+/// ahí (un dominio propio del deployment o un proxy hacia `*.convex.site`).
+pub fn set_site(site: Option<&str>) -> Result<Link> {
+    let mut link = load_link().context("link Condx Cloud first (condxd cloud link)")?;
+    link.site = match site.map(|s| s.trim().trim_end_matches('/')).filter(|s| !s.is_empty()) {
+        Some(s) if s.starts_with("https://") => Some(s.to_string()),
+        Some(_) => bail!("the site must be an https URL (e.g. https://condx.example.com)"),
+        None => None,
+    };
+    write_private(&link_path(), &serde_json::to_string_pretty(&link)?)?;
+    Ok(link)
 }
 
 fn link_path() -> PathBuf {
@@ -150,7 +174,7 @@ pub fn link(url: &str, key: &str, name: &str) -> Result<Link> {
     if reply["status"] != "success" {
         bail!("couldn't register the daemon: {}", devtool_core::redact(reply["errorMessage"].as_str().unwrap_or("no details")).lines().take(2).collect::<Vec<_>>().join(" "));
     }
-    let link = Link { url, daemon_id, name: name.to_string(), linked_at: now_ms() };
+    let link = Link { url, daemon_id, name: name.to_string(), linked_at: now_ms(), site: None };
     write_private(&token_path(), &token)?;
     write_private(&link_path(), &serde_json::to_string_pretty(&link)?)?;
     Ok(link)
@@ -389,21 +413,20 @@ pub fn site_url(url: &str) -> String {
 pub fn sdk_keys() -> Result<Value> {
     let link = load_link().context("link Condx Cloud first (Settings → Condx Cloud)")?;
     let keys = call("query", "ingest:listKeys", json!({}))?;
-    Ok(json!({ "endpoint": site_url(&link.url), "keys": keys }))
+    Ok(json!({ "endpoint": link.site(), "keys": keys }))
 }
 
 pub fn sdk_create_key(project: &str) -> Result<Value> {
     let link = load_link().context("link Condx Cloud first (Settings → Condx Cloud)")?;
     let v = call("mutation", "ingest:createKey", json!({ "project": project }))?;
-    Ok(json!({ "endpoint": site_url(&link.url), "project": project, "publicKey": v["publicKey"], "secret": v["secret"] }))
+    Ok(json!({ "endpoint": link.site(), "project": project, "publicKey": v["publicKey"], "secret": v["secret"] }))
 }
 
 pub fn sdk_revoke_key(public_key: &str) -> Result<bool> {
     Ok(call("mutation", "ingest:revokeKey", json!({ "publicKey": public_key }))? == json!(true))
 }
 
-pub fn pair_link(url: &str, code: &str) -> String {
-    let site = site_url(url);
+pub fn pair_link(site: &str, url: &str, code: &str) -> String {
     let enc = |s: &str| s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
     format!("{site}/pair#d={}&c={}", enc(url), enc(code))
 }
@@ -413,7 +436,7 @@ pub fn pair_start() -> Result<Value> {
     let link = load_link().context("not linked to Condx Cloud")?;
     let v = call("mutation", "pairing:open", json!({}))?;
     let code = v["code"].as_str().unwrap_or_default().to_string();
-    let qr = pair_link(&link.url, &code);
+    let qr = pair_link(&link.site(), &link.url, &code);
     Ok(json!({ "code": code, "expiresAt": v["expiresAt"], "qr": qr, "url": link.url }))
 }
 
@@ -824,7 +847,7 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
                     Ok(Default::default())
                 } else {
                     let token = load_token().unwrap_or_default();
-                    crate::attachments::receive(state, &site_url(&s.link.url), &token, &id, &refs)
+                    crate::attachments::receive(state, &s.link.site(), &token, &id, &refs)
                 };
                 match prepared {
                     Err(e) => format!("rejected: couldn't receive the attachments: {e:#}"),
@@ -1233,9 +1256,15 @@ mod tests {
     fn vincular_exige_https_o_un_backend_local() {
         assert!(link("http://evil.example", "x".repeat(40).as_str(), "mac").is_err());
         assert!(link("https://ok.convex.cloud", "short", "mac").is_err());
-        assert_eq!(pair_link("https://happy-otter-123.convex.cloud", "K7Q2-M9XD"), "https://happy-otter-123.convex.site/pair#d=https%3A%2F%2Fhappy-otter-123.convex.cloud&c=K7Q2-M9XD");
-        assert_eq!(pair_link("https://condx.example.com", "AB-CD"), "https://condx.example.com/pair#d=https%3A%2F%2Fcondx.example.com&c=AB-CD");
-        assert!(pair_link("http://127.0.0.1:3390", "X").starts_with("http://127.0.0.1:3391/pair#"));
+        let pl = |url: &str, code: &str| pair_link(&site_url(url), url, code);
+        assert_eq!(pl("https://happy-otter-123.convex.cloud", "K7Q2-M9XD"), "https://happy-otter-123.convex.site/pair#d=https%3A%2F%2Fhappy-otter-123.convex.cloud&c=K7Q2-M9XD");
+        assert_eq!(pl("https://condx.example.com", "AB-CD"), "https://condx.example.com/pair#d=https%3A%2F%2Fcondx.example.com&c=AB-CD");
+        assert!(pl("http://127.0.0.1:3390", "X").starts_with("http://127.0.0.1:3391/pair#"));
+        // Un dominio propio para el sitio: el QR abre ahí y el teléfono sigue usando la API del deployment.
+        let link = Link { url: "https://happy-otter-123.convex.cloud".into(), daemon_id: "mac-1".into(), name: "Mac".into(), linked_at: 0, site: Some("https://condx.example.com".into()) };
+        assert_eq!(pair_link(&link.site(), &link.url, "AB"), "https://condx.example.com/pair#d=https%3A%2F%2Fhappy-otter-123.convex.cloud&c=AB");
+        let old: Link = serde_json::from_str(r#"{"url":"https://a.convex.cloud","daemonId":"mac-1","name":"Mac","linkedAt":0}"#).unwrap();
+        assert_eq!(old.site(), "https://a.convex.site");
     }
 
     #[test]

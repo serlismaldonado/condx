@@ -1,0 +1,3 @@
+.vercel
+# Lo escribe scripts/cloud-site-proxy.sh con el deployment real (no va al repo).
+vercel.json

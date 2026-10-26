@@ -6,6 +6,17 @@ What a Condx daemon publishes (and the phone requests, from C4), as scopes of th
 
 ## Set up (your own Convex project)
 
+The quick way (phase S0 of [`docs/design/cloud-site.md`](../docs/design/cloud-site.md)): create a
+project in your Convex dashboard (e.g. `condx-cloud`), generate a **production deploy key**
+(Settings → Deploy keys) and run, from the repo root:
+
+```bash
+scripts/cloud-deploy.sh           # asks for the key (not shown), deploys cloud/ and links this Mac's daemon
+```
+
+It ignores `cloud/.env.local` (which may point at a self-hosted test backend) and doesn't store the
+key. Then re-pair the phone. By hand:
+
 ```bash
 cd cloud && bun install
 npx convex deploy                 # into a new Convex project of yours

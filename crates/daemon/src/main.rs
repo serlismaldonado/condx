@@ -74,7 +74,8 @@ Usage:
   condxd secret set prod-deploy-key   stores the production deploy key in the Keychain (reads it from stdin)
   condxd secret set dev-deploy-key    stores the cloud dev deploy key (optional: record counts in Data)
   condxd secret status                which secrets exist (never their values)
-  condxd cloud link --url <URL> [--name N]   links to Condx Cloud (reads an admin or deploy key from stdin, once)
+  condxd cloud link --url <URL> [--name N] [--site URL]   links to Condx Cloud (reads an admin or deploy key from stdin, once)
+  condxd cloud site <https://…> | --clear     custom domain for the QR, /pair, /ingest and /files
   condxd cloud status | unlink
 
 Files: ~/.condx/daemon/{config.json,token,devd.sqlite3,devd.log}
@@ -518,6 +519,19 @@ fn cloud_cmd(args: &[String]) -> Result<()> {
             std::io::stdin().read_line(&mut key)?;
             let link = cloud::link(&url, key.trim(), &name)?;
             println!("Linked as {} to {}. The daemon syncs within a few seconds.", link.daemon_id, link.url);
+            if let Some(site) = flag(args, "--site") {
+                println!("Site: {}", cloud::set_site(Some(&site))?.site());
+            }
+            Ok(())
+        }
+        Some("site") => {
+            // Un dominio propio para el QR, `/pair`, `/ingest` y `/files`; `--clear` vuelve al del deployment.
+            let link = match args.get(1).map(String::as_str) {
+                Some("--clear") => cloud::set_site(None)?,
+                Some(site) => cloud::set_site(Some(site))?,
+                None => cloud::load_link().context("not linked")?,
+            };
+            println!("Site: {}", link.site());
             Ok(())
         }
         Some("unlink") => {
@@ -527,7 +541,7 @@ fn cloud_cmd(args: &[String]) -> Result<()> {
         }
         Some("status") | None => {
             match cloud::load_link() {
-                Some(l) => println!("Linked as {} ({}) to {} since {}", l.daemon_id, l.name, l.url, l.linked_at),
+                Some(l) => println!("Linked as {} ({}) to {} since {} · site {}", l.daemon_id, l.name, l.url, l.linked_at, l.site()),
                 None => println!("Not linked."),
             }
             Ok(())

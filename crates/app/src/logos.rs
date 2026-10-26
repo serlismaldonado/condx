@@ -13,6 +13,8 @@ const SVGS: &[(&str, &[u8])] = &[
     ("logos/gemini.svg", include_bytes!("../assets/logos/gemini.svg")),
     ("logos/x.svg", include_bytes!("../assets/logos/x.svg")),
     ("logos/ollama.svg", include_bytes!("../assets/logos/ollama.svg")),
+    // MiniMax lleva su degradado (un SVG se tiñe de un solo color): va en PNG.
+    ("logos/minimax.png", include_bytes!("../assets/logos/minimax.png")),
 ];
 
 /// Los recursos de la app con los logos delante.
@@ -45,7 +47,6 @@ fn letter(logo: &str) -> Option<(&'static str, u32)> {
     Some(match logo {
         "groq" => ("G", 0xf55036),
         "mistral" => ("M", 0xfa520f),
-        "minimax" => ("M", 0xe5446d),
         "openrouter" => ("O", 0x6467f2),
         "deepseek" => ("D", 0x4d6bfe),
         _ => return None,
@@ -56,6 +57,9 @@ fn letter(logo: &str) -> Option<(&'static str, u32)> {
 pub fn badge(logo: &str, size: f32, cx: &App) -> Option<AnyElement> {
     let t = crate::theme::Tokens::current(cx);
     let ring = div().size(px(size)).flex_none().rounded_full().flex().items_center().justify_center();
+    if logo == "minimax" {
+        return Some(ring.bg(t.card).border_1().border_color(t.card_border).child(img("logos/minimax.png").size(px(size * 0.66))).into_any_element());
+    }
     if let Some((light, dark)) = color(logo) {
         use gpui_kit::component::ActiveTheme;
         let c = if cx.theme().is_dark() { dark } else { light };

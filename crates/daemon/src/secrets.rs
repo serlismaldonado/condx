@@ -1,19 +1,19 @@
-// Secretos del daemon (§8.1, §9): Llavero de macOS y respaldos cifrados.
+// Secretos del daemon (§8.1, §9): un archivo 0600 y respaldos cifrados.
 //
-// - Llavero, servicio `condx` (o `CONDX_KEYCHAIN` en pruebas):
-//     prod-deploy-key  deploy key de Convex de producción (la registra el
-//                      usuario con `condxd secret set prod-deploy-key`)
+// - `~/.condx/daemon/secrets.json` (0600, como ~/.ssh o ~/.aws/credentials):
+//     prod-deploy-key  deploy key de Convex de producción (`condxd secret set prod-deploy-key`)
 //     dev-deploy-key   deploy key de cloud dev, opcional: la pestaña Datos la usa
 //                      para leer tamaños y páginas (`condxd secret set dev-deploy-key`)
 //     backup-key       identidad age para cifrar respaldos de cloud (la crea
 //                      el daemon la primera vez)
-// - El ítem lo crea el mismo binario que lo lee (el instalado en
-//   ~/.condx/daemon/bin), así macOS no pide permiso en cada lectura.
-// - Antes el servicio se llamaba `condxd`: si falta en `condx`, se lee del viejo
-//   y se copia (macOS pide permiso una vez, porque el binario cambió).
-// - Pruebas sin Llavero: con `CONDX_KEYCHAIN=file:<ruta>` (o con `CONDX_HOME` y sin
-//   `CONDX_KEYCHAIN`) los secretos van a un archivo JSON 0600. Un daemon de prueba
-//   recompilado no hace que macOS pida la contraseña (y no se traba esperándola).
+//     agent-key, …     la identidad de la Mac para los adjuntos, el token de ntfy
+// - Antes vivían en el Llavero (servicio `condx`, y antes `heskala-devd`). Con un
+//   certificado sin Team ID de Apple, «Permitir siempre» no sobrevive a recompilar:
+//   macOS pedía la contraseña tras cada instalación y el hilo de la nube se trababa
+//   esperándola. Lo que falta en el archivo se lee del Llavero una última vez, cuando se
+//   usa, y se copia.
+// - Pruebas: con `CONDX_KEYCHAIN=file:<ruta>` (o con `CONDX_HOME`) el archivo es otro y
+//   nunca se toca el Llavero; con `CONDX_KEYCHAIN=<servicio>`, ese servicio del Llavero.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -70,41 +70,64 @@ fn read(entry: &keyring::Entry, account: &str) -> Result<Option<String>> {
     }
 }
 
-pub fn get(account: &str) -> Result<Option<String>> {
-    if let Some(path) = test_file() {
-        return Ok(file_map(&path).get(account).and_then(|v| v.as_str()).map(str::to_string));
+/// Dónde se guardan: el archivo de las pruebas o `secrets.json` del daemon; `None` solo con un
+/// servicio de Llavero de prueba (`CONDX_KEYCHAIN=<servicio>`).
+fn store() -> Option<PathBuf> {
+    match (test_file(), override_service()) {
+        (Some(path), _) => Some(path),
+        (None, Some(_)) => None,
+        (None, None) => Some(crate::config::home().join("secrets.json")),
     }
+}
+
+/// Lo que había en el Llavero (el servicio `condx` o el viejo), para pasarlo al archivo una vez.
+fn from_keychain(account: &str) -> Result<Option<String>> {
     if let Some(v) = read(&entry(account)?, account)? {
         return Ok(Some(v));
     }
-    if override_service().is_some() {
+    let legacy = keyring::Entry::new(LEGACY_SERVICE, account).map_err(|e| anyhow!("Keychain: {e}"))?;
+    read(&legacy, account)
+}
+
+pub fn get(account: &str) -> Result<Option<String>> {
+    let Some(path) = store() else { return read(&entry(account)?, account) };
+    let map = file_map(&path);
+    // Un `null` es un secreto borrado: no se vuelve a traer del Llavero.
+    if let Some(v) = map.get(account) {
+        return Ok(v.as_str().map(str::to_string));
+    }
+    if test_file().is_some() {
         return Ok(None);
     }
-    let legacy = keyring::Entry::new(LEGACY_SERVICE, account).map_err(|e| anyhow!("Keychain: {e}"))?;
-    let Some(v) = read(&legacy, account)? else { return Ok(None) };
+    // Antes vivían en el Llavero: se leen de ahí una última vez (macOS pide la contraseña esa vez)
+    // y quedan en el archivo. De a uno, para que dos lecturas a la vez no pidan dos veces.
+    static MIGRATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = MIGRATING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(v) = file_map(&path).get(account) {
+        return Ok(v.as_str().map(str::to_string));
+    }
+    let Some(v) = from_keychain(account)? else { return Ok(None) };
     set(account, &v)?;
     Ok(Some(v))
 }
 
 pub fn set(account: &str, value: &str) -> Result<()> {
-    if let Some(path) = test_file() {
-        let mut map = file_map(&path);
-        map.insert(account.into(), value.into());
-        return file_save(&path, &map);
-    }
-    entry(account)?.set_password(value).map_err(|e| anyhow!("Keychain ({account}): {e}"))
+    let Some(path) = store() else { return entry(account)?.set_password(value).map_err(|e| anyhow!("Keychain ({account}): {e}")) };
+    let mut map = file_map(&path);
+    map.insert(account.into(), value.into());
+    file_save(&path, &map)
 }
 
 pub fn delete(account: &str) -> Result<()> {
-    if let Some(path) = test_file() {
-        let mut map = file_map(&path);
-        map.remove(account);
-        return file_save(&path, &map);
-    }
-    match entry(account)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(anyhow!("Keychain ({account}): {e}")),
-    }
+    let Some(path) = store() else {
+        return match entry(account)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(anyhow!("Keychain ({account}): {e}")),
+        };
+    };
+    let mut map = file_map(&path);
+    map.insert(account.into(), serde_json::Value::Null);
+    file_save(&path, &map)
 }
 
 /// Solo los nombres que la app puede mostrar: si existe, nunca el valor.

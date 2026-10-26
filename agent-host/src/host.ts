@@ -222,7 +222,14 @@ export class Host {
     const prose = (t: TranscriptItem) => t.text.split("\n").filter((l) => !l.startsWith("→ ")).join("\n").trim();
     const last = [...transcript].reverse().find((t) => t.role === "assistant" && prose(t));
     const answer = last ? prose(last) : null;
-    return { runId, status, reason: settled?.reason ?? null, answer, transcript, usage: totals(value.docs["pi.usage"]), conversationId: found.record.conversationId };
+    // Lo que escribe ahora (el parcial de la respuesta en curso) y las herramientas que corren: el
+    // teléfono lo muestra mientras llega.
+    const partial = Array.isArray(live.generation?.message?.content)
+      ? (live.generation.message.content as { type: string; text?: string }[]).filter((c) => c.type === "text").map((c) => c.text ?? "").join("")
+      : "";
+    const tools = ((live.tools ?? []) as { name: string; status: string }[]).filter((t) => t.status !== "done").map((t) => t.name);
+    const now = busy ? { text: partial, tools } : null;
+    return { runId, status, reason: settled?.reason ?? null, answer, transcript, live: now, usage: totals(value.docs["pi.usage"]), conversationId: found.record.conversationId };
   }
 
   /** Un mensaje de la persona: si está trabajando, lo redirige; si no, sigue la conversación. */

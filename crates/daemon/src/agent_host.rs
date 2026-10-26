@@ -23,6 +23,47 @@ use crate::state::Shared;
 use crate::store::now_ms;
 
 const USAGE_KEY: &str = "meta:agent-usage";
+/// El error de no haber lugar (ya trabajan tantos agentes como el límite): quien llama puede dejar
+/// el pedido en cola en vez de perderlo.
+pub const FULL: &str = "agents are busy";
+
+/// Si el error es de no haber lugar.
+pub fn is_full(e: &anyhow::Error) -> bool {
+    e.to_string().starts_with(FULL)
+}
+
+/// Lugares tomados por pedidos que todavía no figuran como «trabajando» (entre ver que hay lugar y
+/// guardar la corrida): sin esto, varios pedidos en el mismo instante pasaban todos el límite.
+static RESERVED: Mutex<u32> = Mutex::new(0);
+
+/// Un lugar tomado; se suelta al terminar el pedido (la corrida ya figura como «trabajando», o falló).
+#[derive(Debug)]
+pub struct Slot;
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut r = RESERVED.lock().unwrap_or_else(|e| e.into_inner());
+        *r = r.saturating_sub(1);
+    }
+}
+
+/// Toma un lugar si `running` (las que trabajan) más los tomados no llegan a `max`.
+fn take_slot(running: u32, max: u32) -> std::result::Result<Slot, String> {
+    let mut r = RESERVED.lock().unwrap_or_else(|e| e.into_inner());
+    if running + *r >= max {
+        return Err(format!("{FULL}: {} agent(s) working (the limit is {max})", running + *r));
+    }
+    *r += 1;
+    Ok(Slot)
+}
+
+/// Hay lugar para un agente más (cuentan todos los que trabajan, empezados o retomados, y los que
+/// están por empezar): lo toma hasta que la corrida figure como «trabajando».
+fn check_slot(state: &Shared) -> Result<Slot> {
+    let max = crate::agents::settings(state).max_concurrent;
+    let running = state.store.agent_runs(&["running"], None)?.len() as u32;
+    take_slot(running, max).map_err(|e| anyhow!(e))
+}
 
 struct Running {
     child: Child,
@@ -347,9 +388,7 @@ pub async fn start(state: &Shared, incident_id: &str, by: &str, mode: &str) -> R
     if running.iter().any(|r| r["incident"] == incident_id) {
         bail!("an agent is already working on this incident");
     }
-    if running.len() as u32 >= settings.max_concurrent {
-        bail!("{} agent(s) already running (the limit is {})", running.len(), settings.max_concurrent);
-    }
+    let _slot = check_slot(state)?;
     let n = state.store.agent_runs(&[], Some(incident_id))?.len() + 1;
     let run_id = format!("run-{incident_id}-{n}");
     let repo = repo_for(state, &incident);
@@ -400,10 +439,7 @@ pub async fn start_chat(state: &Shared, text: &str, project: Option<&str>, by: &
     if settings.daily_token_budget == 0 || usage_today(state) >= settings.daily_token_budget {
         bail!("today's token budget is used up ({} of {})", usage_today(state), settings.daily_token_budget);
     }
-    let running = state.store.agent_runs(&["running"], None)?;
-    if running.len() as u32 >= settings.max_concurrent {
-        bail!("{} agent(s) already running (the limit is {})", running.len(), settings.max_concurrent);
-    }
+    let _slot = check_slot(state)?;
     let repo = crate::projects::get(state, project).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir());
     let run_id = format!("chat-{:x}", now_ms());
     let title: String = text.lines().next().unwrap_or(text).chars().take(80).collect();
@@ -485,10 +521,7 @@ pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str,
     if settings.daily_token_budget == 0 || usage_today(state) >= settings.daily_token_budget {
         bail!("today's token budget is used up ({} of {})", usage_today(state), settings.daily_token_budget);
     }
-    let running = state.store.agent_runs(&["running"], None)?;
-    if running.len() as u32 >= settings.max_concurrent {
-        bail!("{} agent(s) already running (the limit is {})", running.len(), settings.max_concurrent);
-    }
+    let _slot = check_slot(state)?;
     let repo = crate::projects::get(state, project).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir());
     // Un agente que escribe trabaja en su worktree (rama condx/fix-…), como el modo arreglo.
     let write = role.mode == crate::roles::Mode::Write;
@@ -580,11 +613,14 @@ pub async fn poll(state: &Shared) {
             // Sobre el presupuesto del día o los límites de su plantilla: se detiene.
             let max_tokens = r["limits"]["maxTokens"].as_u64().unwrap_or(0);
             let max_minutes = r["limits"]["maxMinutes"].as_u64().unwrap_or(0);
-            let minutes = (now_ms() - r["startedAt"].as_i64().unwrap_or(0)).max(0) as u64 / 60_000;
+            // Desde el último mensaje de la persona (o desde que arrancó).
+            let since = r["turnAt"].as_i64().or_else(|| r["startedAt"].as_i64()).unwrap_or(0);
+            let minutes = (now_ms() - since).max(0) as u64 / 60_000;
+            let spent = total.saturating_sub(r["turnStart"].as_u64().unwrap_or(0));
             // Cada vuelta del modelo reenvía toda la conversación: la siguiente gasta al menos lo
             // que la última. Se para antes de pasarse, no después.
             let next = delta;
-            let why = if max_tokens > 0 && total + next > max_tokens {
+            let why = if max_tokens > 0 && spent + next > max_tokens {
                 Some(format!("it reached its template's limit of {max_tokens} tokens"))
             } else if usage_today(state) + next >= settings.daily_token_budget {
                 Some("today's token budget ran out".to_string())
@@ -605,6 +641,8 @@ pub async fn poll(state: &Shared) {
         r["usage"] = live["usage"].clone();
         finish(state, r, status, live["answer"].as_str().map(str::to_string), live["reason"].as_str().map(str::to_string), delta);
     }
+    // Con lugares libres, lo que esperaba en cola sale.
+    crate::threads::drain_queue(state).await;
 }
 
 /// Avisar al teléfono cuando el agente conteste lo que se le escribió en un hilo (una vez).
@@ -652,6 +690,8 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
     let path = format!("/runs/{id}");
     if let Ok(Ok(live)) = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "GET", &path, None)).await {
         run["transcript"] = live["transcript"].clone();
+        // Lo que escribe ahora y las herramientas que corren (solo mientras trabaja).
+        run["live"] = live["live"].clone();
         if run["status"] == "running" {
             run["answer"] = live["answer"].clone();
             run["usage"] = live["usage"].clone();
@@ -670,13 +710,23 @@ pub async fn message(state: &Shared, id: &str, text: &str, images: &[Value]) -> 
     if usage_today(state) >= settings.daily_token_budget {
         bail!("today's token budget is used up");
     }
+    // Retomar una conversación ocupa un lugar; a uno que ya trabaja se le suma el mensaje.
+    let _slot = if run["status"] != "running" { Some(check_slot(state)?) } else { None };
+    // Los límites de la plantilla valen por pedido: cada mensaje empieza su cuenta (si no, una
+    // conversación larga quedaba detenida para siempre en cuanto pasaba el límite una vez).
+    run["turnStart"] = json!(run["usage"]["total"].as_u64().unwrap_or(0));
+    run["turnAt"] = json!(now_ms());
     let st = state.clone();
     let (path, body) = (format!("/runs/{id}/message"), json!({ "text": text, "images": images }));
     tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", &path, Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
-    if run["status"] != "running" {
+    let resumed = run["status"] != "running";
+    if resumed {
         run["status"] = json!("running");
         run["endedAt"] = Value::Null;
-        state.store.save_agent_run(&run)?;
+        run["error"] = Value::Null;
+    }
+    state.store.save_agent_run(&run)?;
+    if resumed {
         if let Some(inc) = run["incident"].as_str() {
             set_incident_agent(state, inc, &run);
         }
@@ -725,6 +775,19 @@ pub fn spawn_poller(state: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn los_pedidos_a_la_vez_no_pasan_el_limite() {
+        // Cuatro pedidos en el mismo instante con lugar para dos (y ninguno figura aún como
+        // «trabajando»): entran dos; al soltarse, entra otro.
+        let a = take_slot(0, 2).expect("first");
+        let b = take_slot(0, 2).expect("second");
+        assert!(take_slot(0, 2).unwrap_err().starts_with(FULL));
+        drop(a);
+        let c = take_slot(0, 2).expect("after one is freed");
+        drop((b, c));
+        assert_eq!(*RESERVED.lock().unwrap(), 0);
+    }
 
     fn repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

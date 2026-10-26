@@ -189,7 +189,8 @@ pub fn open_bytes(sealed: &[u8]) -> Result<Vec<u8>> {
     Ok(plain)
 }
 
-/// La identidad de la Mac (se crea la primera vez que se guarda una clave).
+/// La identidad de la Mac (se crea la primera vez que se guarda una clave). La que quedó en el
+/// Llavero se lee una vez y pasa al archivo: con ella están cifradas las claves de los proveedores.
 fn identity() -> Result<age::x25519::Identity> {
     if let Some(raw) = crate::secrets::get(AGENT_KEY)? {
         return age::x25519::Identity::from_str(raw.trim()).map_err(|e| anyhow!("invalid agent key in the Keychain: {e}"));

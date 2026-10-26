@@ -157,6 +157,35 @@ fn role_name(state: &Shared, role: &str) -> String {
 }
 
 /// El hilo de una corrida (o de un chat o una corrida de incidente).
+/// Un agente que se detuvo sin contestar lo último (un límite, un error): el hilo dice por qué, en
+/// vez de quedarse callado.
+pub fn stopped_item(run: &Value, author: &str, after: i64) -> Option<Value> {
+    let status = run["status"].as_str()?;
+    if !matches!(status, "stopped" | "failed") {
+        return None;
+    }
+    let error = run["error"].as_str().filter(|e| !e.is_empty())?;
+    let at = run["endedAt"].as_i64().unwrap_or(after).max(after + 1);
+    Some(json!({ "at": at, "kind": "system", "status": "failed", "text": format!("{author} stopped: {error}") }))
+}
+
+/// Lo que un agente está escribiendo o haciendo ahora, como el último mensaje del hilo: el texto a
+/// medias (el teléfono lo revela mientras llega) o, sin texto todavía, qué hace.
+pub fn live_item(run: &Value, author: &str, logo: &str, after: i64) -> Option<Value> {
+    let live = run["live"].as_object()?;
+    let text: String = live.get("text").and_then(Value::as_str).unwrap_or("").lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n");
+    let tools: Vec<&str> = live.get("tools").and_then(Value::as_array).map(|t| t.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let activity = match tools.first().copied() {
+        None => "Thinking…".to_string(),
+        Some("read" | "grep" | "find" | "ls") => "Reading the code…".to_string(),
+        Some("bash") => "Running a command…".to_string(),
+        Some("edit" | "write") => "Editing files…".to_string(),
+        Some("condx") => "Checking the project…".to_string(),
+        Some(other) => format!("Using {other}…"),
+    };
+    Some(json!({ "at": after + 1, "kind": "reply", "live": true, "author": author, "logo": logo, "activity": activity, "text": text.trim() }))
+}
+
 pub async fn get(state: &Shared, id: &str) -> Result<Value> {
     let Ok(run) = crate::workflows::load_run(state, id) else {
         // Un chat o una corrida de incidente: su propia conversación.
@@ -263,6 +292,8 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
                 _ => {}
             }
         }
+        items.extend(live_item(&live, &name, role_logo(state, &role), last_at));
+        items.extend(stopped_item(&live, &name, last_at));
     }
     let (notes, outsiders) = note_items(state, &run.id);
     items.extend(notes);
@@ -299,9 +330,14 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
             _ => {}
         }
     }
+    let last_at = |run: &Value| run["transcript"].as_array().and_then(|t| t.iter().filter_map(|x| x["at"].as_i64()).max()).unwrap_or(0);
+    items.extend(live_item(&chat, "Agent", chat["logo"].as_str().unwrap_or(""), last_at(&chat)));
+    items.extend(stopped_item(&chat, "Agent", last_at(&chat)));
     for (role, run_id) in gs {
         let Ok(live) = crate::agent_host::get(state, &run_id).await else { continue };
         let name = role_name(state, &role);
+        items.extend(live_item(&live, &name, role_logo(state, &role), last_at(&live)));
+        items.extend(stopped_item(&live, &name, last_at(&live)));
         participants.push(json!({ "node": format!("g-{role}"), "role": role, "name": name, "logo": role_logo(state, &role) }));
         let mut users = 0;
         for t in live["transcript"].as_array().cloned().unwrap_or_default() {
@@ -370,7 +406,61 @@ pub async fn message(state: &Shared, id: &str, text: &str) -> Result<Value> {
 }
 
 /// Lo mismo, con imágenes adjuntas (`{data, mimeType}`, de `attachments.rs`) para el agente.
+/// Los mensajes que esperan un agente libre (persisten: un reinicio no los pierde).
+const QUEUE_KEY: &str = "meta:thread-queue";
+
+fn queue(state: &Shared) -> Vec<Value> {
+    let v = state.store.probes().ok().and_then(|l| l.into_iter().find(|(k, _)| k == QUEUE_KEY)).map(|(_, v)| v).unwrap_or(Value::Null);
+    v["items"].as_array().cloned().unwrap_or_default()
+}
+
+fn save_queue(state: &Shared, items: &[Value]) {
+    let _ = state.store.save_probe(QUEUE_KEY, &json!({ "items": items }));
+}
+
+/// Lo que espera en cola en el hilo `id`, como mensajes suyos marcados «en cola».
+pub fn queued_items(state: &Shared, id: &str) -> Vec<Value> {
+    let q = queue(state);
+    q.iter()
+        .enumerate()
+        .filter(|(_, m)| m["thread"] == id)
+        .map(|(ix, m)| json!({ "at": m["at"], "kind": "user", "status": "queued", "position": ix + 1, "text": m["text"] }))
+        .collect()
+}
+
+/// Un mensaje a un hilo. Si no hay lugar para otro agente (ya trabajan tantos como el límite),
+/// espera en cola y sale solo cuando uno termina, en vez de perderse.
 pub async fn message_with(state: &Shared, id: &str, text: &str, images: &[Value]) -> Result<Value> {
+    match route(state, id, text, images).await {
+        Err(e) if crate::agent_host::is_full(&e) => {
+            let mut q = queue(state);
+            q.push(json!({ "thread": id, "text": text.trim(), "images": images, "at": crate::store::now_ms() }));
+            save_queue(state, &q);
+            tracing::info!("threads: queued a message on {id} ({} waiting): {e}", q.len());
+            Ok(json!({ "to": "queue", "queued": true, "position": q.len() }))
+        }
+        r => r,
+    }
+}
+
+/// Manda lo que esperaba en cola, en orden, mientras haya lugar.
+pub async fn drain_queue(state: &Shared) {
+    loop {
+        let mut q = queue(state);
+        let Some(first) = q.first().cloned() else { return };
+        let (id, text) = (first["thread"].as_str().unwrap_or_default().to_string(), first["text"].as_str().unwrap_or_default().to_string());
+        let images = first["images"].as_array().cloned().unwrap_or_default();
+        match route(state, &id, &text, &images).await {
+            Err(e) if crate::agent_host::is_full(&e) => return,
+            Err(e) => tracing::warn!("threads: dropped a queued message on {id}: {e:#}"),
+            Ok(_) => tracing::info!("threads: sent a queued message on {id}"),
+        }
+        q.remove(0);
+        save_queue(state, &q);
+    }
+}
+
+async fn route(state: &Shared, id: &str, text: &str, images: &[Value]) -> Result<Value> {
     let text = text.trim();
     if text.is_empty() {
         bail!("write a message");

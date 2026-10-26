@@ -44,7 +44,27 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "result", "resultFor", "recipient"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "result", "resultFor", "recipient"];
+/// Lo más largo de un mensaje de un hilo en el teléfono (antes 700: las respuestas se cortaban).
+const ITEM_CHARS: usize = 12_000;
+/// Lo que ocupan los mensajes de un hilo en su fila: si se pasa, se dejan afuera los más viejos.
+const THREAD_CHARS: usize = 300_000;
+
+/// Los mensajes que entran en la fila: los más nuevos, hasta `THREAD_CHARS`.
+fn fit_items(items: Vec<Value>) -> Vec<Value> {
+    let mut total = 0;
+    let mut keep: Vec<Value> = vec![];
+    for it in items.into_iter().rev() {
+        total += it.to_string().len();
+        if total > THREAD_CHARS && !keep.is_empty() {
+            break;
+        }
+        keep.push(it);
+    }
+    keep.reverse();
+    keep
+}
+
 /// La fila de los hilos que no es un hilo: la llave age de la Mac, para que el teléfono le cifre los adjuntos.
 pub const MAC_ROW: &str = "_mac";
 /// La fila donde el teléfono pide un hilo nuevo (un chat): su primer mensaje firmado va aquí.
@@ -53,6 +73,8 @@ pub const NEW_ROW: &str = "_new";
 pub const AGENTS_ROW: &str = "_agents";
 /// Cada cuánto se vuelven a armar los hilos (cada uno lee las conversaciones de sus agentes).
 const THREADS_EVERY_MS: i64 = 8_000;
+/// Cada cuánto se rearman los hilos mientras un agente trabaja (lo que escribe va llegando).
+const LIVE_TICK_MS: i64 = 1_500;
 
 /// Lo que el teléfono ve de un proveedor: sus datos y su clave cifrada para la Mac y los teléfonos de
 /// confianza (`sealed`, age armado). Nunca la clave en claro.
@@ -725,7 +747,7 @@ async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
                     let fields: Vec<String> = res.iter().map(|(k, v)| format!("{k}: {}", v.as_str().unwrap_or_default())).collect();
                     text = format!("{text}\n{}", fields.join("\n"));
                 }
-                json!({ "kind": it["kind"], "author": it["author"], "logo": it["logo"], "to": it["to"], "at": it["at"], "status": it["status"], "job": it["job"], "source": it["event"]["source"], "answered": it["answered"], "text": cut(text.trim(), 700) })
+                json!({ "kind": it["kind"], "author": it["author"], "logo": it["logo"], "to": it["to"], "at": it["at"], "status": it["status"], "job": it["job"], "source": it["event"]["source"], "answered": it["answered"], "live": it["live"], "activity": it["activity"], "text": cut(text.trim(), ITEM_CHARS) })
             }).collect()
         } else {
             let msgs: Vec<Value> = th["transcript"].as_array().cloned().unwrap_or_default().into_iter().filter(|x| x["role"] != "tool").collect();
@@ -739,15 +761,38 @@ async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
                     Some("user") => "user",
                     _ => "reply",
                 };
-                (!text.trim().is_empty()).then(|| json!({ "kind": kind, "author": "Agent", "at": x["at"], "text": cut(text.trim(), 700) }))
-            }).collect()
+                (!text.trim().is_empty()).then(|| json!({ "kind": kind, "author": "Agent", "at": x["at"], "text": cut(text.trim(), ITEM_CHARS) }))
+            }).collect::<Vec<Value>>()
+            .into_iter()
+            .chain(crate::threads::live_item(&th, "Agent", th["logo"].as_str().unwrap_or(""), msgs.iter().filter_map(|x| x["at"].as_i64()).max().unwrap_or(0)))
+            .chain(crate::threads::stopped_item(&th, "Agent", msgs.iter().filter_map(|x| x["at"].as_i64()).max().unwrap_or(0)))
+            .collect()
         };
+        // Lo que espera un agente libre, al final y marcado «en cola».
+        let mut items = items;
+        items.extend(crate::threads::queued_items(state, &id).into_iter().map(|q| json!({ "kind": "user", "status": "queued", "at": q["at"], "text": cut(q["text"].as_str().unwrap_or(""), ITEM_CHARS) })));
+        let items = fit_items(items);
         let mut participants: Vec<Value> = th["participants"].as_array().cloned().unwrap_or_default().iter().map(|p| json!({ "node": p["node"], "name": p["name"], "logo": p["logo"] })).collect();
         // Un chat de un solo agente: él es el participante (con la marca de su proveedor).
         if participants.is_empty() && th["thread"] != true {
             participants.push(json!({ "node": "agent", "name": "Agent", "logo": th["logo"] }));
         }
+        // En qué proyecto y entorno trabaja: el del flujo o el del incidente; un chat, su proyecto (o el
+        // de siempre del daemon).
+        let (project, env) = match crate::workflows::load_run(state, &id) {
+            Ok(run) => (Some(run.project.clone()), run.event.as_ref().and_then(|e| e["env"].as_str()).map(str::to_string)),
+            Err(_) => {
+                let run = state.store.agent_run(&id).ok().flatten().unwrap_or_default();
+                match run["incident"].as_str().and_then(|i| state.store.incident(i).ok().flatten()) {
+                    Some(inc) => (inc["project"].as_str().map(str::to_string), inc["env"].as_str().map(str::to_string)),
+                    None => (run["project"].as_str().map(str::to_string), None),
+                }
+            }
+        };
+        let project = project.filter(|p| !p.is_empty()).or_else(|| state.config.workdir().file_name().map(|n| n.to_string_lossy().into_owned()));
         let mut row = Values::new();
+        row.insert("project".into(), json!(project));
+        row.insert("env".into(), json!(env));
         row.insert("title".into(), json!(t["title"]));
         row.insert("kind".into(), json!(t["kind"]));
         row.insert("status".into(), json!(th["status"]));
@@ -970,7 +1015,13 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     want.insert(format!("incidents:{}", s.link.daemon_id), rows);
     want.insert(format!("keys:{}", s.link.daemon_id), key_rows(state, &trusted_devices(), &mut s.sealed));
     // Los hilos (cada tanto: armarlos lee las conversaciones de los agentes).
-    if now_ms() - s.threads_built.0 > THREADS_EVERY_MS {
+    // Con un agente trabajando, más seguido: lo que escribe llega al teléfono mientras escribe.
+    let working = state.store.agent_runs(&["running"], None).map(|r| !r.is_empty()).unwrap_or(false);
+    if working {
+        s.busy_until = s.busy_until.max(now_ms() + LIVE_TICK_MS * 3);
+    }
+    let every = if working { LIVE_TICK_MS } else { THREADS_EVERY_MS };
+    if now_ms() - s.threads_built.0 > every {
         let _rt = s.rt.enter();
         s.threads_built = (now_ms(), s.rt.block_on(thread_rows(state)));
     }
@@ -979,7 +1030,9 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         trows.insert(MAC_ROW.into(), obj(json!({ "recipient": mac.to_string() })));
     }
     // El catálogo de agentes (encendidos), para llamarlos a cualquier hilo con @ desde el teléfono.
-    let agents: Vec<Value> = crate::roles::list(state).into_iter().filter(|r| r.enabled).map(|r| json!({ "id": r.id, "name": r.name, "logo": crate::agents::logo_for(state, r.provider.as_deref()) })).collect();
+    let mut agents: Vec<Value> = crate::roles::list(state).into_iter().filter(|r| r.enabled).map(|r| json!({ "id": r.id, "name": r.name, "logo": crate::agents::logo_for(state, r.provider.as_deref()) })).collect();
+    // Y los agentes externos conectados por el MCP (Claude Code, Codex…): también se los menciona.
+    agents.extend(crate::connections::list().iter().map(|c| json!({ "id": c.handle(), "name": c.name, "logo": c.logo(), "external": true })));
     trows.insert(AGENTS_ROW.into(), obj(json!({ "title": "agents", "participants": serde_json::to_string(&agents).unwrap_or_default() })));
     let mut new_row = obj(json!({ "title": "new" }));
     if let Some((rid, result)) = s.thread_results.get(NEW_ROW) {
@@ -1089,6 +1142,21 @@ pub fn spawn(state: Shared) {
             }
         })
         .expect("couldn't start the cloud thread");
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    #[test]
+    fn deja_los_mensajes_mas_nuevos_que_entran() {
+        let big = "x".repeat(ITEM_CHARS);
+        let items: Vec<Value> = (0..60).map(|i| json!({ "at": i, "text": big })).collect();
+        let kept = fit_items(items);
+        assert!(kept.len() < 60 && kept.len() >= 20, "{}", kept.len());
+        assert_eq!(kept.last().unwrap()["at"], 59);
+        assert_eq!(fit_items(vec![json!({ "at": 1, "text": "x".repeat(400_000) })]).len(), 1);
+    }
 }
 
 #[cfg(test)]

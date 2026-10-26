@@ -26,6 +26,8 @@ const REPO: &str = "serlismaldonado/condx";
 const STATE_KEY: &str = "meta:update";
 pub const RECIPE: &str = "update-condx";
 pub const RELEASE_RECIPE: &str = "release-condx";
+pub const MOBILE_RECIPE: &str = "release-mobile";
+const APK_KEY: &str = "meta:apk";
 
 pub fn current() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -356,9 +358,46 @@ pub fn release(repo: &Path, version: &str) -> Result<String> {
 }
 
 /// Lo que piden los agentes (Mayer): un release de Condx, que espera la aprobación de la persona.
-pub async fn request_release(state: &Shared, version: Option<&str>, by: &str) -> Result<crate::jobs::Job> {
+pub async fn request_release(state: &Shared, version: Option<&str>, phone: bool, by: &str) -> Result<crate::jobs::Job> {
     let env = local_env(state).ok_or_else(|| anyhow!("there's no local environment to approve the release in"))?;
-    crate::jobs::request(state, RELEASE_RECIPE, &env, &json!({ "version": version.unwrap_or("") }), by).await
+    crate::jobs::request(state, if phone { MOBILE_RECIPE } else { RELEASE_RECIPE }, &env, &json!({ "version": version.unwrap_or("") }), by).await
+}
+
+/// El repo de la app del teléfono: el de Mayer que es `condx-mobile`.
+pub fn mobile_repo(state: &Shared) -> Option<PathBuf> {
+    crate::roles::get(state, "mayer")?.repos.into_iter().map(|r| PathBuf::from(r.path.trim())).find(|p| p.join("scripts/release-apk.sh").exists())
+}
+
+/// La última versión de la app del teléfono que se publicó (versión, número, enlace).
+pub fn latest_apk(state: &Shared) -> Option<Value> {
+    state.store.probes().ok()?.into_iter().find(|(k, _)| k == APK_KEY).map(|(_, v)| v)
+}
+
+/// Una versión nueva de la app del teléfono: se compila en esta Mac (con su llave de firma: la misma de
+/// la instalada), se sube a Condx Cloud y se avisa con el enlace. En la nube todavía no: la APK tiene
+/// que firmarse con la misma llave, y esa llave no está en el CI.
+pub fn release_mobile(state: &Shared, repo: &Path, version: &str) -> Result<String> {
+    let home = home();
+    if !cfg!(target_os = "macos") || !home.join("Library/Android/sdk").exists() || !home.join(".android/debug.keystore").exists() {
+        bail!("no Mac with the Android SDK and the signing key: the phone app can't be built in the cloud yet (its signing key isn't a CI secret)");
+    }
+    let token = crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT)?.ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?;
+    let mut cmd = Command::new("bash");
+    cmd.arg("scripts/release-apk.sh").current_dir(repo).env("GH_TOKEN", token.trim());
+    if !version.trim().is_empty() {
+        cmd.arg(version.trim());
+    }
+    let out = cmd.output().context("couldn't run release-apk.sh")?;
+    if !out.status.success() {
+        bail!("release-apk.sh failed:\n{}", devtool_core::redact(&String::from_utf8_lossy(&out.stderr).lines().rev().take(15).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")));
+    }
+    let last = String::from_utf8_lossy(&out.stdout).lines().last().unwrap_or_default().to_string();
+    let field = |k: &str| last.split_whitespace().find_map(|w| w.strip_prefix(&format!("{k}="))).map(str::to_string);
+    let (apk, v, code) = (field("APK").context("release-apk.sh gave no APK")?, field("VERSION").unwrap_or_default(), field("CODE").and_then(|c| c.parse::<i64>().ok()).unwrap_or(0));
+    let url = crate::cloud::publish_apk(Path::new(&apk), &v, code)?;
+    state.store.save_probe(APK_KEY, &json!({ "version": v, "versionCode": code, "url": url, "publishedAt": crate::store::now_ms() }))?;
+    crate::notify::send(state, "agent", crate::notify::Message { title: format!("Condx for the phone {v} is ready"), body: format!("Open Condx on the phone and tap Install, or download it: {url}"), tags: "iphone", priority: 3 });
+    Ok(format!("built on this Mac: condx-mobile {v} ({code}), published to Condx Cloud.\n{url}"))
 }
 
 /// Revisa al arrancar y cada 6 horas.

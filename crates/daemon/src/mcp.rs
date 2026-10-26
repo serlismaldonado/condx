@@ -68,8 +68,8 @@ pub fn tools() -> Vec<Value> {
         tool("get_frontend", "A project's frontend on Vercel: production, previews (latest per branch), building, the latest failed deploy with the end of its build log, which Convex deployment production and the latest preview point to (read from the published site) and the production frontend's commit against Convex production's.", json!({ "project": { "type": "string", "description": "Project name (see list_projects); optional" } }), &[]),
         tool(
             "request_release",
-            "Asks for a new Condx release (for Mayer, after a change to Condx is ready). Local first: built and signed on the user's Mac if it's available; otherwise in the cloud (GitHub Actions, slower). It waits for the user's approval in the app, and the job's log says where it was built. The installed apps then offer it as an update.",
-            json!({ "version": { "type": "string", "description": "X.Y.Z; omit for the next patch" } }),
+            "Asks for a new Condx release (for Mayer, after a change to Condx is ready): the desktop (app, daemon and agent host) or the phone app (app: phone; built on the Mac and published with a download link). Local first: built and signed on the user's Mac if it's available; otherwise in the cloud (GitHub Actions, slower). It waits for the user's approval in the app, and the job's log says where it was built. The installed apps then offer it as an update.",
+            json!({ "version": { "type": "string", "description": "X.Y.Z; omit for the next patch" }, "app": { "type": "string", "enum": ["desktop", "phone"], "description": "desktop (default: app, daemon and agent host) or phone (the Android app)" } }),
             &[],
         ),
         // Trabajos (F2). Aprobar no está: solo desde la app.
@@ -295,7 +295,7 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
                 "steps": r.steps.iter().map(|s| &s.name).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>()),
-        "request_release" => json!(crate::update::request_release(state, args["version"].as_str().filter(|v| !v.trim().is_empty()), by).await?),
+        "request_release" => json!(crate::update::request_release(state, args["version"].as_str().filter(|v| !v.trim().is_empty()), args["app"] == "phone", by).await?),
         "request_job" => {
             need(Scope::JobsRequest)?;
             let recipe = args["recipe"].as_str().ok_or_else(|| anyhow!("Missing recipe"))?;

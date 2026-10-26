@@ -161,4 +161,50 @@ const daemonFile = (method: "GET" | "DELETE") =>
 http.route({ pathPrefix: "/files/", method: "GET", handler: daemonFile("GET") });
 http.route({ pathPrefix: "/files/", method: "DELETE", handler: daemonFile("DELETE") });
 
+/** Solo el daemon sube y publica releases. */
+async function daemonOf(ctx: Parameters<Parameters<typeof httpAction>[0]>[0], req: Request) {
+  const token = bearerOf(req);
+  const who = token ? await ctx.runQuery(internal.files.whoIs, { token }) : null;
+  return who && who.kind === "daemon" ? who : null;
+}
+
+/** Una URL para subir la APK directo al storage (sin el tope de las rutas HTTP). */
+http.route({
+  path: "/releases/upload-url",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!(await daemonOf(ctx, req))) return reply(401, { error: "only the daemon publishes releases" });
+    return reply(200, { url: await ctx.storage.generateUploadUrl() });
+  }),
+});
+
+/** Publica lo subido: devuelve el enlace de descarga (con su llave). */
+http.route({
+  path: "/releases/publish",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const who = await daemonOf(ctx, req);
+    if (!who) return reply(401, { error: "only the daemon publishes releases" });
+    const b = (await req.json()) as { platform?: string; version?: string; versionCode?: number; storageId?: string; sha256?: string; size?: number };
+    if (b.platform !== "android" || !b.version || typeof b.versionCode !== "number" || !b.storageId || !b.sha256) return reply(400, { error: "platform, version, versionCode, storageId and sha256" });
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const key = [...bytes].map((x) => x.toString(16).padStart(2, "0")).join("");
+    await ctx.runMutation(internal.releases.publish, { daemonId: who.daemonId, platform: b.platform, version: b.version, versionCode: b.versionCode, storageId: b.storageId as never, sha256: b.sha256, size: b.size ?? 0, key });
+    return reply(200, { key, path: `/download/android?k=${key}` });
+  }),
+});
+
+/** La descarga: con la llave de esa versión, al archivo (con su tipo, así el teléfono lo instala). */
+http.route({
+  path: "/download/android",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const key = new URL(req.url).searchParams.get("k") ?? "";
+    const r = /^[0-9a-f]{48}$/.test(key) ? await ctx.runQuery(internal.releases.byKey, { key }) : null;
+    if (!r?.url) return new Response("Not found", { status: 404 });
+    return new Response(null, { status: 302, headers: { location: r.url, "cache-control": "no-store" } });
+  }),
+});
+
 export default http;

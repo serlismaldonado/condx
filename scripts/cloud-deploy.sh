@@ -5,6 +5,8 @@
 #
 #   scripts/cloud-deploy.sh            # pide la key
 #   CONDX_DRY_RUN=1 scripts/cloud-deploy.sh   # solo muestra qué haría
+#   CONDX_DEPLOY_ONLY=1 scripts/cloud-deploy.sh   # solo despliega (el daemon ya está vinculado: no lo
+#                                                 # vuelve a registrar, el teléfono no se re-vincula)
 #   CONDX_SITE=https://condx.example.com scripts/cloud-deploy.sh   # con un dominio propio para el sitio
 #     (el QR, /pair, /ingest, /files); la API sigue en <deployment>.convex.cloud
 set -euo pipefail
@@ -42,6 +44,11 @@ printf 'CONVEX_DEPLOY_KEY="%s"\n' "$KEY" > "$ENVF"
 env -u CONVEX_SELF_HOSTED_URL -u CONVEX_SELF_HOSTED_ADMIN_KEY -u CONVEX_DEPLOYMENT -u CONVEX_URL -u CONVEX_DEPLOY_KEY \
   npx convex deploy --env-file "$ENVF"
 
+if [ -n "${CONDX_DEPLOY_ONLY:-}" ]; then
+  unset KEY
+  echo "Deployed to $URL (the daemon's link is unchanged)."
+  exit 0
+fi
 printf '%s\n' "$KEY" | "$BIN" cloud link --url "$URL" --name "$NAME" ${CONDX_SITE:+--site "$CONDX_SITE"}
 unset KEY
 

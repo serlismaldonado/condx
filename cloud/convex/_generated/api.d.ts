@@ -14,6 +14,7 @@ import type * as files from "../files.js";
 import type * as http from "../http.js";
 import type * as ingest from "../ingest.js";
 import type * as pairing from "../pairing.js";
+import type * as releases from "../releases.js";
 import type * as sync from "../sync.js";
 
 import type {
@@ -29,6 +30,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   ingest: typeof ingest;
   pairing: typeof pairing;
+  releases: typeof releases;
   sync: typeof sync;
 }>;
 

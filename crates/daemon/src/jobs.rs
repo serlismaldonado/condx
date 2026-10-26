@@ -853,6 +853,13 @@ async fn builtin_step(
             }
             Ok(done)
         }
+        // Una versión nueva de la app del teléfono: en esta Mac, publicada en Condx Cloud, con aviso.
+        "mobile-release" => {
+            let version = job.args.get("version").cloned().unwrap_or_default();
+            let repo = crate::update::mobile_repo(state).ok_or_else(|| anyhow!("there's no condx-mobile repo (set Mayer's repos)"))?;
+            let st = state.clone();
+            tokio::task::spawn_blocking(move || crate::update::release_mobile(&st, &repo, &version)).await.map_err(|e| anyhow!(e.to_string()))?
+        }
         // Una versión nueva de Condx (`update.rs`): instala y se reinicia cuando el trabajo ya terminó.
         "condx-update" => {
             let version = job.args.get("version").cloned().ok_or_else(|| anyhow!("which version?"))?;

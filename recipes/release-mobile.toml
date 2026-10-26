@@ -1,0 +1,20 @@
+name = "release-mobile"
+title = "Release the phone app"
+description = "Builds a new Condx phone app (APK) on this Mac, signed with the same key as the installed one, backs it up on GitHub, publishes it on Condx Cloud with a private download link and tells the phone (a banner with Install, ntfy and email)."
+kinds = ["devbox"]
+projects = true
+writes = true
+
+[approval]
+devbox = "simple"
+
+[[args]]
+name = "version"
+type = "string"
+default = ""
+description = "The version (X.Y.Z); empty for the next patch"
+
+[[step]]
+name = "Build on this Mac, publish and notify"
+builtin = "mobile-release"
+timeout_secs = 1800

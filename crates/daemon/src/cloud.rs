@@ -44,7 +44,7 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "result", "resultFor", "recipient"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient"];
 /// Lo más largo de un mensaje de un hilo en el teléfono (antes 700: las respuestas se cortaban).
 const ITEM_CHARS: usize = 12_000;
 /// Lo que ocupan los mensajes de un hilo en su fila: si se pasa, se dejan afuera los más viejos.
@@ -71,6 +71,8 @@ pub const MAC_ROW: &str = "_mac";
 pub const NEW_ROW: &str = "_new";
 /// La fila con el catálogo de agentes (para mencionarlos desde el teléfono).
 pub const AGENTS_ROW: &str = "_agents";
+/// La última versión de la app del teléfono (versión, número y enlace de descarga).
+pub const APK_ROW: &str = "_apk";
 /// Cada cuánto se vuelven a armar los hilos (cada uno lee las conversaciones de sus agentes).
 const THREADS_EVERY_MS: i64 = 8_000;
 /// Cada cuánto se rearman los hilos mientras un agente trabaja (lo que escribe va llegando).
@@ -375,6 +377,32 @@ pub fn fingerprint(public_key_hex: &str) -> String {
 }
 
 /// Llama a una función de Condx Cloud con el token del daemon.
+/// Sube una APK al storage de Condx Cloud (por una URL de subida: pesa más de lo que acepta una ruta
+/// HTTP) y la publica. Devuelve el enlace de descarga (en el sitio, con la llave de esa versión).
+pub fn publish_apk(path: &std::path::Path, version: &str, code: i64) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let link = load_link().context("not linked to Condx Cloud")?;
+    let token = load_token().context("not linked to Condx Cloud")?;
+    let api = site_url(&link.url);
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(300)).build();
+    let auth = format!("Bearer {token}");
+    let post = |route: &str, body: Value| -> Result<Value> {
+        match agent.post(&format!("{api}{route}")).set("Authorization", &auth).send_json(body) {
+            Ok(r) => Ok(r.into_json()?),
+            Err(ureq::Error::Status(code, r)) => bail!("Condx Cloud answered {code} on {route}: {}", devtool_core::redact(&r.into_string().unwrap_or_default()).chars().take(200).collect::<String>()),
+            Err(e) => bail!("couldn't reach Condx Cloud: {}", devtool_core::redact(&e.to_string())),
+        }
+    };
+    let bytes = std::fs::read(path).with_context(|| format!("couldn't read {}", path.display()))?;
+    let upload = post("/releases/upload-url", json!({}))?["url"].as_str().map(str::to_string).context("Condx Cloud gave no upload URL")?;
+    let stored: Value = agent.post(&upload).set("Content-Type", "application/vnd.android.package-archive").send_bytes(&bytes).map_err(|e| anyhow::anyhow!("couldn't upload the APK: {}", devtool_core::redact(&e.to_string())))?.into_json()?;
+    let storage_id = stored["storageId"].as_str().context("the upload gave no storage id")?;
+    let sha = format!("{:x}", Sha256::digest(&bytes));
+    let r = post("/releases/publish", json!({ "platform": "android", "version": version, "versionCode": code, "storageId": storage_id, "sha256": sha, "size": bytes.len() }))?;
+    let route = r["path"].as_str().context("Condx Cloud gave no download path")?;
+    Ok(format!("{}{route}", link.site()))
+}
+
 fn call(kind: &str, path: &str, mut args: Value) -> Result<Value> {
     let link = load_link().context("not linked to Condx Cloud")?;
     let token = load_token().context("not linked to Condx Cloud")?;
@@ -1101,6 +1129,9 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     // Y los agentes externos conectados por el MCP (Claude Code, Codex…): también se los menciona.
     agents.extend(crate::connections::list().iter().map(|c| json!({ "id": c.handle(), "name": c.name, "logo": c.logo(), "external": true })));
     trows.insert(AGENTS_ROW.into(), obj(json!({ "title": "agents", "participants": serde_json::to_string(&agents).unwrap_or_default() })));
+    if let Some(apk) = crate::update::latest_apk(state) {
+        trows.insert(APK_ROW.into(), obj(json!({ "title": "apk", "version": apk["version"], "versionCode": apk["versionCode"], "url": apk["url"] })));
+    }
     let mut new_row = obj(json!({ "title": "new" }));
     if let Some((rid, result)) = s.thread_results.get(NEW_ROW) {
         new_row.insert("result".into(), Value::String(result.clone()));

@@ -62,6 +62,20 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_createdAt", ["createdAt"]),
 
+  releases: defineTable({
+    daemonId: v.string(),
+    platform: v.string(),
+    version: v.string(),
+    versionCode: v.number(),
+    storageId: v.id("_storage"),
+    sha256: v.string(),
+    size: v.number(),
+    key: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_daemon_platform", ["daemonId", "platform"])
+    .index("by_key", ["key"]),
+
   ingestKeys: defineTable({
     daemonId: v.string(),
     project: v.string(),

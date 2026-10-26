@@ -153,7 +153,9 @@ fn run(cmd: &str, args: &[&str], dir: Option<&Path>) -> Result<()> {
 /// después, cuando el trabajo ya figura como terminado.
 pub fn apply(version: &str) -> Result<String> {
     use sha2::{Digest, Sha256};
-    let base = releases();
+    // El manifiesto de esa versión (no el de «latest»: GitHub lo sirve desde una caché que puede
+    // seguir en la anterior unos minutos después de publicar).
+    let base = std::env::var("CONDX_RELEASES_URL").unwrap_or_else(|_| format!("https://github.com/{REPO}/releases/download/v{version}"));
     let manifest = get(&format!("{base}/manifest.json"), 64 * 1024)?;
     let sig = get(&format!("{base}/manifest.json.sig"), 1024)?;
     let m = verify(&manifest, &sig)?;

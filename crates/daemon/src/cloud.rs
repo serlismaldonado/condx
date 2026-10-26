@@ -56,7 +56,7 @@ const RECENT_JOBS: usize = 50;
 /// Campos que el daemon escribe en cada alcance (los demás son de otros: el teléfono).
 /// Sin la hora de la última revisión: cambiaba cada 30 s y nadie la lee (cuatro escrituras por vuelta).
 const ENV_FIELDS: &[&str] = &["name", "kind", "project", "deployment", "reachable"];
-const JOB_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status", "approval", "requestedBy", "createdAt", "startedAt", "endedAt", "error", "commit"];
+const JOB_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status", "approval", "requestedBy", "createdAt", "startedAt", "endedAt", "error", "commit", "log"];
 /// `phoneResult`: qué hizo el daemon con la decisión de un teléfono (aplicada, rechazada y por qué, o
 /// a la espera de Touch ID en la Mac).
 const APPROVAL_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status", "approval", "requestedBy", "createdAt", "phoneResult"];
@@ -69,7 +69,7 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects", "catalog"];
 /// Lo más largo de un mensaje de un hilo en el teléfono (antes 700: las respuestas se cortaban).
 const ITEM_CHARS: usize = 12_000;
 /// Lo que ocupan los mensajes de un hilo en su fila: si se pasa, se dejan afuera los más viejos.
@@ -104,6 +104,67 @@ pub const SETTINGS_ROW: &str = "_settings";
 /// Los teléfonos de confianza de la Mac (id, nombre, llave pública): el sitio en la nube verifica con
 /// ellos las firmas de los mensajes cuando contesta con la Mac apagada.
 pub const DEVICES_ROW: &str = "_devices";
+/// Donde un teléfono pide correr una receta o un flujo (firmado, como los pedidos de incidentes).
+pub const RUN_ROW: &str = "_run";
+/// Lo que un teléfono puede pedir: las recetas (con sus argumentos y en qué entornos) y los flujos.
+pub const CATALOG_ROW: &str = "_catalog";
+
+/// El catálogo para el teléfono: recetas y flujos encendidos de cada proyecto.
+fn catalog(state: &Shared) -> Value {
+    let recipes: Vec<Value> = crate::recipes::all()
+        .iter()
+        .map(|r| {
+            let args: Vec<Value> = r.args.iter().map(|a| json!({ "name": a.name, "type": serde_json::to_value(&a.kind).unwrap_or(Value::Null), "default": a.default, "description": a.description })).collect();
+            json!({ "name": r.name, "title": r.title, "kinds": r.kinds, "args": args })
+        })
+        .collect();
+    let mut flows = vec![];
+    for p in state.store.projects().unwrap_or_default() {
+        for w in crate::workflows::list(state, &p.name).unwrap_or_default().into_iter().filter(|w| w.enabled) {
+            flows.push(json!({ "id": w.id, "name": w.name, "project": w.project }));
+        }
+    }
+    json!({ "recipes": recipes, "flows": flows })
+}
+
+/// Un pedido de correr algo desde un teléfono (fila `_run`): verificado como los de incidentes, con
+/// las mismas aprobaciones que si se pidiera en la Mac.
+fn run_request(state: &Shared, s: &Session, row: &Values, devices: &[TrustedDevice]) -> String {
+    let daemon = s.link.daemon_id.clone();
+    let req = match verify_signed(row, devices, now_ms(), &["run"], |request, rid, at, arg| request_message(&daemon, RUN_ROW, request, rid, at, arg)) {
+        Ok(r) => r,
+        Err(e) => return format!("rejected: {e}"),
+    };
+    let ask: Value = match serde_json::from_str(&req.arg) {
+        Ok(v) => v,
+        Err(_) => return "rejected: the request isn't valid".into(),
+    };
+    let by = format!("phone:{}", req.device.name);
+    // La configuración de los agentes que un teléfono puede cambiar: por ahora, el idioma.
+    if let Some(set) = ask["settings"].as_object() {
+        let mut current = serde_json::to_value(crate::agents::settings(state)).unwrap_or_default();
+        if let Some(language) = set.get("language").and_then(Value::as_str) {
+            current["language"] = json!(language.trim());
+        }
+        return match crate::agents::save_settings(state, &current) {
+            Ok(_) => "settings saved".into(),
+            Err(e) => format!("rejected: {e:#}"),
+        };
+    }
+    let _rt = s.rt.enter();
+    if let Some(flow) = ask["flow"].as_str() {
+        return match crate::workflows::start(state, flow, ask["commit"].as_str().filter(|c| !c.is_empty()).unwrap_or("dev"), &by) {
+            Ok(run) => format!("flow started ({})", run.id),
+            Err(e) => format!("rejected: {e:#}"),
+        };
+    }
+    let (Some(recipe), Some(env)) = (ask["recipe"].as_str(), ask["env"].as_str()) else { return "rejected: say which recipe and environment".into() };
+    match s.rt.block_on(crate::jobs::request(state, recipe, env, &ask["args"], &by)) {
+        Ok(job) => format!("job {} · {}", job.id, serde_json::to_value(job.status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()),
+        Err(e) => format!("rejected: {e:#}"),
+    }
+}
+
 /// Los proyectos de la Mac con su repo de GitHub (sin credenciales) y su rama: el sitio en la nube los
 /// clona para que sus agentes lean el código.
 pub const PROJECTS_ROW: &str = "_projects";
@@ -957,6 +1018,13 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
             continue;
         }
         let id = row.row.id.clone();
+        if id == RUN_ROW {
+            let result = run_request(state, s, &row.row.values, &devices);
+            tracing::info!("cloud: phone run request: {result}");
+            s.thread_results.insert(id, (request_id, result));
+            s.threads_built.0 = 0;
+            continue;
+        }
         // Lo que contestó el sitio en este hilo mientras la Mac no estaba: va como contexto al agente.
         let site_context = site_context(&row.row.values, s.site_handed.get(&id).copied().unwrap_or(0));
         let result = match verify_thread_request(&s.link.daemon_id, &id, &row.row.values, &devices, now_ms()) {
@@ -999,6 +1067,17 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
         s.thread_results.insert(id, (request_id, result));
         s.threads_built.0 = 0;
     }
+}
+
+/// Las últimas 60 líneas del registro de un trabajo (redactadas; 6000 caracteres como mucho).
+fn log_tail(id: &str) -> String {
+    let (text, _) = crate::jobs::read_log(id, 0).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    let tail = lines[lines.len().saturating_sub(60)..].join("\n");
+    let tail = devtool_core::redact(&tail);
+    let start = tail.len().saturating_sub(6000);
+    let start = (start..tail.len()).find(|i| tail.is_char_boundary(*i)).unwrap_or(tail.len());
+    tail[start..].to_string()
 }
 
 /// Las respuestas del sitio en la nube (`siteItems`) que la Mac todavía no le pasó a su agente, como
@@ -1109,6 +1188,10 @@ struct Session {
     site_handed: std::collections::HashMap<String, usize>,
     /// Los proyectos publicados (se recalculan cada 5 min: correr git en cada vuelta sobra).
     projects_built: (i64, Vec<Value>),
+    /// La cola del registro publicada por trabajo: cuándo se leyó y el texto.
+    logs: std::collections::HashMap<String, (i64, String)>,
+    /// El catálogo publicado (recetas y flujos; se recalcula cada minuto).
+    catalog_built: (i64, Value),
 }
 
 fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<Session> {
@@ -1138,7 +1221,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0, alive_at: 0, site_handed: Default::default(), projects_built: (0, vec![]) })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0, alive_at: 0, site_handed: Default::default(), projects_built: (0, vec![]), logs: Default::default(), catalog_built: (0, Value::Null) })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -1146,6 +1229,23 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let environments = state.store.environments().unwrap_or_default();
     let jobs = state.store.jobs(&[], RECENT_JOBS * 2).unwrap_or_default();
     let mut want = desired(&s.link.daemon_id, &environments, &|k| state.probe(k), &jobs);
+    // La cola del registro de los trabajos que corren o fallaron (los 8 más nuevos): el teléfono la
+    // muestra en el detalle. Uno que corre se refresca cada 10 s como mucho (no un cambio por vuelta).
+    if let Some(rows) = want.get_mut(&format!("jobs:{}", s.link.daemon_id)) {
+        let now = now_ms();
+        let mut keep = std::collections::HashMap::new();
+        for (id, row) in rows.iter_mut().filter(|(_, r)| matches!(r.get("status").and_then(Value::as_str), Some("running" | "failed"))).take(8) {
+            let running = row.get("status").and_then(Value::as_str) == Some("running");
+            let log = match s.logs.get(id) {
+                Some((at, text)) if !running || now - at < 10_000 => text.clone(),
+                _ => log_tail(id),
+            };
+            let at = s.logs.get(id).filter(|(_, t)| *t == log).map(|(a, _)| *a).unwrap_or(now);
+            row.insert("log".into(), Value::String(log.clone()));
+            keep.insert(id.clone(), (at, log));
+        }
+        s.logs = keep;
+    }
     // Las decisiones de teléfono con su resultado: la fila sigue (con el estado real del trabajo)
     // aunque ya no espere aprobación, para que el teléfono vea qué pasó.
     let recent = want.get(&format!("jobs:{}", s.link.daemon_id)).cloned().unwrap_or_default();
@@ -1237,6 +1337,16 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     trows.insert(AGENTS_ROW.into(), obj(json!({ "title": "agents", "participants": serde_json::to_string(&agents).unwrap_or_default() })));
     trows.insert(SETTINGS_ROW.into(), obj(json!({ "title": "settings", "settings": serde_json::to_string(&crate::agents::settings(state)).unwrap_or_default() })));
     trows.insert(DEVICES_ROW.into(), obj(json!({ "title": "devices", "devices": serde_json::to_string(&trusted_devices()).unwrap_or_default() })));
+    if now_ms() - s.catalog_built.0 > 60_000 {
+        s.catalog_built = (now_ms(), catalog(state));
+    }
+    trows.insert(CATALOG_ROW.into(), obj(json!({ "title": "catalog", "catalog": s.catalog_built.1.to_string() })));
+    let mut run_row = obj(json!({ "title": "run" }));
+    if let Some((rid, result)) = s.thread_results.get(RUN_ROW) {
+        run_row.insert("result".into(), Value::String(result.clone()));
+        run_row.insert("resultFor".into(), Value::String(rid.clone()));
+    }
+    trows.insert(RUN_ROW.into(), run_row);
     if now_ms() - s.projects_built.0 > 5 * 60_000 {
         s.projects_built = (now_ms(), published_projects(state));
     }

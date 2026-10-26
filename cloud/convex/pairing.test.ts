@@ -258,3 +258,15 @@ describe("mensajes en hilos", () => {
     }
   });
 });
+
+test("un teléfono pide correr algo solo en _run (firmado), y en un hilo solo manda mensajes", async () => {
+  const t = await setup();
+  await pairPhone(t);
+  const THREADS = `threads:${A.daemonId}`;
+  await push(t, group(op({ kind: "create", rowId: "_run", set: { title: "run" } }, THREADS), op({ kind: "create", rowId: "chat-1", set: { title: "x" } }, THREADS)), A.token);
+  const ask = (rowId: string, request: string) => push(t, group(op({ kind: "patch", rowId, set: { request, requestArg: "{}", requestId: "0123456789abcdef", requestedAt: Date.now(), deviceKey: PHONE.publicKey, signature: SIG } }, THREADS)), PHONE.token);
+  await expect(ask("_run", "run")).resolves.toMatchObject({ status: "ok" });
+  await expect(ask("_run", "message")).rejects.toThrow(/Only run requests/);
+  await expect(ask("chat-1", "run")).rejects.toThrow(/only send messages/);
+});
+

@@ -32,13 +32,13 @@ Badges stay on the tab (what waits). The thread view keeps the whole screen.
    project's name): enable `env:` and `jobs:` on the phone; Environments
    (grouped by project, a dot for reachable, production in red) and Jobs (recent, status, error,
    who asked, how long), bottom tab bar, Settings spacing.
-2. **Job logs**: the daemon publishes the tail of a job's log (redacted, last ~60 lines) only for
+2. ✅ **Job logs**: the daemon publishes the tail of a job's log (redacted, last ~60 lines) only for
    running and failed jobs, in a field of the `jobs:` row; the phone shows it in the job's detail.
-3. **Asking from the phone**: signed requests to run a recipe (non-prod) and a flow, verified like
+3. ✅ **Asking from the phone** (signed `_run` requests; the daemon publishes the `_catalog` row with recipes and flows): signed requests to run a recipe (non-prod) and a flow, verified like
    incident requests (the Mac or, with the Mac away, the cloud site runs them); production still
    needs the Mac.
-4. **Agent settings from the phone**: language (and later default provider) through a signed
+4. ✅ **Agent settings from the phone**: language (and later default provider) through a signed
    request on the `_settings` row, applied by the Mac.
-5. **Phone UI in Spanish**: the texts follow the phone's language (es/en), as the desktop does.
+5. ✅ **Phone UI in Spanish** (`src/i18n.rs`, translated inside the shared theme helpers): the texts follow the phone's language (es/en), as the desktop does.
 
 Each phase is tested on the phone (adb) in light and dark before it ships.

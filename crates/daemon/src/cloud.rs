@@ -28,9 +28,16 @@ const TICK: Duration = Duration::from_secs(3);
 /// Después de un pedido de un teléfono, se mira más seguido un rato (alguien está usando la app).
 const BUSY_TICK: Duration = Duration::from_secs(1);
 const BUSY_FOR_MS: i64 = 30_000;
+/// Sin un teléfono con la app abierta, el timbre (¿cambió algo en la nube?) suena cada 30 s en vez de
+/// cada vuelta: lo de aquí sube igual enseguida, y lo que mande un teléfono llega con la app abierta.
+const IDLE_RING_MS: i64 = 30_000;
+/// La app avisa que está abierta cada minuto (`seenAt` en la fila `_new`); sin aviso en este rato, se
+/// da por cerrada.
+const PHONE_AWAY_MS: i64 = 90_000;
 const RECENT_JOBS: usize = 50;
 /// Campos que el daemon escribe en cada alcance (los demás son de otros: el teléfono).
-const ENV_FIELDS: &[&str] = &["name", "kind", "project", "deployment", "reachable", "checkedAt"];
+/// Sin la hora de la última revisión: cambiaba cada 30 s y nadie la lee (cuatro escrituras por vuelta).
+const ENV_FIELDS: &[&str] = &["name", "kind", "project", "deployment", "reachable"];
 const JOB_FIELDS: &[&str] = &["recipe", "title", "env", "envKind", "status", "approval", "requestedBy", "createdAt", "endedAt", "error", "commit"];
 /// `phoneResult`: qué hizo el daemon con la decisión de un teléfono (aplicada, rechazada y por qué, o
 /// a la espera de Touch ID en la Mac).
@@ -259,7 +266,7 @@ pub fn desired(daemon_id: &str, environments: &[devtool_core::Environment], prob
             let probe = probes(&format!("convex:{}", e.name));
             let reachable = probe.as_ref().map(|p| p["data"]["reachable"] == true || (p["ok"] == true && p["data"]["reachable"].is_null()));
             let kind = serde_json::to_value(e.kind).unwrap_or(Value::Null);
-            (e.name.clone(), obj(json!({ "name": e.name, "kind": kind, "project": e.project, "deployment": e.convex_deployment, "reachable": reachable, "checkedAt": probe.as_ref().map(|p| p["at"].clone()) })))
+            (e.name.clone(), obj(json!({ "name": e.name, "kind": kind, "project": e.project, "deployment": e.convex_deployment, "reachable": reachable })))
         })
         .collect();
     out.insert(format!("env:{daemon_id}"), env);
@@ -307,7 +314,8 @@ pub fn diff(scope: &str, current: &IndexMap<String, Values>, want: &IndexMap<Str
             Some(have) => {
                 let mut set = Values::new();
                 for f in fields {
-                    let (now, before) = (values.get(*f), have.get(*f));
+                    // Sin valor y null son lo mismo (el motor no guarda los null): si no, se reescribe en cada vuelta.
+                    let (now, before) = (values.get(*f).filter(|v| !v.is_null()), have.get(*f).filter(|v| !v.is_null()));
                     if now != before {
                         set.insert(f.to_string(), now.cloned().unwrap_or(Value::Null));
                     }
@@ -1011,6 +1019,9 @@ struct Session {
     again: bool,
     busy_until: i64,
     thread_results: IndexMap<String, (String, String)>,
+    /// Cuándo sonó el timbre, y el último aviso de app abierta con la hora (de esta Mac) en que cambió.
+    rung_at: i64,
+    phone_seen: (Option<Value>, i64),
 }
 
 fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<Session> {
@@ -1040,7 +1051,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0 })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, rung_at: 0, phone_seen: (None, 0) })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -1159,12 +1170,19 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     }
     let mut error = None;
     let ring: Vec<String> = s.scopes.iter().cloned().chain(std::iter::once(s.events_scope.clone())).collect();
-    match s.transport.doorbell(&ring, localfirst_core::PROTOCOL_VERSION) {
-        Ok(Doorbell::Versions(v)) => s.engine.on_doorbell(&v, now).map_err(|e| anyhow::anyhow!("{e}"))?,
-        Ok(Doorbell::UpgradeRequired) => error = Some("Condx Cloud needs a newer Condx".to_string()),
-        Err(e) => error = Some(e.to_string()),
+    if ring_due(now, s.rung_at, s.busy_until, s.phone_seen.1) {
+        s.rung_at = now;
+        match s.transport.doorbell(&ring, localfirst_core::PROTOCOL_VERSION) {
+            Ok(Doorbell::Versions(v)) => s.engine.on_doorbell(&v, now).map_err(|e| anyhow::anyhow!("{e}"))?,
+            Ok(Doorbell::UpgradeRequired) => error = Some("Condx Cloud needs a newer Condx".to_string()),
+            Err(e) => error = Some(e.to_string()),
+        }
     }
     let report = block_on(sync_once(&mut s.engine, &s.transport, now_ms, 200)).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let seen_at = s.engine.rows(&format!("threads:{}", s.link.daemon_id)).into_iter().find(|r| r.row.id == NEW_ROW).and_then(|r| r.row.values.get("seenAt").cloned());
+    if seen_at.is_some() && seen_at != s.phone_seen.0 {
+        s.phone_seen = (seen_at, now_ms());
+    }
     let seen = s.seen.len();
     process_decisions(state, s);
     process_requests(state, s);
@@ -1184,6 +1202,12 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         "pushes": report.pushes, "pulls": report.pulls, "error": error, "phoneProposals": proposals,
         "scopes": s.scopes.iter().map(|sc| json!({ "scope": sc, "rows": s.engine.rows(sc).len(), "cursor": s.engine.scope_state(sc).and_then(|x| x.cursor) })).collect::<Vec<_>>(),
     }))
+}
+
+/// Si toca el timbre en esta vuelta: siempre con un teléfono con la app abierta (o recién usado); si
+/// no, cada `IDLE_RING_MS`.
+fn ring_due(now: i64, rung_at: i64, busy_until: i64, phone_seen_at: i64) -> bool {
+    now < busy_until || now - phone_seen_at < PHONE_AWAY_MS || now - rung_at >= IDLE_RING_MS
 }
 
 /// Arranca el hilo. Sin vínculo, solo mira cada tanto si apareció uno.
@@ -1315,6 +1339,27 @@ mod tests {
         // En trabajos, lo que ya no está se borra siempre.
         let d = diff("jobs:mac-1", &current, &empty, &status);
         assert_eq!(d[0].kind, Some(OpKind::Delete));
+    }
+
+    #[test]
+    fn el_timbre_va_seguido_solo_con_la_app_abierta() {
+        let now = 10_000_000;
+        // Sin teléfono: cada 30 s.
+        assert!(!ring_due(now, now - 3_000, 0, 0));
+        assert!(ring_due(now, now - IDLE_RING_MS, 0, 0));
+        // Con la app abierta (avisó hace poco) o recién usada: en cada vuelta.
+        assert!(ring_due(now, now - 3_000, 0, now - 60_000));
+        assert!(ring_due(now, now - 3_000, now + 1, 0));
+        // El aviso es viejo: se da por cerrada.
+        assert!(!ring_due(now, now - 3_000, 0, now - PHONE_AWAY_MS));
+    }
+
+    #[test]
+    fn null_y_sin_valor_no_se_reescriben() {
+        // El motor no guarda los null: un campo null del daemon no es un cambio en cada vuelta.
+        let current: IndexMap<String, Values> = [("t".to_string(), obj(json!({ "title": "x" })))].into_iter().collect();
+        let want: IndexMap<String, Values> = [("t".to_string(), obj(json!({ "title": "x", "env": null })))].into_iter().collect();
+        assert!(diff("threads:mac-1", &current, &want, &IndexMap::new()).is_empty());
     }
 
     #[test]

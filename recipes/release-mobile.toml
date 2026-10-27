@@ -15,6 +15,6 @@ default = ""
 description = "The version (X.Y.Z); empty for the next patch"
 
 [[step]]
-name = "Build on this Mac, publish and notify"
+name = "Build (this Mac, or GitHub without one), publish and notify"
 builtin = "mobile-release"
 timeout_secs = 1800

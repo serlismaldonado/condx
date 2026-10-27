@@ -94,10 +94,20 @@ pub fn wait(dir: &Path, run: &Run, limit: Duration) -> Result<()> {
     }
 }
 
-/// El último release del repo y el archivo que termina en `suffix`, bajado a `to`. Devuelve el tag.
-pub fn download_latest_asset(dir: &Path, suffix: &str, to: &Path) -> Result<String> {
+/// ¿Ya hay un release con ese tag? (una versión que ya se compiló: solo falta publicarla).
+pub fn release_exists(dir: &Path, tag: &str) -> Result<bool> {
     let r = repo(dir)?;
-    let rel = call(&r, "GET", "/releases/latest", None)?;
+    match call(&r, "GET", &format!("/releases/tags/{tag}"), None) {
+        Ok(v) => Ok(v["tag_name"].as_str() == Some(tag)),
+        Err(e) if e.to_string().contains("answered 404") => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// El archivo que termina en `suffix` del release `tag` (o del último), bajado a `to`. Devuelve el tag.
+pub fn download_asset(dir: &Path, tag: Option<&str>, suffix: &str, to: &Path) -> Result<String> {
+    let r = repo(dir)?;
+    let rel = call(&r, "GET", &tag.map(|t| format!("/releases/tags/{t}")).unwrap_or_else(|| "/releases/latest".into()), None)?;
     let tag = rel["tag_name"].as_str().context("the release has no tag")?.to_string();
     let asset = rel["assets"].as_array().and_then(|a| a.iter().find(|x| x["name"].as_str().is_some_and(|n| n.ends_with(suffix)))).with_context(|| format!("the release {tag} has no *{suffix}"))?;
     let id = asset["id"].as_u64().context("the asset has no id")?;

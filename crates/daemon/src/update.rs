@@ -484,20 +484,33 @@ pub fn release_mobile(state: &Shared, repo: &Path, version: &str) -> Result<Stri
 /// Sin una Mac con el SDK y la llave: GitHub Actions compila y firma la APK (workflow release-apk.yml
 /// de condx-mobile, con la llave como secreto), y aquí se baja, se sube a Condx Cloud y se avisa.
 fn release_mobile_cloud(state: &Shared, repo: &Path, version: &str) -> Result<String> {
-    let run = crate::gh_actions::dispatch(repo, "release-apk.yml", json!({ "version": version.trim() }))?;
-    crate::gh_actions::wait(repo, &run, std::time::Duration::from_secs(45 * 60))?;
+    // Una versión que ya está compilada en GitHub (p. ej. la publicación falló después): solo se publica.
+    let wanted = version.trim().trim_start_matches('v').to_string();
+    let existing = (!wanted.is_empty() && crate::gh_actions::release_exists(repo, &format!("v{wanted}"))?).then(|| format!("v{wanted}"));
+    let run = match &existing {
+        Some(_) => None,
+        None => {
+            let run = crate::gh_actions::dispatch(repo, "release-apk.yml", json!({ "version": version.trim() }))?;
+            crate::gh_actions::wait(repo, &run, std::time::Duration::from_secs(45 * 60))?;
+            Some(run)
+        }
+    };
     let dir = std::env::temp_dir().join(format!("condx-apk-{}", crate::cloud::random_hex(6)?));
     std::fs::create_dir_all(&dir)?;
     let apk = dir.join("condx-mobile-arm64.apk");
     let res = (|| -> Result<String> {
-        let tag = crate::gh_actions::download_latest_asset(repo, "-arm64.apk", &apk)?;
+        let tag = crate::gh_actions::download_asset(repo, existing.as_deref(), "-arm64.apk", &apk)?;
         let v = tag.trim_start_matches('v').to_string();
         let mut parts = v.split('.').map(|x| x.parse::<i64>().unwrap_or(0));
         let code = parts.next().unwrap_or(0) * 10_000 + parts.next().unwrap_or(0) * 100 + parts.next().unwrap_or(0);
         let url = crate::cloud::publish_apk(&apk, &v, code)?;
         state.store.save_probe(APK_KEY, &json!({ "version": v, "versionCode": code, "url": url, "publishedAt": crate::store::now_ms() }))?;
         crate::notify::send(state, "agent", crate::notify::Message { title: format!("Condx for the phone {v} is ready"), body: format!("Open Condx on the phone and tap Install, or download it: {url}"), tags: "iphone", priority: 3 });
-        Ok(format!("built on GitHub Actions (no Mac with the Android SDK here): condx-mobile {v} ({code}), published to Condx Cloud.\n{url}\n{}", run.url))
+        let how = match &run {
+            Some(run) => format!("built on GitHub Actions (no Mac with the Android SDK here)\n{}", run.url),
+            None => "already built on GitHub".to_string(),
+        };
+        Ok(format!("condx-mobile {v} ({code}) published to Condx Cloud: {how}.\n{url}"))
     })();
     let _ = std::fs::remove_dir_all(&dir);
     res

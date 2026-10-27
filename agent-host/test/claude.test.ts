@@ -60,7 +60,8 @@ out({ type: "result", subtype: "success", result: resumed ? "Seguimos (" + resum
   assert.equal(r.usage.total, 15);
   assert.ok(r.transcript.some((t) => t.role === "assistant" && (t as { thinking?: string }).thinking === "Reviso el proyecto primero."));
   cc.message("r1", "¿y ahora?");
-  await new Promise((res) => setTimeout(res, 50));
+  // Que termine la vuelta nueva (no el «done» de la anterior: en una máquina lenta tarda en arrancar).
+  for (let i = 0; i < 200 && (cc.get("r1") as { answer: string }).answer !== "Seguimos (s-1)"; i++) await new Promise((res) => setTimeout(res, 30));
   await wait("done");
   r = cc.get("r1") as typeof r;
   assert.equal(r.answer, "Seguimos (s-1)");

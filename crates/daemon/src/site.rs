@@ -504,7 +504,14 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
                 let mut set = Values::new();
                 set.insert("result".into(), json!(why));
                 set.insert("resultFor".into(), json!(request_id));
-                let _ = s.engine.commit(vec![OpDraft::patch(&s.threads_scope, id, set)], now_ms());
+                match s.engine.commit(vec![OpDraft::patch(&s.threads_scope, id, set)], now_ms()) {
+                    Ok(_) => {
+                        if let Err(e) = crate::cloud::block_on(sync_once(&mut s.engine, &s.transport, now_ms, 50)) {
+                            tracing::warn!("site: couldn't send the rejection on {id}: {e}");
+                        }
+                    }
+                    Err(e) => tracing::warn!("site: couldn't write the rejection on {id}: {e}"),
+                }
                 continue;
             }
         };

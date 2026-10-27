@@ -39,12 +39,14 @@
     .hero > .wrap { z-index: 2; }
     nav.top { display: flex; align-items: center; gap: 24px; height: 84px; }
     .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font: 500 30px/1 "Funnel Display", sans-serif; color: #fff8e6; }
-    .brand svg { width: 30px; height: 30px; }
+    /* La C mide lo que la «d» y se apoya en la línea base, como una letra más. */
+    .brand svg { width: 0.86em; height: 0.86em; flex: none; transform: translateY(0.02em); }
     nav.top .links { margin-left: auto; display: flex; gap: 22px; align-items: center; }
     nav.top .links a { text-decoration: none; font-size: 15px; color: #f3e6c4; }
     nav.top .links a:hover { color: #fff; }
     .btn-white { background: #fff8e6; color: var(--deep) !important; padding: 10px 20px; font-size: 15px; }
-    .hero h1 { font-size: clamp(38px, 6vw, 60px); line-height: 1.06; max-width: 640px; margin-top: 28px; }
+    /* El texto baja hacia el centro de la portada (sin lago que tapar, como en boat): el cielo queda arriba. */
+    .hero h1 { font-size: clamp(38px, 6vw, 60px); line-height: 1.06; max-width: 640px; margin-top: clamp(28px, 16vh, 170px); }
     .hero .lede { font-size: 17px; max-width: 560px; color: #efe2c0; margin: 18px 0 28px; }
 
     /* La caja de instalar, con pestañas (como boat). */
@@ -165,7 +167,7 @@
     .toast { position: fixed; z-index: 50; left: 50%; top: 18px; transform: translateX(-50%); background: #241b0c; color: #fff1cf; border: 2px solid var(--accent); box-shadow: 4px 4px 0 rgba(31, 21, 3, 0.4); padding: 10px 16px; font: 13px "IBM Plex Mono", monospace; animation: pop 0.2s steps(3); }
     @keyframes pop { from { opacity: 0; transform: translate(-50%, calc(-100% - 2px)); } }
     .toast { animation-name: drop; } @keyframes drop { from { opacity: 0; transform: translate(-50%, -12px); } }
-    .brand.spin svg { animation: spin 0.9s steps(12); } @keyframes spin { to { transform: rotate(360deg); } }
+    .brand.spin svg { animation: spin 0.9s steps(12); } @keyframes spin { from { transform: translateY(0.02em) rotate(0); } to { transform: translateY(0.02em) rotate(360deg); } }
     .hero.crew-hover { cursor: pointer; }
     @media (max-width: 900px) {
       .trio { grid-template-columns: 1fr; gap: 44px; }
@@ -176,6 +178,7 @@
       .wrap { padding: 0 16px; }
       nav.top .links a:not(.btn-white) { display: none; }
       .hero { min-height: max(900px, 100svh); }
+      .hero h1 { margin-top: 28px; }
       .hero::after { background: linear-gradient(180deg, rgba(21,18,11,0.8) 0%, rgba(21,18,11,0.6) 58%, rgba(21,18,11,0) 74%); -webkit-mask-image: none; mask-image: none; }
       section { padding: 64px 0; }
       .sub { margin-bottom: 32px; }
@@ -853,7 +856,7 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
 
     const phone = window.innerWidth < 640;
     let onLaunchPhase = () => {};
-    const heroScene = scene(document.getElementById("scene"), { onPhase: (p, n) => onLaunchPhase(p, n), fadeBottom: true, fadeColor: [254, 254, 254], horizon: phone ? 0.7 : 0.66, pad: phone ? 0.86 : 0.9, people: phone ? 0.12 : 0.22, crew: phone ? 4 : 5, crewAt: phone ? 0.08 : 0.5, crewSpan: phone ? 0.6 : 0.28, offset: 1 });
+    const heroScene = scene(document.getElementById("scene"), { onPhase: (p, n) => onLaunchPhase(p, n), fadeBottom: true, fadeColor: [254, 254, 254], horizon: phone ? 0.7 : 0.66, pad: phone ? 0.86 : 0.9, people: phone ? 0.12 : 0.22, crew: phone ? 4 : 5, crewAt: phone ? 0.08 : 0.6, crewSpan: phone ? 0.6 : 0.24, offset: 1 });
     const endScene = scene(document.getElementById("scene2"), { fadeTop: true, fadeColor: [250, 245, 232], horizon: 0.84, pad: phone ? 0.84 : 0.76, people: 0.3, crew: phone ? 4 : 6, crewAt: phone ? 0.06 : 0.08, crewSpan: phone ? 0.28 : 0.26, offset: 7 });
 
     // ── Easter eggs ──────────────────────────────────────────────────────────
@@ -910,21 +913,23 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
     };
     // La conversación empieza con cada lanzamiento: encendido, despegue, ascenso y «ya está arriba».
     // Cada lanzamiento trae otro diálogo. Tocar a un ingeniero lanza el cohete y esa persona abre.
-    let hold = false, launches = 0, lead = null;
+    let hold = false, launches = 0, lead = null, opened = null;
     const REACTIONS = [
-      { 1: ["Mayer", "Ignition."], 2: ["Fixer", "Liftoff! That's my branch."], 3: ["Reviewer", "Diff looked clean."], 4: ["Risk", "Deploy's live. Risk: low."] },
-      { 1: ["Triage", "Engines on. No errors."], 2: ["Risk", "Holding my breath…"], 3: ["Mayer", "Nominal."], 4: ["Reviewer", "LGTM from here."] },
-      { 1: ["Fixer", "Here goes my one-liner."], 2: ["Reviewer", "Approved and away."], 3: ["Triage", "Logs are quiet."], 4: ["Mayer", "Live on cloud dev. Next!"] },
-      { 1: ["Risk", "Checks green?"], 2: ["Fixer", "All green. Go!"], 3: ["Triage", "Watching the errors…"], 4: ["Mayer", "Clean deploy. Coffee?"] },
+      { 1: ["Mayer", "Here we go!"], 2: ["Fixer", "Look at it go!"], 3: ["Reviewer", "Okay, that's pretty."], 4: ["Risk", "Phew. Lunch?"] },
+      { 1: ["Triage", "Wait, is that ours?"], 2: ["Risk", "Can't look… tell me when."], 3: ["Mayer", "Told you it'd work."], 4: ["Reviewer", "Not bad at all."] },
+      { 1: ["Fixer", "That one's mine!"], 2: ["Reviewer", "Bye bye, little guy!"], 3: ["Triage", "So far so good."], 4: ["Mayer", "Nice work, team."] },
+      { 1: ["Risk", "Everybody ready?"], 2: ["Fixer", "Woooo!"], 3: ["Triage", "Still going up…"], 4: ["Mayer", "Coffee's on me."] },
     ];
-    const OPENERS = { Mayer: "Launching. Eyes up!", Fixer: "That's my fix going up!", Reviewer: "Approved. Light it.", Risk: "Fingers crossed…", Triage: "Ignition. Logs open.", Explainer: "Here's how a deploy looks." };
+    const OPENERS = { Mayer: "Hey, look up!", Fixer: "Ooh, here it goes!", Reviewer: "Alright, send it.", Risk: "Fingers crossed…", Triage: "Oh! It's starting!", Explainer: "This is the fun part." };
     onLaunchPhase = (phase) => {
       if (hold) return;
       if (phase === 1) { launches++; talkId++; document.querySelectorAll(".bubble").forEach((b) => b.remove()); }
       const set = REACTIONS[(launches - 1 + REACTIONS.length) % REACTIONS.length];
       let line = set[phase];
       if (!line) return;
-      if (phase === 1 && lead) { line = [lead, OPENERS[lead] || "Ignition!"]; lead = null; }
+      if (phase === 1) { opened = lead || line[0]; if (lead) { line = [lead, OPENERS[lead] || "Here it goes!"]; lead = null; } }
+      // Quien abrió no habla dos veces seguidas: contesta otro.
+      else if (phase === 2 && line[0] === opened) line = [["Mayer", "Triage", "Reviewer", "Fixer"].find((n) => n !== opened && n !== set[3][0]), line[1]];
       say(line[0], line[1], talkId);
     };
     hero.addEventListener("mousemove", (e) => hero.classList.toggle("crew-hover", !!heroScene.crewAt(e.clientX, e.clientY)));
@@ -946,11 +951,11 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
       // Un «go / no-go» como en un lanzamiento: cada agente contesta por turno.
       const id = ++talkId;
       document.querySelectorAll(".bubble").forEach((b) => b.remove());
-      [["Mayer", "Go / no-go for launch?"], ["Triage", "Go."], ["Fixer", "Go."], ["Risk", "Go. Risk: low."], ["Reviewer", "Go."], ["Mayer", "We are go. 🚀"]]
+      [["Mayer", "So… are we doing this?"], ["Triage", "Yep."], ["Fixer", "Totally."], ["Risk", "Sure, why not."], ["Reviewer", "Go for it."], ["Mayer", "Let's go! 🚀"]]
         .forEach(([who, text], k) => setTimeout(() => say(who, text, id), k * 900));
       hold = true;
       // Al terminar la ronda, el despegue (y la tripulación reacciona como siempre).
-      setTimeout(() => { if (id !== talkId) return; hold = false; toast("🚀 All agents approve. Launching."); heroScene.launch(); endScene.launch(); }, 5 * 900 + 700);
+      setTimeout(() => { if (id !== talkId) return; hold = false; toast("🚀 Everyone said yes. Off it goes!"); heroScene.launch(); endScene.launch(); }, 5 * 900 + 700);
     });
     // 3. Cinco clics en el logo.
     let logoClicks = 0, logoTimer;

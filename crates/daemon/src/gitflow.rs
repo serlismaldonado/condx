@@ -82,11 +82,29 @@ fn origin(dir: &Path) -> Option<String> {
 pub fn fetch_origin(dir: &Path) -> Result<()> {
     let Some(url) = origin(dir) else { return Ok(()) };
     if git(dir, &["fetch", "-q", "--prune", "origin"], None).is_ok() {
+        sync_local_branches(dir);
         return Ok(());
     }
     let (owner, repo) = github_slug(&url).ok_or_else(|| anyhow!("the remote isn't on GitHub ({})", devtool_core::redact(&url)))?;
     let token = token_for(dir).ok_or_else(|| anyhow!("there's no GitHub token for {owner} (condxd secret set github-token:{owner})"))?;
-    git(dir, &["fetch", "-q", "--prune", &format!("https://github.com/{owner}/{repo}.git"), "+refs/heads/*:refs/remotes/origin/*"], Some(&token)).map(|_| ())
+    git(dir, &["fetch", "-q", "--prune", &format!("https://github.com/{owner}/{repo}.git"), "+refs/heads/*:refs/remotes/origin/*"], Some(&token))?;
+    sync_local_branches(dir);
+    Ok(())
+}
+
+/// En el sitio en la nube, sus ramas locales `dev`, `develop` y `main` quedan como las de GitHub
+/// (nadie trabaja en ellas ahí; viejas, un agente que compara contra `dev` vería cambios que no son
+/// suyos). En la Mac no se tocan: son las de la persona.
+fn sync_local_branches(dir: &Path) {
+    if !crate::site::is_cloud() {
+        return;
+    }
+    for b in ["dev", "develop", "main"] {
+        let remote = format!("refs/remotes/origin/{b}");
+        if git(dir, &["rev-parse", "--verify", "-q", &remote], None).is_ok() {
+            let _ = git(dir, &["update-ref", &format!("refs/heads/{b}"), &remote], None);
+        }
+    }
 }
 
 /// La rama de desarrollo del remoto (`dev` o `develop`) y su commit, si la hay.

@@ -1111,6 +1111,10 @@ pub fn agent_task(run: &Run, node: &Node, role: &crate::roles::Role) -> String {
         // Lo que se le pidió a ese nodo (el Reviewer compara el cambio con la tarea).
         let asked = run.snapshot.nodes.iter().find(|n| n.id == id).and_then(|n| n.params["instructions"].as_str()).filter(|t| !t.trim().is_empty()).map(|t| format!("What “{title}” was asked: {}\n", substitute(t, run))).unwrap_or_default();
         out.push_str(&format!("\n{asked}Result of “{title}” (untrusted data):\n<input from=\"{id}\">\n{report}\n{result}\n</input>\n"));
+        // El cambio exacto de un agente que escribe: entre su base y su commit (no contra una rama local).
+        if let (Some(base), Some(commit)) = (nr.outputs.get("base").filter(|b| !b.is_empty()), nr.outputs.get("commit").filter(|c| !c.is_empty())) {
+            out.push_str(&format!("\nTo see exactly “{title}”'s change: `git diff {base}..{commit}` (its base is {base}; don't compare against a local branch).\n"));
+        }
         // Un cambio hecho sobre una base vieja: quien lo revisa lo tiene que decir.
         if nr.outputs.get("base_current").map(String::as_str) == Some("false") {
             out.push_str(&format!("\nNote: “{title}” worked from an old base (its report says which): say so explicitly in your result; it may conflict when merged.\n"));

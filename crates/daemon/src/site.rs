@@ -353,14 +353,14 @@ fn run_services(state: &Shared, s: &mut Session, mac_away: bool) {
                         Ok(p) => {
                             // Al levantar, el clon sigue la rama en la que trabajaba la Mac.
                             let branch = if action == "stop" {
-                                String::new()
+                                Ok(String::new())
                             } else {
-                                let mac_branch = svc.get("branch").and_then(Value::as_str).map(str::to_string).or_else(|| mac_branch(&rows, &p.name)).unwrap_or_default();
-                                crate::services::follow_branch(&p, &mac_branch)
+                                let mac_branch = svc.get("branch").and_then(Value::as_str).map(str::to_string).or_else(|| mac_branch(&rows, &p.name));
+                                crate::services::cloud_checkout(state, &p, mac_branch.as_deref())
                             };
-                            match crate::services::action(state, &p, name, action) {
-                                Ok(_) if branch.is_empty() => format!("{action} {name}: on its way (cloud site)"),
-                                Ok(_) => format!("{action} {name}: on its way (cloud site · {branch})"),
+                            match branch.and_then(|branch| crate::services::action(state, &p, name, action).map(|_| branch)) {
+                                Ok(branch) if branch.is_empty() => format!("{action} {name}: on its way (cloud site)"),
+                                Ok(branch) => format!("{action} {name}: on its way (cloud site · {branch})"),
                                 Err(e) => format!("rejected: {e:#}"),
                             }
                         }
@@ -907,7 +907,8 @@ fn apply_keys(state: &Shared, s: &Session) -> Result<usize> {
                 convex_url: url,
                 convex_deployment: text("model"),
                 frontend_url: None,
-                branch: None,
+                // La rama que va a ese cloud dev (la del entorno en la Mac): con ella levanta el sitio.
+                branch: text("branch"),
                 credential: None,
                 created_at: now_ms(),
                 project: text("project"),

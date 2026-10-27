@@ -106,7 +106,7 @@ pub fn tools() -> Vec<Value> {
         tool(
             "service_action",
             "Starts, stops or restarts a development service (backend, deployer, frontend; in heskala-erp the frontend is vite) or all of them (all). On the Mac they're local; on the cloud site (when the Mac is off) there's no local backend: the deployer runs convex dev against the project's cloud dev and the frontend gets a public URL (list_services → publicUrl).",
-            json!({ "name": { "type": "string", "enum": ["backend", "deployer", "frontend", "vite", "all"] }, "action": { "type": "string", "enum": ["start", "stop", "restart"] }, "project": project_arg() }),
+            json!({ "name": { "type": "string", "enum": ["backend", "deployer", "frontend", "vite", "all"] }, "action": { "type": "string", "enum": ["start", "stop", "restart"] }, "project": project_arg(), "branch": { "type": "string", "description": "Cloud site only: the branch to run and deploy to the cloud dev. Defaults to the cloud dev environment's branch (it must be on GitHub)." } }),
             &["name", "action"],
         ),
         tool(
@@ -455,7 +455,14 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
         "service_action" => {
             need(Scope::JobsRequest)?;
             let project = crate::projects::get(state, args["project"].as_str())?;
-            crate::services::action(state, &project, args["name"].as_str().unwrap_or_default(), args["action"].as_str().unwrap_or_default())?
+            let action = args["action"].as_str().unwrap_or_default();
+            // En el sitio, primero la rama que va al cloud dev (la pedida o la del entorno), nunca la que quedó.
+            let branch = if crate::site::is_cloud() && action != "stop" { Some(crate::services::cloud_checkout(state, &project, args["branch"].as_str())?) } else { None };
+            let mut v = crate::services::action(state, &project, args["name"].as_str().unwrap_or_default(), action)?;
+            if let Some(b) = branch {
+                v["branch"] = json!(b);
+            }
+            v
         }
         "get_service_logs" => {
             let project = crate::projects::get(state, args["project"].as_str())?;

@@ -324,7 +324,7 @@ const LIVE_TICK_MS: i64 = 1_500;
 
 /// Lo que el teléfono ve de un proveedor: sus datos y su clave cifrada para la Mac y los teléfonos de
 /// confianza (`sealed`, age armado). Nunca la clave en claro.
-const KEY_FIELDS: &[&str] = &["kind", "label", "baseUrl", "model", "keyHint", "sealed", "recipients", "updatedAt", "project"];
+const KEY_FIELDS: &[&str] = &["kind", "label", "baseUrl", "model", "keyHint", "sealed", "recipients", "updatedAt", "project", "branch"];
 
 /// Los resueltos se ven un rato (para que el teléfono vea en qué terminó lo que pidió).
 const RESOLVED_VISIBLE_MS: i64 = 3_600_000;
@@ -906,9 +906,9 @@ fn deploy_key_rows(state: &Shared, devices: &[TrustedDevice], cache: &mut IndexM
         if crate::secrets::check_deploy_key(&env, &key).is_err() {
             continue;
         }
-        // Un sello de la key (no la key): cambia si la key o el sitio cambian.
+        // Un sello de la key (no la key): cambia si la key, el sitio o la rama del entorno cambian.
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (key.as_str(), names.join(",")).hash(&mut h);
+        (key.as_str(), names.join(","), env.branch.as_deref().unwrap_or("")).hash(&mut h);
         let print = format!("{:x}", h.finish());
         let id = format!("deploy:{}", env.name);
         let sealed = match cache.get(&id) {
@@ -926,7 +926,7 @@ fn deploy_key_rows(state: &Shared, devices: &[TrustedDevice], cache: &mut IndexM
         };
         rows.insert(id, obj(json!({
             "kind": "convex-deploy", "label": env.name, "baseUrl": env.convex_url, "model": env.convex_deployment,
-            "project": env.project.as_deref().unwrap_or(crate::projects::DEFAULT), "sealed": sealed, "recipients": site.len(), "updatedAt": print,
+            "project": env.project.as_deref().unwrap_or(crate::projects::DEFAULT), "branch": env.branch, "sealed": sealed, "recipients": site.len(), "updatedAt": print,
         })));
     }
     rows

@@ -433,6 +433,26 @@ fn cloud_deployer_spec(state: &Shared, project: &Project) -> Result<Spec> {
 
 /// La rama en la que trabaja la Mac, en el clon del sitio: así se sigue en la nube donde se dejó.
 /// Solo si está en GitHub y el clon no tiene cambios propios; si no, se queda donde está.
+/// La rama con que el sitio en la nube levanta un proyecto (y la despliega a su cloud dev): la pedida
+/// (la de la Mac, o la que nombre quien lo pide) si está en GitHub; si no, la del entorno cloud dev (lo
+/// que ese deployment ya tiene, `dev` en el ERP). Nunca otra sin avisar: si no puede cambiar, error, y
+/// no se levanta nada (desplegar la rama equivocada atrasaría el cloud dev).
+pub fn cloud_checkout(state: &Shared, project: &Project, wanted: Option<&str>) -> Result<String> {
+    let env_branch = cloud_dev(state, project).ok().and_then(|e| e.branch).filter(|b| !b.is_empty());
+    let mut tried = vec![];
+    for b in [wanted.filter(|b| !b.is_empty()).map(str::to_string), env_branch].into_iter().flatten() {
+        let r = follow_branch(project, &b);
+        if r == format!("branch {b}") {
+            return Ok(r);
+        }
+        tried.push(r);
+    }
+    if tried.is_empty() {
+        bail!("{} has no branch to deploy to its cloud dev: say which one", project.name);
+    }
+    bail!("{} couldn't switch to a branch to deploy: {}", project.name, tried.join("; "))
+}
+
 pub fn follow_branch(project: &Project, branch: &str) -> String {
     let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&project.repo).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     let here = git(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();

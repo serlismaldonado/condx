@@ -31,11 +31,11 @@
     .wrap { max-width: var(--col); margin: 0 auto; padding: 0 32px; }
 
     /* Portada: la ilustración de píxeles a todo el ancho, en los tonos de la marca. */
-    .hero { position: relative; min-height: 660px; color: #fff8e6; background: var(--night); overflow: hidden; }
+    .hero { position: relative; min-height: max(660px, 100vh); min-height: max(660px, 100svh); color: #fff8e6; background: var(--bg); overflow: hidden; }
     #scene { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
     .hero .wrap { position: relative; z-index: 1; }
     /* El lado del texto, más oscuro (el sol queda a la derecha). */
-    .hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(21,18,11,0.74) 0%, rgba(21,18,11,0.42) 42%, rgba(21,18,11,0) 70%); pointer-events: none; }
+    .hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(21,18,11,0.74) 0%, rgba(21,18,11,0.42) 42%, rgba(21,18,11,0) 70%); pointer-events: none; -webkit-mask-image: linear-gradient(180deg, #000 66%, transparent 80%); mask-image: linear-gradient(180deg, #000 66%, transparent 80%); }
     .hero > .wrap { z-index: 2; }
     nav.top { display: flex; align-items: center; gap: 24px; height: 84px; }
     .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font: 500 30px/1 "Funnel Display", sans-serif; color: #fff8e6; }
@@ -143,10 +143,10 @@
     .grid > *, .split > *, .trio > *, .steps > * { min-width: 0; }
 
     /* Cierre: la ilustración otra vez, más baja. */
-    .end { position: relative; color: #fff8e6; background: var(--night); overflow: hidden; text-align: center; padding: 110px 0 90px; }
+    .end { position: relative; color: #fff8e6; background: var(--tint); overflow: hidden; text-align: center; padding: 190px 0 120px; }
     .end canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
     .end .wrap { position: relative; }
-    .end::after { content: ""; position: absolute; inset: 0; background: rgba(21,18,11,0.55); }
+    .end::after { content: ""; position: absolute; inset: 0; background: rgba(21,18,11,0.5); -webkit-mask-image: linear-gradient(180deg, transparent 18%, #000 32%); mask-image: linear-gradient(180deg, transparent 18%, #000 32%); }
     .end .wrap { z-index: 2; }
     .end h2 { margin-bottom: 22px; }
     footer { padding: 26px 0 36px; color: var(--subtle); font-size: 14px; }
@@ -160,8 +160,8 @@
     @media (max-width: 640px) {
       .wrap { padding: 0 16px; }
       nav.top .links a:not(.btn-white) { display: none; }
-      .hero { min-height: 900px; }
-      .hero::after { background: linear-gradient(180deg, rgba(21,18,11,0.8) 0%, rgba(21,18,11,0.6) 58%, rgba(21,18,11,0) 74%); }
+      .hero { min-height: max(900px, 100svh); }
+      .hero::after { background: linear-gradient(180deg, rgba(21,18,11,0.8) 0%, rgba(21,18,11,0.6) 58%, rgba(21,18,11,0) 74%); -webkit-mask-image: none; mask-image: none; }
       section { padding: 64px 0; }
       .sub { margin-bottom: 32px; }
     }
@@ -411,7 +411,7 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
       const css = (v, a = 1) => { const c = color(v); return `rgba(${c[0]},${c[1]},${c[2]},${a})`; };
       const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
       const levels = 22;
-      let W, H, horizon, padX, padY, bg, fg, stars, smoke, px, lastTime = null, prevTail = null;
+      let W, H, horizon, padX, padY, bg, fg, fade, stars, smoke, px, lastTime = null, prevTail = null;
       const rnd = (() => { let s = 11; return () => (s = (s * 16807) % 2147483647) / 2147483647; })();
 
       // Un ingeniero: cabeza con audífonos, cuerpo, piernas y lo que hace (tablet, señalar, brazos).
@@ -489,7 +489,7 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
         // Primer plano: la plataforma de observación con su barandal y el grupo de ingenieros.
         fg = document.createElement("canvas"); fg.width = W; fg.height = H;
         const f = fg.getContext("2d");
-        const deck = H - Math.max(4, Math.round(H * 0.06));
+        const deck = H - Math.max(4, Math.round(H * (opts.fadeBottom ? 0.25 : 0.06)));
         f.fillStyle = css(0.04); f.fillRect(0, deck, W, H - deck);
         f.fillStyle = css(0.2); f.fillRect(0, deck, W, 1);
         const railY = deck - Math.max(5, Math.round(H * 0.07));
@@ -505,6 +505,34 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
           const x = Math.round(startX + (span / Math.max(1, n - 1)) * i + (rnd() - 0.5) * 3);
           const hh = Math.round(h * (0.92 + rnd() * 0.12));
           person(f, x, deck, hh, poses[i % poses.length], true);
+        }
+
+        // El borde que se deshace en píxeles hacia el color de la página (como boat): columnas de
+        // alturas irregulares y un tramado que se va llenando.
+        fade = null;
+        if (opts.fadeBottom || opts.fadeTop) {
+          fade = document.createElement("canvas"); fade.width = W; fade.height = H;
+          const fx = fade.getContext("2d"); const m = fx.createImageData(W, H);
+          const end = opts.fadeColor;
+          const zone = Math.round(H * 0.24);
+          for (let x = 0; x < W; x++) {
+            const col = Math.floor(x / 3);
+            const jag = (Math.sin(col * 0.41 + 0.7) * 0.55 + Math.sin(col * 0.13 + 2.1) * 0.3 + Math.sin(col * 1.31) * 0.15) * zone * 0.14;
+            for (let k = 0; k < zone; k++) {
+              const y = opts.fadeBottom ? H - zone + k : zone - 1 - k;
+              const p = Math.max(0, Math.min(1, (k + jag) / zone));
+              // El tono sube por la paleta (ámbar → crema) y termina en el color de la página; la
+              // opacidad, en 6 escalones con tramado.
+              const th = bayer[(y % 4) * 4 + (x % 4)] / 16;
+              const a = Math.min(1, Math.floor(Math.pow(p, 0.7) * 1.4 * 8 + th) / 8);
+              if (a <= 0) continue;
+              const c = color(0.14 + p * 0.86), mix = Math.max(0, (p - 0.6) / 0.4);
+              const i = (y * W + x) * 4;
+              m.data[i] = c[0] + (end[0] - c[0]) * mix; m.data[i + 1] = c[1] + (end[1] - c[1]) * mix; m.data[i + 2] = c[2] + (end[2] - c[2]) * mix; m.data[i + 3] = Math.round(a * 255);
+            }
+            for (let y of opts.fadeBottom ? [H - 1, H - 2] : [0, 1]) { const i = (y * W + x) * 4; m.data[i] = end[0]; m.data[i + 1] = end[1]; m.data[i + 2] = end[2]; m.data[i + 3] = 255; }
+          }
+          fx.putImageData(m, 0, 0);
         }
 
         // Estrellas (parpadean) y el humo del lanzamiento.
@@ -569,6 +597,7 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
           }
         }
         ctx.drawImage(fg, 0, 0);
+        if (fade) ctx.drawImage(fade, 0, 0);
       };
 
       setup();
@@ -752,8 +781,8 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
     });
 
     const phone = window.innerWidth < 640;
-    scene(document.getElementById("scene"), { horizon: phone ? 0.9 : 0.84, pad: phone ? 0.86 : 0.9, people: phone ? 0.12 : 0.22, crew: phone ? 4 : 5, crewAt: phone ? 0.08 : 0.5, crewSpan: phone ? 0.6 : 0.28, offset: 1 });
-    scene(document.getElementById("scene2"), { horizon: 0.84, pad: phone ? 0.84 : 0.76, people: 0.3, crew: phone ? 4 : 6, crewAt: phone ? 0.06 : 0.08, crewSpan: phone ? 0.28 : 0.26, offset: 7 });
+    scene(document.getElementById("scene"), { fadeBottom: true, fadeColor: [254, 254, 254], horizon: phone ? 0.7 : 0.66, pad: phone ? 0.86 : 0.9, people: phone ? 0.12 : 0.22, crew: phone ? 4 : 5, crewAt: phone ? 0.08 : 0.5, crewSpan: phone ? 0.6 : 0.28, offset: 1 });
+    scene(document.getElementById("scene2"), { fadeTop: true, fadeColor: [250, 245, 232], horizon: 0.84, pad: phone ? 0.84 : 0.76, people: 0.3, crew: phone ? 4 : 6, crewAt: phone ? 0.06 : 0.08, crewSpan: phone ? 0.28 : 0.26, offset: 7 });
   </script>
 </body>
 </html>

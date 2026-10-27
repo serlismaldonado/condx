@@ -228,6 +228,8 @@ struct Session {
     answering: IndexMap<String, Answering>,
     /// Pedidos ya tomados (uno por fila y pedido).
     taken: std::collections::HashSet<String>,
+    /// Sus corridas de flujo publicadas como hilos (`site-<corrida>`): lo último armado y cuándo.
+    runs: (i64, IndexMap<String, Values>),
     /// Proyectos que se están clonando o que fallaron (no se reintenta en cada vuelta).
     cloning: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, i64>>>,
     /// Cuándo publicó su resumen y cuándo un teléfono le pidió algo a un servicio.
@@ -262,7 +264,7 @@ fn open(id: &Identity, rt: tokio::runtime::Handle) -> Result<Session> {
     engine.enable_scope(&threads_scope, None).map_err(|e| anyhow!("{e}"))?;
     let age = id.age.parse::<age::x25519::Identity>().map_err(|e| anyhow!("bad encryption identity in site.json: {e}"))?;
     let bell = crate::bell::Bell::start(&id.url, &id.token, &[keys_scope.clone(), threads_scope.clone()], localfirst_core::PROTOCOL_VERSION);
-    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0, busy_at: now_ms(), stopping: false, rt, answering: IndexMap::new(), taken: Default::default(), cloning: Default::default(), overview_at: 0, service_asked_at: 0, mcp: Default::default() })
+    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0, busy_at: now_ms(), stopping: false, rt, answering: IndexMap::new(), taken: Default::default(), runs: (0, IndexMap::new()), cloning: Default::default(), overview_at: 0, service_asked_at: 0, mcp: Default::default() })
 }
 
 /// Una vuelta: timbre (en vivo o por HTTP) y sincronizar; luego aplicar las claves que cambiaron.
@@ -300,6 +302,9 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let mac_away = !mac_alive || handover;
     clone_projects(state, s);
     answer_threads(state, s, mac_away);
+    if let Err(e) = publish_runs(state, s) {
+        tracing::warn!("site: couldn't publish its runs: {e:#}");
+    }
     answer_mcp(state, s, mac_away);
     run_services(state, s, mac_away, mac_alive);
     publish_overview(state, s)?;
@@ -502,6 +507,22 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
         let picked = picked.filter(|n| state.store.projects().unwrap_or_default().iter().any(|p| &p.name == n));
         let (model, said) = crate::agents::take_model(&said);
         let said = said.trim().to_string();
+        // El hilo de una corrida del sitio: el mensaje va a esa corrida, como en la Mac (`@Fixer` sigue
+        // en su worktree y su rama; sin mención, el Explicador).
+        if let Some(run_id) = id.strip_prefix("site-").filter(|r| crate::workflows::load_run(state, r).is_ok()) {
+            let _rt = s.rt.enter();
+            let result = match s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model.clone(), crate::threads::message_with(state, run_id, &said, &[]))) {
+                Ok(v) => format!("sent to {}", v["to"].as_str().unwrap_or("the thread")),
+                Err(e) => format!("rejected: {e:#}"),
+            };
+            tracing::info!("site: phone message on its run {run_id}: {result}");
+            let mut set = Values::new();
+            set.insert("result".into(), json!(result));
+            set.insert("resultFor".into(), json!(request_id));
+            let _ = s.engine.commit(vec![OpDraft::patch(&s.threads_scope, id, set)], now_ms());
+            s.runs.0 = 0;
+            continue;
+        }
         let mut text = said.clone();
         if req.files.is_some() {
             text.push_str("\n\n(The phone sent attachments; they're sealed for the Mac and can't be opened here.)");
@@ -890,6 +911,50 @@ fn canonical_url(url: &str, token: Option<&str>) -> Option<String> {
     }
     let v: Value = req.call().ok()?.into_json().ok()?;
     v["full_name"].as_str().map(|n| format!("https://github.com/{n}.git"))
+}
+
+/// Lo que el sitio escribe en sus propios hilos (como `SITE_OWN_FIELDS` en Condx Cloud).
+const OWN_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project"];
+
+/// Las corridas de flujo del sitio (una tarea pedida con la Mac apagada) como hilos `site-<corrida>`,
+/// para verlas y contestarlas desde el teléfono (`@Fixer` sigue en la misma corrida, como en la Mac).
+/// Cada 5 s si alguna trabaja, si no cada minuto; solo lo que cambió.
+fn publish_runs(state: &Shared, s: &mut Session) -> Result<()> {
+    let working = !state.store.runs(None, &["running", "waiting-approval", "waiting-answer"], 1)?.is_empty() || !state.store.agent_runs(&["running"], None)?.is_empty();
+    if now_ms() - s.runs.0 < if working { 5_000 } else { 60_000 } {
+        return Ok(());
+    }
+    let prev = std::mem::take(&mut s.runs.1);
+    let built = s.rt.block_on(crate::cloud::thread_rows(state, &prev));
+    let existing: std::collections::HashMap<String, Values> = s.engine.rows(&s.threads_scope).into_iter().filter(|r| r.row.id.starts_with("site-r")).map(|r| (r.row.id.clone(), r.row.values.clone())).collect();
+    let mut drafts = vec![];
+    for (id, vals) in &built {
+        if vals.get("kind").and_then(Value::as_str) != Some("flow") {
+            continue;
+        }
+        let row = format!("site-{id}");
+        let mut set = Values::new();
+        for k in OWN_FIELDS {
+            if let Some(v) = vals.get(*k) {
+                set.insert((*k).into(), v.clone());
+            }
+        }
+        match existing.get(&row) {
+            Some(old) => {
+                set.retain(|k, v| old.get(k) != Some(v));
+                if !set.is_empty() {
+                    drafts.push(OpDraft::patch(&s.threads_scope, &row, set));
+                }
+            }
+            None => drafts.push(OpDraft::create(&s.threads_scope, set).with_row(&row)),
+        }
+    }
+    s.runs = (now_ms(), built);
+    if !drafts.is_empty() {
+        s.engine.commit(drafts, now_ms()).map_err(|e| anyhow!("{e}"))?;
+        let _ = crate::cloud::block_on(sync_once(&mut s.engine, &s.transport, now_ms, 50));
+    }
+    Ok(())
 }
 
 /// Los hilos que publicó la Mac (lo último de cada uno): con la Mac apagada, los agentes de fuera los

@@ -1192,7 +1192,7 @@ fn activity(t: &Value) -> i64 {
     ["startedAt", "endedAt", "turnAt"].iter().filter_map(|k| t[*k].as_i64()).max().unwrap_or(0)
 }
 
-async fn thread_rows(state: &Shared, prev: &IndexMap<String, Values>) -> IndexMap<String, Values> {
+pub(crate) async fn thread_rows(state: &Shared, prev: &IndexMap<String, Values>) -> IndexMap<String, Values> {
     let mut out = IndexMap::new();
     let mut list = crate::threads::list(state).ok().and_then(|v| v["runs"].as_array().cloned()).unwrap_or_default();
     list.sort_by_key(|t| std::cmp::Reverse(activity(t)));

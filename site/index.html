@@ -221,9 +221,11 @@
 
     <section id="phone" class="band">
       <div class="wrap split">
-        <div>
+        <div class="aside">
           <h2>Your agents in your pocket</h2>
           <p class="sub">The Android app talks to your Mac, or to the cloud when the Mac is off. Every message and approval is signed with a key that never leaves the phone.</p>
+          <div class="cap">your phone · away from the Mac</div>
+          <div class="frame"><canvas class="art" data-art="phone" aria-hidden="true"></canvas><div class="mini top"><div class="row"><span class="dot"></span>Fixer replied · see changes</div></div><div class="mini"><div class="row" style="justify-self:end">Deploy to cloud dev?</div><div class="slide" style="justify-self:end">Approve</div></div></div>
         </div>
         <div class="list">
           <div><b>Threads</b><span>Reply to a message and it goes to whoever wrote it. Type @ to bring in someone else.</span></div>
@@ -671,6 +673,12 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
           rect(g, 0.25, cx - 1, cy, 2, hz - cy);
           for (let k = -8; k <= 8; k++) rect(g, 0.3, cx + k - 4, cy - 6 + Math.round((k * k) / 12) - 2, 1, 2);
           rect(g, 0.3, cx - 4, cy - 10, 1, 6);
+        } else if (kind === "phone") {                // un ingeniero con el teléfono encendido, la torre lejos
+          tower(g, W * 0.82, hz - 2, Math.round(H * 0.16)); rocket(g, W * 0.82 + 2, hz - 2 - Math.round(H * 0.065), Math.round(H * 0.065));
+          const hh = Math.round(H * 0.42), px0 = Math.round(W * 0.3);
+          person(g, px0, hz + Math.round(H * 0.1), hh, 0.2, "");
+          rect(g, 0.2, px0 + 2, hz + Math.round(H * 0.1) - hh * 0.62, 5, 2);
+          rect(g, 0.98, px0 + 6, hz + Math.round(H * 0.1) - hh * 0.7, 4, 6);
         } else if (kind === "launch") {               // el lanzamiento: la torre y la estela
           tower(g, W * 0.3, hz - 1, Math.round(H * 0.22));
         }
@@ -690,6 +698,7 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
           for (let s = 0; s < 14; s++) { ctx.fillStyle = fill(0.92 - s * 0.012); ctx.fillRect(x - 1 - (s % 3 === 0 ? 1 : 0), y + rh + s * 2, 3 + (s > 6 ? 1 : 0), 2); }
           rocket(ctx, x, y, rh); ctx.fillStyle = fill(1); ctx.fillRect(x, y + rh, 1, 2 + (blink ? 1 : 0));
         }
+        if (kind === "phone") { const hh = Math.round(H * 0.42), px0 = Math.round(W * 0.3); ctx.fillStyle = fill(blink ? 1 : 0.9); ctx.fillRect(px0 + 7, Math.round(hz + H * 0.1 - hh * 0.7) + 1, 2, 2); }
         if (kind === "night") { ctx.fillStyle = fill(blink ? 0.97 : 0.6); ctx.fillRect(Math.round(W * 0.62) + 11, hz - 21, 2, 2); }
       };
       setup();

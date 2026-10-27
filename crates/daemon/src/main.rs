@@ -262,7 +262,8 @@ fn daemon_url(path: &str) -> Result<String> {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(150)).build()
+    // Sin conexiones guardadas: una que el daemon cerró (al reiniciarse) hacía fallar la siguiente llamada.
+    ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(150)).max_idle_connections(0).build()
 }
 
 /// MCP por stdio: una línea JSON-RPC por mensaje, reenviada a POST /mcp. Con `CONDX_MCP_TOKEN` (el

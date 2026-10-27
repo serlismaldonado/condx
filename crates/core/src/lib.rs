@@ -103,7 +103,9 @@ pub fn redact(text: &str) -> String {
             (r"\b(sk|pk|rk)_(live|test)_[A-Za-z0-9]{10,}", "[clave redactada]"),
             (r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})", "[token redactado]"),
             (
-                r"(?i)\b([A-Z0-9_]*(SECRET|TOKEN|PASSWORD|PRIVATE_KEY|ADMIN_KEY|DEPLOY_KEY|API_KEY)[A-Z0-9_]*)\s*[=:]\s*\S+",
+                // La clave termina en la palabra o sigue con `_…` (`SECRET_KEY` sí; «Secretos:» de un texto,
+                // no) y el valor parece un secreto (sin espacios ni asteriscos, 6+ caracteres).
+                r#"(?i)\b([A-Z0-9_]*(SECRET|TOKEN|PASSWORD|PRIVATE_KEY|ADMIN_KEY|DEPLOY_KEY|API_KEY)(?:_[A-Z0-9_]*)?)\s*[=:]\s*["']?[^\s"'*]{6,}["']?"#,
                 "$1=[redactado]",
             ),
         ]
@@ -215,5 +217,19 @@ mod tests {
         assert_eq!(preferred_tab(stale, 1000, 20).map(|t| t.0), Some("b"));
         assert!(!can_read(EnvKind::CloudProd, Read::Records));
         assert!(can_read(EnvKind::CloudProd, Read::EnvVarNames));
+    }
+}
+
+#[cfg(test)]
+mod redact_prose_tests {
+    use super::redact;
+
+    #[test]
+    fn no_redacta_prosa_que_nombra_secretos() {
+        assert_eq!(redact("**Secretos:** no hay ninguno"), "**Secretos:** no hay ninguno");
+        assert_eq!(redact("Tokens: 1200 usados"), "Tokens: 1200 usados");
+        assert_eq!(redact("API_KEY=abcdef123456"), "API_KEY=[redactado]");
+        assert_eq!(redact("client_secret: \"s3cr3tvalue\""), "client_secret=[redactado]");
+        assert_eq!(redact("RESEND_API_KEY = re_123456789"), "RESEND_API_KEY=[redactado]");
     }
 }

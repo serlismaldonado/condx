@@ -307,7 +307,10 @@ fn commit_fix(run: &Value, incident: &Value) -> Value {
         return json!({ "error": "the worktree is gone" });
     }
     let attempt = || -> Result<Value> {
-        git(&dir, &["add", "-A", "--", ".", ":(exclude)node_modules"])?;
+        // Todo lo que git no ignora; el enlace a node_modules (para los chequeos) nunca entra. Nombrarlo
+        // en la orden falla si el .gitignore del repo ya lo ignora («paths are ignored»).
+        git(&dir, &["add", "-A", "--", "."])?;
+        git(&dir, &["rm", "--cached", "-q", "--ignore-unmatch", "--", "node_modules"])?;
         if git(&dir, &["diff", "--cached", "--name-only"])?.is_empty() {
             let head = git(&dir, &["rev-parse", "HEAD"])?;
             let changed = head != run["base"].as_str().unwrap_or_default();
@@ -824,15 +827,34 @@ mod tests {
     }
 
     fn repo() -> tempfile::TempDir {
+        repo_ignoring("node_modules/\n")
+    }
+
+    /// Un repo con su .gitignore (`node_modules/` ignora solo carpetas; `node_modules`, también el enlace).
+    fn repo_ignoring(gitignore: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let g = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(dir.path()).output().unwrap().status.success(), "{args:?}");
         std::fs::write(dir.path().join("sum.js"), "export const sum = (a, b) => a - b;\n").unwrap();
         std::fs::create_dir(dir.path().join("node_modules")).unwrap();
-        std::fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
+        std::fs::write(dir.path().join(".gitignore"), gitignore).unwrap();
         g(&["init", "-q"]);
         g(&["add", "-A"]);
         g(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "sum"]);
         dir
+    }
+
+    #[test]
+    fn el_commit_no_falla_si_el_gitignore_ignora_el_enlace_a_node_modules() {
+        // Como el de la landing: `node_modules` sin barra también ignora el enlace del worktree.
+        let repo = repo_ignoring("node_modules\n");
+        let worktrees = tempfile::tempdir().unwrap();
+        let incident = json!({ "id": "inc-2", "title": "lang", "evidence": {} });
+        let (dir, branch, base) = prepare_worktree(repo.path(), worktrees.path(), "run-inc-2-1", &incident).unwrap();
+        std::fs::write(dir.join("sum.js"), "export const sum = (a, b) => a + b;\n").unwrap();
+        let run = json!({ "id": "run-inc-2-1", "worktree": dir.display().to_string(), "base": base, "answer": "done" });
+        let fix = commit_fix(&run, &incident);
+        assert_eq!(fix["changes"], true, "{fix}");
+        assert_eq!(git(repo.path(), &["show", "--name-only", "--format=", &branch]).unwrap(), "sum.js");
     }
 
     #[test]

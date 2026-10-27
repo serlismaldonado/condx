@@ -81,7 +81,7 @@ const STEPS_KEPT: usize = 6;
 
 /// Los pasos de las últimas respuestas, redactados (los resultados de herramientas pueden traer
 /// secretos); sin campos vacíos.
-fn slim_steps(mut items: Vec<Value>) -> Vec<Value> {
+pub(crate) fn slim_steps(mut items: Vec<Value>) -> Vec<Value> {
     let mut kept = 0;
     for it in items.iter_mut().rev() {
         let Some(o) = it.as_object_mut() else { continue };

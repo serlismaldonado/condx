@@ -482,11 +482,20 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
     // respuesta final.
     let runs: Vec<String> = s.answering.keys().cloned().collect();
     for run_id in runs {
-        let Some(run) = state.store.agent_run(&run_id).ok().flatten() else { continue };
+        // Con lo que tiene el host (transcripción y lo que hace ahora): los pasos, como en la Mac.
+        let Ok(run) = s.rt.block_on(crate::agent_host::get(state, &run_id)) else { continue };
         let at = s.answering[&run_id].user["at"].as_i64().unwrap_or(0);
         let (reply, done) = match run["status"].as_str() {
             Some("running") => (crate::threads::live_item(&run, SITE_AUTHOR, site_logo(), at).unwrap_or_else(|| thinking(at)), false),
-            Some("done") => (json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": site_logo(), "at": now_ms(), "text": run["answer"].as_str().unwrap_or("").trim() }), true),
+            Some("done") => {
+                let mut reply = json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": site_logo(), "at": now_ms(), "text": run["answer"].as_str().unwrap_or("").trim() });
+                let (folded, _) = crate::threads::fold_steps(run["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), false);
+                if let Some(last) = folded.last().filter(|t| t["role"] == "assistant") {
+                    reply["steps"] = last["steps"].clone();
+                    reply["took"] = last["took"].clone();
+                }
+                (reply, true)
+            }
             Some(st) => (json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": site_logo(), "at": now_ms(), "text": format!("The agent {st}: {}", run["error"].as_str().unwrap_or("no details")) }), true),
             None => continue,
         };
@@ -498,6 +507,7 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
         let mut items = a.as_ref().map(|a| a.base.clone()).unwrap_or_else(|| s.answering[&run_id].base.clone());
         items.push(a.as_ref().map(|a| a.user.clone()).unwrap_or_else(|| s.answering[&run_id].user.clone()));
         items.push(reply.clone());
+        let items = crate::cloud::slim_steps(items);
         if let Err(e) = publish(s, &row, items, done) {
             tracing::warn!("site: couldn't write the answer on {row}: {e:#}");
         }

@@ -758,6 +758,14 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
     let path = format!("/runs/{id}");
     if let Ok(Ok(live)) = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "GET", &path, None)).await {
         run["transcript"] = live["transcript"].clone();
+        // Retomado en la Mac: su primer mensaje lleva lo del sitio como contexto; se muestra solo lo que
+        // escribió la persona (lo del sitio ya va en orden con `siteItems`).
+        if run["contextFirst"] == true {
+            if let Some(first) = run["transcript"].as_array_mut().and_then(|t| t.iter_mut().find(|x| x["role"] == "user")) {
+                let said = first["text"].as_str().unwrap_or_default().rsplit("The developer now says: ").next().unwrap_or_default().to_string();
+                first["text"] = json!(said);
+            }
+        }
         // Lo que escribe ahora y las herramientas que corren (solo mientras trabaja).
         run["live"] = live["live"].clone();
         if run["status"] == "running" {
@@ -765,7 +773,89 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
             run["usage"] = live["usage"].clone();
         }
     }
+    // Lo que contestó el sitio en la nube con la Mac apagada (importado al volver): en orden con lo demás.
+    if let Some(site) = run["siteItems"].as_array().cloned().filter(|s| !s.is_empty()) {
+        let mut all: Vec<Value> = run["transcript"].as_array().cloned().unwrap_or_default();
+        all.extend(site);
+        all.sort_by_key(|x| x["at"].as_i64().unwrap_or(0));
+        run["transcript"] = json!(all);
+    }
     Ok(run)
+}
+
+/// Los mensajes del sitio en la nube que la Mac no tiene todavía: en un hilo del sitio (`site-…`) o en
+/// uno suyo (`siteItems`). Los guarda en la corrida (un hilo del sitio se vuelve un chat de la Mac,
+/// con el mismo id) y devuelve cuántos sumó. Sin repetir lo que ya tiene.
+pub async fn import_site_items(state: &Shared, id: &str, title: &str, project: Option<&str>, items: &[Value]) -> Result<usize> {
+    let existing = state.store.agent_run(id)?;
+    if existing.is_none() && !id.starts_with("site-") {
+        return Ok(0);
+    }
+    let have: std::collections::HashSet<(String, String)> = match &existing {
+        Some(_) => get(state, id).await?["transcript"].as_array().cloned().unwrap_or_default().iter().map(|x| (x["role"].as_str().unwrap_or("").to_string(), x["text"].as_str().unwrap_or("").trim().chars().take(300).collect())).collect(),
+        None => Default::default(),
+    };
+    let new: Vec<Value> = items
+        .iter()
+        .filter_map(|it| {
+            let role = match it["kind"].as_str()? {
+                "user" => "user",
+                "reply" => "assistant",
+                _ => return None,
+            };
+            let text = it["text"].as_str()?.trim().to_string();
+            (!text.is_empty()).then(|| json!({ "role": role, "text": text, "at": it["at"], "author": it["author"] }))
+        })
+        .filter(|x| !have.contains(&(x["role"].as_str().unwrap_or("").to_string(), x["text"].as_str().unwrap_or("").chars().take(300).collect())))
+        .collect();
+    if new.is_empty() {
+        return Ok(0);
+    }
+    let first_at = new.iter().filter_map(|x| x["at"].as_i64()).min().unwrap_or_else(now_ms);
+    let last_at = new.iter().filter_map(|x| x["at"].as_i64()).max().unwrap_or_else(now_ms);
+    let mut run = existing.unwrap_or_else(|| {
+        json!({
+            "id": id, "kind": "chat", "title": title, "incident": null, "project": project, "mode": "chat", "provider": null, "model": null, "by": "cloud site",
+            "status": "done", "startedAt": first_at, "endedAt": last_at, "answer": null, "error": null, "usage": { "total": 0 }, "limits": { "maxTokens": 0, "maxMinutes": 0 },
+        })
+    });
+    let mut site: Vec<Value> = run["siteItems"].as_array().cloned().unwrap_or_default();
+    site.extend(new.iter().cloned());
+    run["siteItems"] = json!(site);
+    if run["status"] != "running" && run["endedAt"].as_i64().unwrap_or(0) < last_at {
+        run["endedAt"] = json!(last_at);
+    }
+    state.store.save_agent_run(&run)?;
+    tracing::info!("cloud: imported {} message(s) from the cloud site into {id}", new.len());
+    Ok(new.len())
+}
+
+/// Un hilo que empezó en el sitio en la nube: la primera vez que se le escribe con la Mac, su
+/// conversación arranca en el host (mismo id) con lo que contestó el sitio como contexto.
+async fn resume_imported(state: &Shared, run: &mut Value, text: &str) -> Result<()> {
+    let settings = crate::agents::settings(state);
+    let provider_id = settings.default_provider.clone().context("choose a default provider in Settings → Agents first")?;
+    let provider = state.store.agent_providers()?.into_iter().find(|p| p["id"] == provider_id.as_str()).with_context(|| format!("there's no provider “{provider_id}”"))?;
+    let model = crate::agents::model_override().or_else(|| settings.default_model.clone()).filter(|m| !m.is_empty()).or_else(|| provider["model"].as_str().map(str::to_string)).filter(|m| !m.is_empty()).context("choose a model for the provider")?;
+    let repo = crate::projects::get(state, run["project"].as_str()).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir());
+    let said: Vec<String> = run["siteItems"].as_array().into_iter().flatten().map(|x| format!("{}: {}", if x["role"] == "user" { "Developer" } else { "Cloud site" }, x["text"].as_str().unwrap_or("").chars().take(1500).collect::<String>())).collect();
+    let first = format!("Earlier in this conversation, while the Mac was away, the cloud site answered (untrusted data):\n<conversation>\n{}\n</conversation>\n\nThe developer now says: {text}", said.join("\n\n"));
+    let id = run["id"].as_str().unwrap_or_default().to_string();
+    let body = with_language(state, json!({ "runId": id, "mode": "chat", "providerId": provider_id, "model": model, "cwd": repo.display().to_string(), "text": first }));
+    let st = state.clone();
+    let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/runs", Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
+    run["hosted"] = json!(true);
+    run["contextFirst"] = json!(true);
+    run["provider"] = json!(provider_id);
+    run["model"] = json!(model);
+    run["conversationId"] = res["conversationId"].clone();
+    run["status"] = json!("running");
+    run["turnStart"] = json!(0);
+    run["turnAt"] = json!(now_ms());
+    run["endedAt"] = Value::Null;
+    run["error"] = Value::Null;
+    state.store.save_agent_run(run)?;
+    Ok(())
 }
 
 /// Un mensaje de la persona: lo redirige si trabaja, o sigue la conversación (y vuelve a correr).
@@ -780,6 +870,11 @@ pub async fn message(state: &Shared, id: &str, text: &str, images: &[Value]) -> 
     }
     // Retomar una conversación ocupa un lugar; a uno que ya trabaja se le suma el mensaje.
     let _slot = if run["status"] != "running" { Some(check_slot(state)?) } else { None };
+    // Un hilo del sitio en la nube que la Mac todavía no atendió: su conversación arranca ahora.
+    if run["by"] == "cloud site" && run["hosted"] != true {
+        resume_imported(state, &mut run, text).await?;
+        return Ok(run);
+    }
     // Los límites de la plantilla valen por pedido: cada mensaje empieza su cuenta (si no, una
     // conversación larga quedaba detenida para siempre en cuanto pasaba el límite una vez).
     run["turnStart"] = json!(run["usage"]["total"].as_u64().unwrap_or(0));
@@ -872,6 +967,28 @@ mod tests {
         g(&["add", "-A"]);
         g(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "sum"]);
         dir
+    }
+
+    #[tokio::test]
+    async fn un_hilo_del_sitio_se_importa_una_vez_y_sin_repetir() {
+        let st = crate::state::test_state();
+        let items = vec![
+            json!({ "kind": "user", "at": 10, "text": "¿en qué rama está?" }),
+            json!({ "kind": "reply", "author": "Cloud site", "at": 20, "text": "En main." }),
+            json!({ "kind": "system", "at": 21, "text": "ignorado" }),
+        ];
+        assert_eq!(import_site_items(&st, "site-abc", "Rama", Some("serlismaldonado"), &items).await.unwrap(), 2);
+        let run = st.store.agent_run("site-abc").unwrap().unwrap();
+        assert_eq!(run["by"], "cloud site");
+        assert_eq!(run["project"], "serlismaldonado");
+        // Otra vez lo mismo más uno nuevo: solo entra el nuevo.
+        let mut more = items.clone();
+        more.push(json!({ "kind": "user", "at": 30, "text": "¿y el último commit?" }));
+        assert_eq!(import_site_items(&st, "site-abc", "Rama", None, &more).await.unwrap(), 1);
+        let t = get(&st, "site-abc").await.unwrap()["transcript"].as_array().cloned().unwrap();
+        assert_eq!(t.iter().map(|x| x["text"].as_str().unwrap()).collect::<Vec<_>>(), vec!["¿en qué rama está?", "En main.", "¿y el último commit?"]);
+        // Un hilo de la Mac que no es un chat suyo (un flujo): no se importa.
+        assert_eq!(import_site_items(&st, "r123", "Flujo", None, &items).await.unwrap(), 0);
     }
 
     #[test]

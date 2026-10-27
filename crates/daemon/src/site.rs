@@ -424,7 +424,9 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
         let Some(request_id) = v.get("requestId").and_then(Value::as_str) else { continue };
         let answered = [v.get("resultFor"), v.get("siteFor")].iter().any(|f| f.and_then(|x| x.as_str()) == Some(request_id));
         let mine = id.starts_with("site-");
-        if r.pending || answered || (!mine && !mac_away) || (id.starts_with('_') && id != crate::cloud::NEW_ROW) {
+        // Con la Mac aquí contesta ella, también los hilos del sitio (los importa al volver).
+        let _ = mine;
+        if r.pending || answered || !mac_away || (id.starts_with('_') && id != crate::cloud::NEW_ROW) {
             continue;
         }
         if !s.taken.insert(format!("{id}:{request_id}")) {

@@ -537,8 +537,9 @@ pub fn diff(scope: &str, current: &IndexMap<String, Values>, want: &IndexMap<Str
         }
     }
     for (id, have) in current {
-        // Los hilos del sitio en la nube (`site-…`) son suyos: la Mac no los borra.
-        if want.contains_key(id) || id.starts_with("site-") {
+        // Los hilos no se borran de la nube (el teléfono ve los mismos que la Mac, también los viejos),
+        // y los del sitio en la nube (`site-…`) son suyos.
+        if want.contains_key(id) || id.starts_with("site-") || scope.starts_with("threads:") {
             continue;
         }
         match jobs_status.get(id) {
@@ -1107,11 +1108,27 @@ fn process_requests(state: &Shared, s: &mut Session) {
 }
 
 /// Los hilos recientes, compactos para el teléfono: los últimos 40 mensajes con textos recortados.
-async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
+/// Cuántos hilos (los de actividad más reciente) se rearman en cada vuelta; los demás se arman una
+/// vez y se reusan (no cambian), y todos quedan en la nube: el teléfono ve los mismos que la Mac.
+const THREADS_FRESH: usize = 20;
+
+/// Cuándo tuvo actividad un hilo por última vez (su arranque, su fin o su último turno).
+fn activity(t: &Value) -> i64 {
+    ["startedAt", "endedAt", "turnAt"].iter().filter_map(|k| t[*k].as_i64()).max().unwrap_or(0)
+}
+
+async fn thread_rows(state: &Shared, prev: &IndexMap<String, Values>) -> IndexMap<String, Values> {
     let mut out = IndexMap::new();
-    let list = crate::threads::list(state).ok().and_then(|v| v["runs"].as_array().cloned()).unwrap_or_default();
-    for t in list.into_iter().take(15) {
+    let mut list = crate::threads::list(state).ok().and_then(|v| v["runs"].as_array().cloned()).unwrap_or_default();
+    list.sort_by_key(|t| std::cmp::Reverse(activity(t)));
+    for (ix, t) in list.into_iter().enumerate() {
         let Some(id) = t["id"].as_str().map(str::to_string) else { continue };
+        // Viejo, quieto y ya armado: el mismo de antes (armarlo lee la conversación del agente).
+        let quiet = ix >= THREADS_FRESH && !matches!(t["status"].as_str(), Some("running" | "queued" | "waiting-approval" | "waiting-answer"));
+        if let Some(row) = prev.get(&id).filter(|_| quiet) {
+            out.insert(id, row.clone());
+            continue;
+        }
         let th = match crate::threads::get(state, &id).await {
             Ok(th) => th,
             Err(e) => {
@@ -1121,7 +1138,7 @@ async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
         };
         let cut = |s: &str, n: usize| -> String { if s.chars().count() > n { format!("{}…", s.chars().take(n).collect::<String>()) } else { s.to_string() } };
         let items: Vec<Value> = if th["thread"] == true {
-            th["items"].as_array().cloned().unwrap_or_default().iter().rev().take(40).rev().map(|it| {
+            th["items"].as_array().cloned().unwrap_or_default().iter().rev().take(300).rev().map(|it| {
                 let mut text = devtool_core::redact(it["text"].as_str().unwrap_or_default());
                 if let Some(ev) = it["event"].as_object() {
                     let title = ev.get("title").and_then(Value::as_str).unwrap_or("");
@@ -1140,7 +1157,7 @@ async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
             let msgs: Vec<Value> = th["transcript"].as_array().cloned().unwrap_or_default().into_iter().filter(|x| x["role"] != "tool").collect();
             // Un chat abierto sobre un incidente: su primer mensaje es el contexto que armó el daemon.
             let about = state.store.agent_run(&id).ok().flatten().is_some_and(|r| r["about"].is_string());
-            let skip = msgs.len().saturating_sub(30);
+            let skip = msgs.len().saturating_sub(300);
             msgs[skip..].iter().enumerate().filter_map(|(ix, x)| {
                 let text: String = x["text"].as_str()?.lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n");
                 let kind = match x["role"].as_str() {
@@ -1148,7 +1165,7 @@ async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
                     Some("user") => "user",
                     _ => "reply",
                 };
-                (!text.trim().is_empty()).then(|| json!({ "kind": kind, "author": "Agent", "at": x["at"], "text": cut(text.trim(), ITEM_CHARS) }))
+                (!text.trim().is_empty()).then(|| json!({ "kind": kind, "author": x["author"].as_str().unwrap_or("Agent"), "at": x["at"], "text": cut(text.trim(), ITEM_CHARS) }))
             }).collect::<Vec<Value>>()
             .into_iter()
             .chain(crate::threads::live_item(&th, "Agent", th["logo"].as_str().unwrap_or(""), msgs.iter().filter_map(|x| x["at"].as_i64()).max().unwrap_or(0)))
@@ -1198,6 +1215,35 @@ async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
     out
 }
 
+/// Lo que el sitio en la nube contestó mientras la Mac no estaba: sus hilos (`site-…`) y sus respuestas
+/// en los hilos de la Mac (`siteItems`) pasan a la base de la Mac, que así muestra lo mismo que el
+/// teléfono. Una vez por cambio de cada fila.
+fn import_from_site(state: &Shared, s: &mut Session) {
+    let scope = format!("threads:{}", s.link.daemon_id);
+    for row in s.engine.rows(&scope) {
+        let id = row.row.id.clone();
+        if id.starts_with('_') || id == crate::site::OVERVIEW_ROW {
+            continue;
+        }
+        let field = if id.starts_with("site-") { "items" } else { "siteItems" };
+        let Some(text) = row.row.values.get(field).and_then(Value::as_str) else { continue };
+        let stamp = format!("{}:{}", text.len(), row.row.values.get("updatedAt").map(|v| v.to_string()).unwrap_or_default());
+        if s.site_imported.get(&id) == Some(&stamp) {
+            continue;
+        }
+        let items: Vec<Value> = serde_json::from_str(text).unwrap_or_default();
+        let title = row.row.values.get("title").and_then(Value::as_str).unwrap_or("Cloud site").to_string();
+        let project = row.row.values.get("project").and_then(Value::as_str).map(str::to_string);
+        let _rt = s.rt.enter();
+        if let Err(e) = s.rt.block_on(crate::agent_host::import_site_items(state, &id, &title, project.as_deref(), &items)) {
+            tracing::warn!("cloud: couldn't import {id} from the cloud site: {e:#}");
+            continue;
+        }
+        s.site_imported.insert(id, stamp);
+        s.threads_built.0 = 0;
+    }
+}
+
 /// Los mensajes nuevos de los teléfonos en los hilos: verificar la firma y mandarlos (cada uno una vez).
 fn process_thread_requests(state: &Shared, s: &mut Session) {
     let scope = format!("threads:{}", s.link.daemon_id);
@@ -1207,7 +1253,9 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
         let answered = row.row.values.get("resultFor").and_then(Value::as_str) == Some(request_id.as_str());
         // Lo contestó el sitio en la nube con la Mac apagada (`siteFor`): no se contesta dos veces.
         let by_site = row.row.values.get("siteFor").and_then(Value::as_str) == Some(request_id.as_str());
-        if row.pending || answered || by_site || row.row.id.starts_with("site-") || !s.seen.insert(format!("{}:{request_id}", row.row.id)) {
+        // Un hilo del sitio en la nube lo atiende la Mac en cuanto lo importó (con la Mac aquí el sitio no contesta).
+        let foreign = row.row.id.starts_with("site-") && state.store.agent_run(&row.row.id).ok().flatten().is_none();
+        if row.pending || answered || by_site || foreign || !s.seen.insert(format!("{}:{request_id}", row.row.id)) {
             continue;
         }
         let id = row.row.id.clone();
@@ -1383,6 +1431,8 @@ struct Session {
     alive_at: i64,
     /// Cuántas respuestas del sitio en la nube ya se le pasaron al agente, por hilo.
     site_handed: std::collections::HashMap<String, usize>,
+    /// Qué filas ya se importaron del sitio en la nube (y en qué versión).
+    site_imported: std::collections::HashMap<String, String>,
     /// Los proyectos publicados (se recalculan cada 5 min: correr git en cada vuelta sobra).
     projects_built: (i64, Vec<Value>),
     /// La cola del registro publicada por trabajo: cuándo se leyó y el texto.
@@ -1420,7 +1470,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0, alive_at: 0, site_handed: Default::default(), projects_built: (0, vec![]), logs: Default::default(), catalog_built: (0, Value::Null), overview_built: (0, Value::Null), service_asked_at: 0 })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0, alive_at: 0, site_handed: Default::default(), site_imported: Default::default(), projects_built: (0, vec![]), logs: Default::default(), catalog_built: (0, Value::Null), overview_built: (0, Value::Null), service_asked_at: 0 })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -1515,7 +1565,8 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let every = if working { LIVE_TICK_MS } else { THREADS_EVERY_MS };
     if now_ms() - s.threads_built.0 > every {
         let _rt = s.rt.enter();
-        s.threads_built = (now_ms(), s.rt.block_on(thread_rows(state)));
+        let prev = std::mem::take(&mut s.threads_built.1);
+        s.threads_built = (now_ms(), s.rt.block_on(thread_rows(state, &prev)));
     }
     let mut trows = s.threads_built.1.clone();
     // La Mac: su llave (para cifrar lo que le manda un teléfono) y su latido, cada 5 min: el teléfono
@@ -1622,6 +1673,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let seen = s.seen.len();
     process_decisions(state, s);
     process_requests(state, s);
+    import_from_site(state, s);
     process_thread_requests(state, s);
     // Se hizo algo que pidió un teléfono: la próxima vuelta va enseguida (publica el resultado) y,
     // por un rato, más seguido.

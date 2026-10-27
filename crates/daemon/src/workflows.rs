@@ -95,7 +95,7 @@ pub struct Workflow {
     /// Condición de una arista (`"desde>hasta"` → `risk.risk >= high`; conditions.rs). Sin
     /// condición, la arista se cumple cuando el nodo de origen terminó.
     #[serde(default)]
-    pub conditions: HashMap<String, String>,
+    pub conditions: std::collections::BTreeMap<String, String>,
     /// Qué eventos lo empiezan solo (events.rs): un error de Convex, del frontend, un reporte de un
     /// usuario, un agente externo, un incidente. Sin disparadores, se corre a mano.
     #[serde(default)]
@@ -375,12 +375,12 @@ pub fn templates(project: &str, is_default: bool, envs: &[(String, String)]) -> 
             node("promote", NodeKind::Recipe, "Promote to production", 1200., 0., json!({ "recipe": "promote-prod", "env": prod, "args": { "commit": "{run.commit}" } })),
         ];
         let edges = chain(&nodes);
-        out.push(Workflow { id: String::new(), project: project.into(), name: "Promotion to production".into(), description: "The usual chain: backup, rehearsal, cloud dev, a 30-minute wait and production.".into(), nodes, edges, enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 });
+        out.push(Workflow { id: String::new(), project: project.into(), name: "Promotion to production".into(), description: "The usual chain: backup, rehearsal, cloud dev, a 30-minute wait and production.".into(), nodes, edges, enabled: true, conditions: Default::default(), triggers: vec![], updated_at: 0 });
     }
     // Los sugeridos (`suggested`): se crean apagados con «Crear los sugeridos».
     let flow = |name: &str, description: &str, nodes: Vec<Node>| {
         let edges = chain(&nodes);
-        Workflow { id: String::new(), project: project.into(), name: name.into(), description: description.into(), nodes, edges, enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 }
+        Workflow { id: String::new(), project: project.into(), name: name.into(), description: description.into(), nodes, edges, enabled: true, conditions: Default::default(), triggers: vec![], updated_at: 0 }
     };
     if !local.is_empty() {
         out.push(flow(
@@ -543,8 +543,8 @@ pub fn templates(project: &str, is_default: bool, envs: &[(String, String)]) -> 
     task.conditions.insert(edge_key("fixer", "review"), "fixer.changes == true".into());
     task.triggers = vec![crate::events::Trigger { source: "task".into(), ..Default::default() }];
     out.push(task);
-    out.push(Workflow { id: String::new(), project: project.into(), name: "Example: check, approve and run".into(), description: "A starting point for building your own.".into(), nodes, edges, enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 });
-    out.push(Workflow { id: String::new(), project: project.into(), name: "Blank".into(), description: String::new(), nodes: vec![], edges: vec![], enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 });
+    out.push(Workflow { id: String::new(), project: project.into(), name: "Example: check, approve and run".into(), description: "A starting point for building your own.".into(), nodes, edges, enabled: true, conditions: Default::default(), triggers: vec![], updated_at: 0 });
+    out.push(Workflow { id: String::new(), project: project.into(), name: "Blank".into(), description: String::new(), nodes: vec![], edges: vec![], enabled: true, conditions: Default::default(), triggers: vec![], updated_at: 0 });
     out
 }
 
@@ -1294,7 +1294,7 @@ mod tests {
     use super::*;
 
     fn wf(nodes: Vec<Node>, edges: Vec<(&str, &str)>) -> Workflow {
-        Workflow { id: "w1".into(), project: "p".into(), name: "Prueba".into(), description: String::new(), nodes, edges: edges.into_iter().map(|(a, b)| (a.into(), b.into())).collect(), enabled: true, conditions: HashMap::new(), triggers: vec![], updated_at: 0 }
+        Workflow { id: "w1".into(), project: "p".into(), name: "Prueba".into(), description: String::new(), nodes, edges: edges.into_iter().map(|(a, b)| (a.into(), b.into())).collect(), enabled: true, conditions: Default::default(), triggers: vec![], updated_at: 0 }
     }
 
     #[test]

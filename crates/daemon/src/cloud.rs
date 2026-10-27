@@ -69,7 +69,7 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects", "catalog", "overview", "context", "flows", "roles"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects", "catalog", "overview", "context", "flows", "roles", "handover"];
 /// Lo más largo de un mensaje de un hilo en el teléfono (antes 700: las respuestas se cortaban).
 const ITEM_CHARS: usize = 12_000;
 /// Lo que ocupan los mensajes de un hilo en su fila: si se pasa, se dejan afuera los más viejos.

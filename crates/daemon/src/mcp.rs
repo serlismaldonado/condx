@@ -184,6 +184,7 @@ pub fn tools() -> Vec<Value> {
         tool("wait_for_mention", "Waits until someone mentions you (@your-name) in a thread, up to timeoutSeconds (default 60, at most 120). Returns the mentions (thread and text), or none.", json!({ "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 120 } }), &[]),
         tool("list_agents", "Condx's agents (the catalog): id, name, what they do, whether they read or write, and their provider.", json!({}), &[]),
         tool("start_chat", "Orchestrate: start a new thread with a Condx agent that reads the code and what Condx knows. Returns the thread id; read it with read_thread.", json!({ "text": { "type": "string" }, "project": project_arg() }), &["text"]),
+        tool("get_guide", "How to work with Condx from anywhere (read it first): who answers (the Mac or the cloud site), where to try a project from a phone, how to build a feature with a task and iterate on it, and what's never possible here.", json!({}), &[]),
         tool("give_task", "Orchestrate: give a task (a change to make) to the flows that start on tasks (e.g. “Do a task”): an agent does it on its own branch, another reviews it, the checks run and, where the project has a cloud dev and the cloud site runs it (the Mac off), the branch runs on cloud dev and the flow's last notice has a URL to try it (read_thread). To iterate: post_to_thread with @fixer and what to change (it commits again on its branch), then service_action restart all with branch = that branch to see the new commit. Production is never touched.", json!({ "text": { "type": "string" }, "project": project_arg() }), &["text"]),
         tool("cancel_run", "Orchestrate: cancel a flow run.", json!({ "id": { "type": "string" } }), &["id"]),
         tool("retry_run", "Orchestrate: retry a failed flow run.", json!({ "id": { "type": "string" } }), &["id"]),
@@ -193,13 +194,16 @@ pub fn tools() -> Vec<Value> {
     ]
 }
 
+/// La guía para los agentes de fuera (`docs/agents/guide.md`; también es el skill «condx» de Claude).
+const GUIDE: &str = include_str!("../../../docs/agents/guide.md");
+
 /// Las herramientas de un agente externo (connections.rs), además de las de lectura de los agentes.
 pub const EXTERNAL_TOOLS: &[&str] = &[
     "list_threads", "read_thread", "post_to_thread", "wait_for_mention", "list_agents", "start_chat", "give_task", "run_workflow", "cancel_run", "retry_run", "answer_question", "save_agent", "save_workflow",
     "request_job", "report_event", "list_projects", "list_approvals",
     // El entorno de desarrollo: en la Mac, el local; con la Mac apagada, el sitio en la nube lo levanta
     // contra el cloud dev del proyecto y el frontend sale con su URL pública (`publicUrl`).
-    "list_services", "service_action", "get_service_logs",
+    "list_services", "service_action", "get_service_logs", "get_guide",
 ];
 
 /// Si este cliente ve esta herramienta.
@@ -475,6 +479,7 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
             json!({ "text": crate::services::logs(state, &project, args["name"].as_str().unwrap_or_default(), args["tail"].as_u64().unwrap_or(200) as usize).await? })
         }
         "list_approvals" => json!(state.store.jobs(&["waiting-approval"], 100)?.iter().map(jobs::summary).collect::<Vec<_>>()),
+        "get_guide" => json!({ "guide": GUIDE }),
         "list_tabs" => json!(hub.tabs()),
         "get_snapshot" => hub.snapshot(tab)?,
         "get_report" => hub.command("report", Value::Null, tab).await?,

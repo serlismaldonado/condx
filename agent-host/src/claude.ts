@@ -71,11 +71,13 @@ export function claudeTools(mode: StartRun["mode"], condx: readonly string[], ro
 }
 
 /** Los argumentos de `claude` para una vuelta de la corrida. */
-export function claudeArgs(run: Pick<ClaudeRun, "mode" | "model" | "system" | "sessionId" | "tools">, text: string, mcpConfig: string, condx: readonly string[]): string[] {
+export function claudeArgs(run: Pick<ClaudeRun, "mode" | "model" | "system" | "sessionId" | "tools">, text: string, mcpConfig: string, condx: readonly string[], addDirs: readonly string[] = []): string[] {
   const { allowed, disallowed } = claudeTools(run.mode, condx, run.tools ?? []);
   const args = ["-p", text, "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--append-system-prompt", run.system, "--mcp-config", mcpConfig, "--strict-mcp-config", "--allowedTools", allowed.join(","), "--disallowedTools", disallowed.join(","), "--permission-mode", run.mode === "fix" ? "acceptEdits" : "default", "--thinking-display", "summarized"];
   if (run.model) args.push("--model", run.model);
   if (run.sessionId) args.push("--resume", run.sessionId);
+  // Carpetas fuera del repo que puede leer (las imágenes que adjuntó la persona).
+  for (const d of addDirs) args.push("--add-dir", d);
   return args;
 }
 
@@ -142,9 +144,26 @@ export class ClaudeCode {
     return { conversationId: 0 };
   }
 
-  message(runId: string, text: string): void {
+  /** Las imágenes de un hilo: `claude -p` no las recibe en el mensaje, así que van a un archivo fuera
+   * del repo (con `--add-dir`) y el agente las abre con Read, que ve imágenes. */
+  #images(runId: string, images: readonly { data: string; mimeType: string }[]): string[] {
+    const dir = join(this.#dir, "attachments", runId.replace(/[^\w-]/g, "_"));
+    mkdirSync(dir, { recursive: true });
+    return images.map((img, i) => {
+      const ext = img.mimeType.split("/")[1]?.replace("jpeg", "jpg").replace(/[^a-z0-9]/g, "") || "img";
+      const path = join(dir, `image-${Date.now()}-${i + 1}.${ext}`);
+      writeFileSync(path, Buffer.from(img.data, "base64"));
+      return path;
+    });
+  }
+
+  message(runId: string, text: string, images: readonly { data: string; mimeType: string }[] = []): void {
     const r = this.#runs.get(runId);
     if (!r) throw new Error(`there's no run ${runId}`);
+    if (images.length) {
+      const paths = this.#images(runId, images);
+      text = `${text}\n\n(Condx note: the developer attached ${paths.length === 1 ? "an image" : `${paths.length} images`}; open ${paths.length === 1 ? "it" : "them"} with the Read tool: ${paths.join(", ")})`;
+    }
     // Trabajando: se corta la vuelta y se sigue con el mensaje nuevo (como «steer»).
     this.#procs.get(runId)?.kill("SIGTERM");
     this.#turn(r, text);
@@ -168,7 +187,7 @@ export class ClaudeCode {
     const token = this.#token(r.providerId);
     const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CODE_ENTRYPOINT: "condx" };
     if (token) env.CLAUDE_CODE_OAUTH_TOKEN = token;
-    const child = spawn(this.#bin, claudeArgs(r, text, this.#mcpConfig, this.#condx), { cwd: r.cwd, stdio: ["ignore", "pipe", "pipe"], env });
+    const child = spawn(this.#bin, claudeArgs(r, text, this.#mcpConfig, this.#condx, [join(this.#dir, "attachments")]), { cwd: r.cwd, stdio: ["ignore", "pipe", "pipe"], env });
     this.#procs.set(r.runId, child);
     let buf = "";
     let err = "";

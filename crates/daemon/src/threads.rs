@@ -233,12 +233,13 @@ fn tool_label(call: &str) -> String {
 /// para la respuesta en vivo).
 /// Lo que el daemon le agrega a un mensaje para el agente (`(Condx note: …)`): no se muestra.
 pub fn without_note(text: &str) -> &str {
-    // Solo la del final: una nota en medio (en la conversación que lleva un invitado de contexto) no
-    // corta el resto.
-    match text.rfind("\n\n(Condx note:") {
-        Some(ix) if !text[ix + 2..].contains("\n\n") && text.trim_end().ends_with(')') => &text[..ix],
-        _ => text,
+    // Solo las del final (puede haber varias seguidas): una nota en medio (en la conversación que lleva
+    // un invitado de contexto) no corta el resto.
+    let mut text = text;
+    while let Some(ix) = text.rfind("\n\n(Condx note:").filter(|ix| !text[ix + 2..].contains("\n\n") && text.trim_end().ends_with(')')) {
+        text = &text[..ix];
     }
+    text
 }
 
 pub fn fold_steps(transcript: &[Value], running: bool) -> (Vec<Value>, Vec<Value>) {
@@ -806,6 +807,7 @@ mod tests {
         let middle = format!("contexto: Developer: hola{note}\n</conversation>\n\nThe developer asks: @risk cita");
         assert_eq!(without_note(&middle), middle.as_str());
         assert_eq!(without_note("sin nota"), "sin nota");
+        assert_eq!(without_note(&format!("mira{note}\n\n(Condx note: the developer attached an image.)")), "mira");
     }
 
     #[test]

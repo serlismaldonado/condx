@@ -271,8 +271,8 @@ export class Host {
 
   /** Un mensaje de la persona: si está trabajando, lo redirige; si no, sigue la conversación. */
   async message(runId: string, text: string, images: { data: string; mimeType: string }[] = []): Promise<void> {
-    // Claude Code: solo el texto (las imágenes de un hilo no pasan por `claude -p`).
-    if (this.#claude?.has(runId)) return this.#claude.message(runId, images.length ? `${text}\n\n(${images.length} image(s) attached in the thread aren't available to this agent)` : text);
+    // Claude Code: las imágenes van como archivos que abre con Read (`claude -p` no las recibe en el mensaje).
+    if (this.#claude?.has(runId)) return this.#claude.message(runId, text, images);
     const found = await this.#conversation(runId);
     if (!found?.conversation) throw new Error(`there's no run ${runId}`);
     // Con imágenes (adjuntos de un hilo): texto e imágenes en el mismo mensaje, para los modelos que ven.

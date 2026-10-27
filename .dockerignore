@@ -6,6 +6,8 @@ target-*
 .git
 site
 docs
+# La guía de los agentes de fuera va dentro del daemon (get_guide).
+!docs/agents/guide.md
 assets
 cloud
 packages

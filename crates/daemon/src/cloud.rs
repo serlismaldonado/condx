@@ -138,6 +138,8 @@ pub const NEW_ROW: &str = "_new";
 pub const AGENTS_ROW: &str = "_agents";
 /// La última versión de la app del teléfono (versión, número y enlace de descarga).
 pub const APK_ROW: &str = "_apk";
+/// Los últimos avisos de la Mac (la lista de notificaciones del teléfono).
+pub const NOTIFS_ROW: &str = "_notifications";
 /// La configuración de los agentes de la Mac (proveedor y modelo por defecto, presupuesto, cuántos a
 /// la vez, autonomía, política de Git; nada secreto): el sitio en la nube la copia.
 pub const SETTINGS_ROW: &str = "_settings";
@@ -1331,7 +1333,7 @@ fn import_from_site(state: &Shared, s: &mut Session) {
     let scope = format!("threads:{}", s.link.daemon_id);
     for row in s.engine.rows(&scope) {
         let id = row.row.id.clone();
-        if id.starts_with('_') || id == crate::site::OVERVIEW_ROW {
+        if id.starts_with('_') || id == crate::site::OVERVIEW_ROW || id == crate::site::NOTIFS_ROW {
             continue;
         }
         let field = if id.starts_with("site-") { "items" } else { "siteItems" };
@@ -1795,6 +1797,8 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     if let Some(apk) = crate::update::latest_apk(state) {
         trows.insert(APK_ROW.into(), obj(json!({ "title": "apk", "version": apk["version"], "versionCode": apk["versionCode"], "url": apk["url"] })));
     }
+    // Los avisos recientes (los mismos que ve la app de la Mac): la campana del teléfono.
+    trows.insert(NOTIFS_ROW.into(), obj(json!({ "title": "notifications", "items": serde_json::to_string(&crate::notify::latest(50)).unwrap_or_default() })));
     let mut new_row = obj(json!({ "title": "new" }));
     if let Some((rid, result)) = s.thread_results.get(NEW_ROW) {
         new_row.insert("result".into(), Value::String(result.clone()));

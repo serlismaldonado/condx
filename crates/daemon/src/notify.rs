@@ -129,10 +129,33 @@ pub fn local_test() {
     remember("test", &Message { title: "Condx: test notification".into(), body: "Notifications on this Mac work.".into(), tags: "white_check_mark", priority: 4 }, "approvals");
 }
 
+/// Los últimos avisos (para el teléfono: su lista de notificaciones, publicada en Condx Cloud).
+pub fn latest(n: usize) -> Vec<Value> {
+    RECENT.lock().unwrap().1.iter().rev().take(n).cloned().collect()
+}
+
+thread_local! {
+    /// De qué hilo o incidente es el aviso que se está mandando (el teléfono lo abre al tocarlo).
+    static ABOUT: std::cell::RefCell<Value> = const { std::cell::RefCell::new(Value::Null) };
+}
+
+/// Manda un aviso que lleva a `about` (`{"thread": id}` o `{"incident": id}`).
+fn send_about(state: &Shared, kind: &str, m: Message, about: Value) {
+    ABOUT.with(|a| *a.borrow_mut() = about);
+    send(state, kind, m);
+    ABOUT.with(|a| *a.borrow_mut() = Value::Null);
+}
+
 fn remember(kind: &str, m: &Message, link: &str) {
+    let about = ABOUT.with(|a| a.borrow().clone());
     let mut r = RECENT.lock().unwrap();
     r.0 += 1;
-    let item = json!({ "id": r.0, "kind": kind, "title": clip(&m.title, 120), "body": clip(&m.body, 300), "priority": m.priority, "link": link, "at": crate::store::now_ms() });
+    let mut item = json!({ "id": r.0, "kind": kind, "title": clip(&m.title, 120), "body": clip(&m.body, 300), "priority": m.priority, "link": link, "at": crate::store::now_ms() });
+    for k in ["thread", "incident"] {
+        if let Some(v) = about[k].as_str() {
+            item[k] = json!(v);
+        }
+    }
     r.1.push_back(item);
     while r.1.len() > 50 {
         r.1.pop_front();
@@ -202,7 +225,7 @@ pub fn incident_opened(state: &Shared, inc: &Value) {
         .flatten()
         .collect::<Vec<_>>()
         .join(" · ");
-    send(state, "incident", Message { title: format!("Incident: {}", inc["title"].as_str().unwrap_or("?")), body, tags: "rotating_light", priority: 4 });
+    send_about(state, "incident", Message { title: format!("Incident: {}", inc["title"].as_str().unwrap_or("?")), body, tags: "rotating_light", priority: 4 }, json!({ "incident": inc["id"] }));
 }
 
 /// Un agente terminó: la primera línea de su causa (o por qué paró).
@@ -215,7 +238,7 @@ pub fn agent_finished(state: &Shared, run: &Value, incident: &Value) {
         ("done", _) => (format!("Diagnosis: {}", incident["title"].as_str().unwrap_or("?")), cause),
         (_, _) => (format!("Agent {status}: {}", incident["title"].as_str().unwrap_or("?")), run["error"].as_str().unwrap_or("").to_string()),
     };
-    send(state, "agent", Message { title, body, tags: if status == "done" { "robot" } else { "warning" }, priority: 3 });
+    send_about(state, "agent", Message { title, body, tags: if status == "done" { "robot" } else { "warning" }, priority: 3 }, json!({ "thread": thread_of(state, run["id"].as_str().unwrap_or_default()), "incident": incident["id"] }));
 }
 
 /// Un agente contestó en un hilo: quién, de qué hilo y el comienzo de lo que dijo.
@@ -233,7 +256,21 @@ pub fn agent_replied(state: &Shared, run: &Value) {
         Some(st) => (format!("{who} {st} · {about}"), run["error"].as_str().unwrap_or("").to_string()),
         None => return,
     };
-    send(state, "agent", Message { title, body, tags: "speech_balloon", priority: 3 });
+    send_about(state, "agent", Message { title, body, tags: "speech_balloon", priority: 3 }, json!({ "thread": thread_of(state, run["id"].as_str().unwrap_or_default()) }));
+}
+
+/// El hilo de una corrida de agente: un invitado (`<hilo>-g-<rol>`) o un nodo de flujo (`<corrida>-<nodo>`)
+/// van al hilo de afuera; un chat o un incidente son su propio hilo.
+fn thread_of(state: &Shared, run_id: &str) -> String {
+    if let Some((thread, _)) = run_id.split_once("-g-") {
+        return thread.to_string();
+    }
+    if let Some((flow, _)) = run_id.rsplit_once('-') {
+        if crate::workflows::load_run(state, flow).is_ok() {
+            return flow.to_string();
+        }
+    }
+    run_id.to_string()
 }
 
 /// Aprobaciones nuevas: las que ya esperaban al arrancar no avisan (sin una ola de avisos).

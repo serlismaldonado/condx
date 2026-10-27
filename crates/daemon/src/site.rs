@@ -68,6 +68,8 @@ pub fn open_url(port: u16) -> Option<String> {
 }
 
 /// Lo que publica el sitio sobre sí mismo (sus servicios locales), para el teléfono con la Mac apagada.
+/// Los avisos del sitio (no es un hilo).
+pub const NOTIFS_ROW: &str = "site-notifications";
 pub const OVERVIEW_ROW: &str = "site-overview";
 
 /// La última vez que alguien encendió servicios en el sitio (el teléfono, el MCP o la vista previa de
@@ -302,6 +304,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         tracing::warn!("site: approvals: {e:#}");
     }
     publish_apk_row(state, s);
+    publish_notifications(s);
     *SITE_LOGO_NOW.lock().unwrap() = crate::agents::logo_for(state, None);
     let mac_alive_at = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::MAC_ROW).and_then(|r| r.row.values.get("aliveAt").and_then(Value::as_i64));
     let mac_alive = mac_alive_at.is_some_and(|at| now - at < MAC_GONE_MS);
@@ -1255,6 +1258,29 @@ fn start_hand_offs(state: &Shared, s: &mut Session, done_run: &str, row: &str, i
             }
         }
     }
+}
+
+/// Los avisos del sitio (lo que contestó con la Mac apagada): `site-notifications`, junto a los de la Mac
+/// en la campana del teléfono. Solo cuando cambian.
+fn publish_notifications(s: &mut Session) {
+    const ROW: &str = NOTIFS_ROW;
+    let items = serde_json::to_string(&crate::notify::latest(50)).unwrap_or_default();
+    if items == "[]" {
+        return;
+    }
+    let row = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == ROW);
+    if row.as_ref().and_then(|r| r.row.values.get("items").and_then(Value::as_str)) == Some(items.as_str()) {
+        return;
+    }
+    let mut set = Values::new();
+    set.insert("title".into(), json!("notifications"));
+    set.insert("kind".into(), json!("notifications"));
+    set.insert("items".into(), json!(items));
+    let op = match row {
+        Some(_) => OpDraft::patch(&s.threads_scope, ROW, set),
+        None => OpDraft::create(&s.threads_scope, set).with_row(ROW),
+    };
+    let _ = s.engine.commit(vec![op], now_ms());
 }
 
 /// Una versión de la app del teléfono que publicó el sitio (sin la Mac): va a la fila `_apk`, de donde

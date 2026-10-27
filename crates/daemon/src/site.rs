@@ -795,13 +795,24 @@ pub fn make_ready(dir: &std::path::Path) -> Result<()> {
             tracing::info!("site: submodules {} ready in {}", paths.join(", "), dir.display());
         }
     }
-    if dir.join("package.json").exists() && !dir.join("node_modules").is_dir() {
+    // Las dependencias: sin instalar, o con otro lockfile que el de la última vez (otra rama trae otras).
+    let lock = ["bun.lock", "bun.lockb", "package-lock.json"].iter().find_map(|f| std::fs::read(dir.join(f)).ok()).unwrap_or_default();
+    let print = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        lock.hash(&mut h);
+        format!("{:x}", h.finish())
+    };
+    let stamp = dir.join("node_modules/.condx-deps");
+    let current = std::fs::read_to_string(&stamp).ok().is_some_and(|s| s.trim() == print);
+    if dir.join("package.json").exists() && (!dir.join("node_modules").is_dir() || !current) {
         let bun = dir.join("bun.lock").exists() || dir.join("bun.lockb").exists();
         let (program, args): (&str, &[&str]) = if bun { ("bun", &["install"]) } else if dir.join("package-lock.json").exists() { ("npm", &["ci"]) } else { ("npm", &["install"]) };
         let out = std::process::Command::new(program).args(args).current_dir(dir).output().with_context(|| format!("couldn't run {program}"))?;
         if !out.status.success() {
             bail!("{program} {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).lines().rev().take(3).collect::<Vec<_>>().join(" | "));
         }
+        let _ = std::fs::write(&stamp, &print);
         tracing::info!("site: dependencies installed in {}", dir.display());
     }
     Ok(())

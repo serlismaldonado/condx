@@ -463,9 +463,10 @@ pub fn follow_branch(project: &Project, branch: &str) -> String {
     if !fetched || git(&["rev-parse", "--verify", "-q", &format!("origin/{branch}")]).is_none() {
         return format!("branch {here} (the Mac's {branch} isn't on GitHub: push it from the Mac)");
     }
-    // Lo que regeneran las herramientas (lockfiles al instalar, convex/_generated al desplegar) no
+    // Lo que regeneran las herramientas (lockfiles al instalar, convex/_generated al desplegar, el
+    // `*.gen.ts` del router del frontend al arrancar) no
     // es trabajo propio del clon: se descarta antes de cambiar de rama.
-    let generated = |path: &str| path.starts_with("convex/_generated/") || matches!(path, "bun.lock" | "bun.lockb" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock");
+    let generated = |path: &str| path.starts_with("convex/_generated/") || path.ends_with(".gen.ts") || matches!(path, "bun.lock" | "bun.lockb" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock");
     let changed: Vec<String> = git(&["status", "--porcelain"]).unwrap_or_default().lines().map(|l| l.get(3..).unwrap_or("").to_string()).collect();
     let tool_made: Vec<&str> = changed.iter().map(String::as_str).filter(|p| generated(p)).collect();
     if !tool_made.is_empty() {

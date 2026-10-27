@@ -38,15 +38,18 @@
     .hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(21,18,11,0.74) 0%, rgba(21,18,11,0.42) 42%, rgba(21,18,11,0) 70%); pointer-events: none; -webkit-mask-image: linear-gradient(180deg, #000 66%, transparent 80%); mask-image: linear-gradient(180deg, #000 66%, transparent 80%); }
     .hero > .wrap { z-index: 2; }
     nav.top { display: flex; align-items: center; gap: 24px; height: 84px; }
-    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font: 500 30px/1 "Funnel Display", sans-serif; color: #fff8e6; }
-    /* La C mide lo que la «d» y se apoya en la línea base, como una letra más. */
-    .brand svg { width: 0.86em; height: 0.86em; flex: none; transform: translateY(0.02em); }
+    .brand { display: flex; align-items: center; gap: 8px; text-decoration: none; font: 500 30px/1 "Funnel Display", sans-serif; color: #fff8e6; }
+    /* La C va centrada en el cuerpo de las minúsculas, como una letra redonda más. */
+    .brand svg { width: 0.72em; height: 0.72em; flex: none; transform: translateY(0.1em); }
     nav.top .links { margin-left: auto; display: flex; gap: 22px; align-items: center; }
     nav.top .links a { text-decoration: none; font-size: 15px; color: #f3e6c4; }
     nav.top .links a:hover { color: #fff; }
     .btn-white { background: #fff8e6; color: var(--deep) !important; padding: 10px 20px; font-size: 15px; }
     /* El texto baja hacia el centro de la portada (sin lago que tapar, como en boat): el cielo queda arriba. */
     .hero h1 { font-size: clamp(38px, 6vw, 60px); line-height: 1.06; max-width: 640px; margin-top: clamp(28px, 8vh, 90px); }
+    /* El símbolo de Convex dentro del título, delante de la palabra. */
+    .nb { white-space: nowrap; }
+    h1 .cvx, h2 .cvx { display: inline-block; height: 0.78em; width: auto; vertical-align: -0.06em; margin: 0 0.06em 0 0; }
     .hero .lede { font-size: 17px; max-width: 560px; color: #efe2c0; margin: 18px 0 28px; }
 
     /* La caja de instalar, con pestañas (como boat). */
@@ -127,12 +130,14 @@
     .window .chrome { display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 10px 0 14px; background: #242424; border-bottom: 1px solid #333; color: #bdbdbd; font: 12px "IBM Plex Mono"; }
     .window .lights { display: flex; gap: 7px; } .window .lights i { width: 11px; height: 11px; border-radius: 50%; background: #4a4a4a; }
     .window .lights i:nth-child(1) { background: #ec6a5e; } .window .lights i:nth-child(2) { background: #f4bf4f; } .window .lights i:nth-child(3) { background: #61c554; }
-    .window .title { flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .window .title { flex: 1; min-width: 0; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .window .live { all: unset; cursor: pointer; font: 500 13px/1 "IBM Plex Sans"; padding: 7px 12px; background: var(--accent); color: var(--on-accent); white-space: nowrap; }
     .window .live:hover { background: #ffc53d; } .window .live:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
     .demo { position: relative; aspect-ratio: 16 / 10; overflow: hidden; background: #1b1b1b; }
-    .demo img, .demo iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; object-fit: cover; object-position: top left; }
-    .demo img { opacity: 0; transition: opacity 0.45s ease; } .demo img.on { opacity: 1; }
+    .demo video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top left; }
+    /* La app en vivo se dibuja al tamaño de una ventana de escritorio (1200 × 750) y se escala para caber. */
+    .demo iframe { position: absolute; left: 0; top: 0; width: 1200px; height: 750px; border: 0; transform-origin: 0 0; color-scheme: light; }
+    .demo video { opacity: 0; transition: opacity 0.45s ease; } .demo video.on { opacity: 1; }
     .demo .loading { position: absolute; inset: 0; display: grid; place-items: center; color: #bdbdbd; font: 13px "IBM Plex Mono"; background: rgba(27, 27, 27, 0.7); }
     .tour .note { margin-top: 12px; font-size: 13px; color: var(--subtle); }
     .tour.is-live .ttabs { opacity: 0.45; pointer-events: none; }
@@ -172,6 +177,8 @@
     .grid > *, .split > *, .trio > *, .steps > * { min-width: 0; }
 
     /* Cierre: la ilustración otra vez, más baja. */
+    /* La banda de instalación entra directo al cierre: sin la raya de su borde. */
+    .band:has(+ .end) { border-bottom: 0; }
     .end { position: relative; color: #fff8e6; background: var(--tint); overflow: hidden; text-align: center; padding: 190px 0 120px; }
     .end canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
     .end .wrap { position: relative; }
@@ -194,7 +201,7 @@
     .toast { position: fixed; z-index: 50; left: 50%; top: 18px; transform: translateX(-50%); background: #241b0c; color: #fff1cf; border: 2px solid var(--accent); box-shadow: 4px 4px 0 rgba(31, 21, 3, 0.4); padding: 10px 16px; font: 13px "IBM Plex Mono", monospace; animation: pop 0.2s steps(3); }
     @keyframes pop { from { opacity: 0; transform: translate(-50%, calc(-100% - 2px)); } }
     .toast { animation-name: drop; } @keyframes drop { from { opacity: 0; transform: translate(-50%, -12px); } }
-    .brand.spin svg { animation: spin 0.9s steps(12); } @keyframes spin { from { transform: translateY(0.02em) rotate(0); } to { transform: translateY(0.02em) rotate(360deg); } }
+    .brand.spin svg { animation: spin 0.9s steps(12); } @keyframes spin { from { transform: translateY(0.1em) rotate(0); } to { transform: translateY(0.1em) rotate(360deg); } }
     .hero.crew-hover { cursor: pointer; }
     @media (max-width: 900px) {
       .trio { grid-template-columns: 1fr; gap: 44px; }
@@ -226,7 +233,7 @@
           <a class="btn-white" href="#install">Install</a>
         </div>
       </nav>
-      <h1>AI agents and safe deploys for your Convex projects</h1>
+      <h1>AI agents and safe deploys for your <span class="nb"><img class="cvx" src="assets/convex/symbol-color.svg" alt="">Convex</span> projects</h1>
       <p class="lede">They fix, review and preview changes on their own branches. You steer them from your Mac or your phone, and nothing ships without your approval.</p>
       <div class="term" data-tabs>
         <div class="tabs"><button class="on" data-cmd="curl -fsSL https://condx.vercel.app/install.sh | bash">macOS</button><button data-cmd="claude mcp add condx -- ~/.condx/daemon/bin/condxd mcp">Claude Code</button><button data-cmd="git clone https://github.com/serlismaldonado/condx.git">Source</button></div>
@@ -336,28 +343,28 @@
 
     <section id="desktop">
       <div class="wrap">
-        <h2>Everything around your backend, in one app</h2>
+        <h2>Your <span class="nb"><img class="cvx" src="assets/convex/symbol-color.svg" alt="">Convex</span> backend, all in one app</h2>
         <p class="sub">Every environment, from your local backend to production, with its data, schema and functions. Take a look, or try the real app right here: it runs in your browser on a sample project.</p>
         <div class="tour" id="tour">
           <div class="ttabs" role="tablist" aria-label="Parts of the app">
             <button role="tab" aria-selected="true" data-shot="0"><i class="bar"></i><b>Overview</b><span>Local, rehearsal, cloud dev and prod at a glance.</span></button>
-            <button role="tab" aria-selected="false" data-shot="1"><i class="bar"></i><b>Workflows</b><span>Chain checks, approvals and deploys.</span></button>
-            <button role="tab" aria-selected="false" data-shot="2"><i class="bar"></i><b>Jobs</b><span>What the agents ask for waits for your OK.</span></button>
-            <button role="tab" aria-selected="false" data-shot="3"><i class="bar"></i><b>Schema</b><span>Tables and relations, and what changed.</span></button>
-            <button role="tab" aria-selected="false" data-shot="4"><i class="bar"></i><b>Functions</b><span>Calls, errors and p95 per function.</span></button>
-            <button role="tab" aria-selected="false" data-shot="5"><i class="bar"></i><b>Data</b><span>Every table, in every environment.</span></button>
+            <button role="tab" aria-selected="false" data-shot="1"><i class="bar"></i><b>Incidents</b><span>An agent diagnoses each failure and can prepare the fix.</span></button>
+            <button role="tab" aria-selected="false" data-shot="2"><i class="bar"></i><b>Agents</b><span>Ask about your project, or follow what each agent did.</span></button>
+            <button role="tab" aria-selected="false" data-shot="3"><i class="bar"></i><b>Workflows</b><span>Chain agents, checks and approvals.</span></button>
+            <button role="tab" aria-selected="false" data-shot="4"><i class="bar"></i><b>Schema</b><span>Tables and relations, deployed in each environment.</span></button>
+            <button role="tab" aria-selected="false" data-shot="5"><i class="bar"></i><b>Data</b><span>Every table, in every environment, read-only.</span></button>
           </div>
           <div>
             <p class="caption" id="caption">Local, rehearsal, cloud dev and prod at a glance.</p>
             <div class="window">
               <div class="chrome"><span class="lights"><i></i><i></i><i></i></span><span class="title" id="wtitle">Condx — my-app · Overview</span><button class="live" id="launch" type="button">▶ Try it live</button></div>
               <div class="demo" id="stage">
-                <img class="on" src="shots/overview.jpg" alt="Condx showing the environments of a sample project" width="1800" height="1125">
-                <img src="shots/workflows.jpg" alt="A workflow: CI is green, cloud dev responds, approve the deploy" width="1800" height="1125" loading="lazy">
-                <img src="shots/jobs.jpg" alt="Jobs, one waiting for approval" width="1800" height="1125" loading="lazy">
-                <img src="shots/schema.jpg" alt="The schema as a diagram of tables and relations" width="1800" height="1125" loading="lazy">
-                <img src="shots/insights.jpg" alt="Calls, errors and latency per function" width="1800" height="1125" loading="lazy">
-                <img src="shots/data.jpg" alt="Browsing a table with its documents" width="1800" height="1125" loading="lazy">
+                <video class="on" src="clips/overview.mp4" poster="clips/overview.jpg" muted playsinline preload="auto" aria-label="The overview: every environment of a sample project" width="1200" height="750"></video>
+                <video src="clips/incidents.mp4" poster="clips/incidents.jpg" muted playsinline preload="none" aria-label="Incidents, each with an agent's diagnosis and a fix" width="1200" height="750"></video>
+                <video src="clips/agents.mp4" poster="clips/agents.jpg" muted playsinline preload="none" aria-label="The agents' conversations about the project" width="1200" height="750"></video>
+                <video src="clips/workflows.mp4" poster="clips/workflows.jpg" muted playsinline preload="none" aria-label="A workflow that chains agents and approvals" width="1200" height="750"></video>
+                <video src="clips/schema.mp4" poster="clips/schema.jpg" muted playsinline preload="none" aria-label="The schema of an environment as a diagram" width="1200" height="750"></video>
+                <video src="clips/data.mp4" poster="clips/data.jpg" muted playsinline preload="none" aria-label="Browsing the documents of a table" width="1200" height="750"></video>
               </div>
             </div>
             <p class="note" id="note">The live demo is the real app in WebAssembly (about 6 MB), on sample data. Best on a computer.</p>
@@ -406,7 +413,7 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
   <footer>
     <div class="wrap">
       <span>Condx v0.2 · MIT · <a href="https://github.com/serlismaldonado/condx">GitHub</a> · <a href="https://buymeacoffee.com/serlismaldonado" target="_blank" rel="noopener">☕ Buy me a coffee</a></span>
-      <span>An independent project, not affiliated with Convex</span>
+      <span>An independent project, not affiliated with Convex. The Convex name and logo belong to their owners.</span>
     </div>
   </footer>
 
@@ -446,54 +453,59 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
       box.append(bar, pre);
     });
 
-    // El recorrido: las capturas se turnan solas (mientras se ve la sección) hasta que eliges una.
+    // El recorrido: cada pestaña es un clip grabado de la app real (tema claro). Mientras la sección se ve,
+    // el clip se reproduce y al terminar pasa a la siguiente pestaña; si eliges una, su clip se repite.
     // «Try it live» carga la app real en WebAssembly (~6 MB) dentro de la ventana; en el teléfono se abre aparte.
     (() => {
       const tour = document.getElementById("tour"), stage = document.getElementById("stage");
-      const tabs = [...tour.querySelectorAll("[role=tab]")], shots = [...stage.querySelectorAll("img")];
+      const tabs = [...tour.querySelectorAll("[role=tab]")], clips = [...stage.querySelectorAll("video")];
       const title = document.getElementById("wtitle"), caption = document.getElementById("caption"), launch = document.getElementById("launch");
       const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      const EVERY = 5500;
-      let cur = 0, auto = !still, visible = false, since = performance.now(), live = false;
-      const show = (n) => {
-        cur = (n + tabs.length) % tabs.length; since = performance.now();
-        tabs.forEach((b, k) => { b.setAttribute("aria-selected", String(k === cur)); b.tabIndex = k === cur ? 0 : -1; b.querySelector(".bar").style.height = "0"; });
-        shots.forEach((s, k) => s.classList.toggle("on", k === cur));
-        const name = tabs[cur].querySelector("b").textContent;
-        title.textContent = `Condx — my-app · ${name}`;
-        caption.textContent = tabs[cur].querySelector("span").textContent;
+      let cur = 0, auto = !still, visible = false, live = false;
+      const play = () => {
+        clips.forEach((v, k) => { if (k !== cur) v.pause(); });
+        const v = clips[cur];
+        if (visible && !live && !still) { v.preload = "auto"; v.play().catch(() => {}); } else v.pause();
+        // La siguiente se va cargando mientras tanto.
+        const next = clips[(cur + 1) % clips.length]; if (visible && next.preload === "none") next.preload = "auto";
       };
+      const show = (n) => {
+        cur = (n + tabs.length) % tabs.length;
+        tabs.forEach((b, k) => { b.setAttribute("aria-selected", String(k === cur)); b.tabIndex = k === cur ? 0 : -1; b.querySelector(".bar").style.height = "0"; });
+        clips.forEach((v, k) => { v.classList.toggle("on", k === cur); if (k === cur) v.currentTime = 0; });
+        title.textContent = `Condx — my-app · ${tabs[cur].querySelector("b").textContent}`;
+        caption.textContent = tabs[cur].querySelector("span").textContent;
+        play();
+      };
+      clips.forEach((v, k) => {
+        v.addEventListener("timeupdate", () => { if (k === cur && auto && v.duration) tabs[k].querySelector(".bar").style.height = (v.currentTime / v.duration) * 100 + "%"; });
+        v.addEventListener("ended", () => { if (k !== cur) return; if (auto) show(cur + 1); else { v.currentTime = 0; play(); } });
+      });
       tabs.forEach((b, k) => b.addEventListener("click", () => { auto = false; show(k); }));
       tour.querySelector(".ttabs").addEventListener("keydown", (e) => {
         const d = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
         if (!d) return; e.preventDefault(); auto = false; show(cur + d); tabs[cur].focus();
       });
-      new IntersectionObserver(([e]) => { visible = e.isIntersecting; since = performance.now(); }, { threshold: 0.35 }).observe(tour);
-      const tick = () => {
-        if (auto && visible && !live) {
-          const p = Math.min(1, (performance.now() - since) / EVERY);
-          tabs[cur].querySelector(".bar").style.height = p * 100 + "%";
-          if (p >= 1) show(cur + 1);
-        }
-        requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
+      new IntersectionObserver(([e]) => { visible = e.isIntersecting; play(); }, { threshold: 0.35 }).observe(tour);
+      // La app en vivo mide 1200 × 750 como una ventana de escritorio; se escala al ancho de la ventana.
+      const fit = () => { const f = stage.querySelector("iframe"); if (f) f.style.transform = `scale(${stage.clientWidth / 1200})`; };
+      window.addEventListener("resize", fit);
       launch.addEventListener("click", () => {
-        if (window.innerWidth < 760) { window.open("demo/", "_blank", "noopener"); return; }
+        if (window.innerWidth < 760) { window.open("demo/?theme=light", "_blank", "noopener"); return; }
         if (live) {
           live = false; tour.classList.remove("is-live");
           stage.querySelector("iframe")?.remove(); stage.querySelector(".loading")?.remove();
           launch.textContent = "▶ Try it live"; show(cur); return;
         }
-        live = true; tour.classList.add("is-live");
+        live = true; tour.classList.add("is-live"); play();
         tabs[cur].querySelector(".bar").style.height = "0";
         launch.textContent = "✕ Close demo";
         title.textContent = "Condx — my-app · live demo";
         const wait = document.createElement("div"); wait.className = "loading"; wait.textContent = "Loading the app…";
         const frame = document.createElement("iframe");
-        frame.src = "demo/"; frame.title = "Condx live demo";
+        frame.src = "demo/?theme=light"; frame.title = "Condx live demo";
         frame.addEventListener("load", () => setTimeout(() => wait.remove(), 1200));
-        stage.append(frame, wait);
+        stage.append(frame, wait); fit();
       });
     })();
 
@@ -637,7 +649,8 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
             const jag = (Math.sin(col * 0.41 + 0.7) * 0.55 + Math.sin(col * 0.13 + 2.1) * 0.3 + Math.sin(col * 1.31) * 0.15) * zone * 0.015;
             for (let k = 0; k < zone; k++) {
               const y = opts.fadeBottom ? H - zone + k : zone - 1 - k;
-              const p = Math.max(0, Math.min(1, (k + jag) / zone));
+              // Llega al color de la página un poco antes del borde: el primer escalón es casi invisible.
+              const p = Math.max(0, Math.min(1, (k + jag) / (zone * 0.85)));
               // El tono sube por la paleta (ámbar → crema) y termina en el color de la página; la
               // opacidad, en 6 escalones con tramado.
               const th = bayer[(y % 4) * 4 + (x % 4)] / 16;

@@ -16,6 +16,35 @@
       focus.call(this, Object.assign({}, options, { preventScroll: true }));
     };
   </script>
+  <script>
+    // ?theme=light (la landing es clara): en el navegador la app arranca en oscuro, así que al anunciar
+    // su primer tema se toca una vez su botón de tema (abajo a la izquierda), que la pasa a claro.
+    if (new URLSearchParams(location.search).get("theme") === "light") {
+      const info = console.info;
+      let state = "wait", tries = 0, timer = 0;
+      const press = () => {
+        const c = document.querySelector("canvas"); if (!c || tries >= 4) return;
+        tries++; state = "pressed";
+        const o = { bubbles: true, cancelable: true, clientX: 50, clientY: innerHeight - 18, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true, view: window };
+        const up = { ...o, buttons: 0 };
+        c.dispatchEvent(new PointerEvent("pointermove", up));
+        c.dispatchEvent(new PointerEvent("pointerdown", o)); c.dispatchEvent(new MouseEvent("mousedown", o));
+        c.dispatchEvent(new PointerEvent("pointerup", up)); c.dispatchEvent(new MouseEvent("mouseup", up)); c.dispatchEvent(new MouseEvent("click", up));
+        c.dispatchEvent(new PointerEvent("pointermove", { ...up, clientX: innerWidth / 2, clientY: innerHeight / 2 }));
+        // Si la app aún no tomaba clics, no anuncia nada: se vuelve a tocar.
+        clearTimeout(timer); timer = setTimeout(() => { if (state === "pressed") press(); }, 1500);
+      };
+      console.info = function (...args) {
+        info.apply(this, args);
+        const s = String(args[0]);
+        if (!s.includes("theme: mode -> ")) return;
+        if (s.includes("-> Light")) { state = "done"; clearTimeout(timer); return; }
+        if (state === "done") return;
+        // Oscuro (al arrancar, o un toque que lo dejó en oscuro): otro toque, ya con la app lista.
+        clearTimeout(timer); timer = setTimeout(press, state === "wait" ? 1500 : 300);
+      };
+    }
+  </script>
   <script type="module">
     import init from "./pkg/devtool_app.js";
     init();

@@ -95,7 +95,8 @@ pub fn transcribe(state: &Shared, audio: &[u8], mime: &str, name: &str) -> Resul
     } else {
         let providers = state.store.agent_providers()?;
         let pick = providers.iter().find(|p| p["kind"] == "groq" || p["baseUrl"].as_str().is_some_and(|u| u.contains("groq.com"))).map(|p| (p, "https://api.groq.com/openai/v1", "whisper-large-v3-turbo")).or_else(|| providers.iter().find(|p| p["kind"] == "openai").map(|p| (p, "https://api.openai.com/v1", "gpt-4o-mini-transcribe")));
-        let Some((p, default_base, model)) = pick else { bail!("add an OpenAI or Groq provider (Settings → Agents) to transcribe voice notes") };
+        // Sin OpenAI ni Groq: en esta máquina, con whisper.cpp (sin claves; el audio no sale de aquí).
+        let Some((p, default_base, model)) = pick else { return transcribe_local(audio) };
         let id = p["id"].as_str().unwrap_or_default();
         let base = p["baseUrl"].as_str().filter(|b| !b.is_empty()).unwrap_or(default_base).trim_end_matches('/').to_string();
         (format!("{base}/audio/transcriptions"), crate::agents::api_key(state, id)?, model.to_string())
@@ -118,6 +119,44 @@ pub fn transcribe(state: &Shared, audio: &[u8], mime: &str, name: &str) -> Resul
         Err(e) => bail!("couldn't reach the transcription service: {e}"),
     };
     Ok(v["text"].as_str().unwrap_or_default().to_string())
+}
+
+/// Un ejecutable de whisper.cpp (Homebrew en la Mac, o el PATH) y su modelo multilingüe.
+fn local_whisper() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let bin = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli", "/usr/bin/whisper-cli"].iter().map(std::path::PathBuf::from).find(|p| p.exists())?;
+    let dir = crate::config::home().join("models");
+    let model = ["ggml-large-v3-turbo-q5_0.bin", "ggml-large-v3-turbo.bin", "ggml-small.bin", "ggml-base.bin"].iter().map(|m| dir.join(m)).find(|p| p.exists())?;
+    Some((bin, model))
+}
+
+fn ffmpeg() -> Option<std::path::PathBuf> {
+    ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].iter().map(std::path::PathBuf::from).find(|p| p.exists())
+}
+
+/// Transcribe en esta máquina: ffmpeg pasa la nota (m4a) a WAV de 16 kHz y whisper.cpp la lee, con el
+/// idioma detectado solo.
+fn transcribe_local(audio: &[u8]) -> Result<String> {
+    let Some((bin, model)) = local_whisper() else {
+        bail!("add an OpenAI or Groq provider (Settings → Agents), or install whisper.cpp on the Mac (brew install whisper-cpp) and put a model in ~/.condx/daemon/models, to transcribe voice notes")
+    };
+    let ffmpeg = ffmpeg().ok_or_else(|| anyhow::anyhow!("ffmpeg is needed to transcribe voice notes on this Mac (brew install ffmpeg)"))?;
+    let dir = std::env::temp_dir().join(format!("condx-voice-{}", crate::store::now_ms()));
+    std::fs::create_dir_all(&dir)?;
+    let res = (|| -> Result<String> {
+        let (input, wav) = (dir.join("in.m4a"), dir.join("in.wav"));
+        std::fs::write(&input, audio)?;
+        let conv = std::process::Command::new(&ffmpeg).args(["-loglevel", "error", "-y", "-i"]).arg(&input).args(["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"]).arg(&wav).output()?;
+        if !conv.status.success() {
+            bail!("couldn't read the voice note: {}", String::from_utf8_lossy(&conv.stderr).trim().chars().take(160).collect::<String>());
+        }
+        let out = std::process::Command::new(&bin).arg("-m").arg(&model).args(["-l", "auto", "-nt", "-np", "-f"]).arg(&wav).output()?;
+        if !out.status.success() {
+            bail!("whisper.cpp failed: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("").chars().take(160).collect::<String>());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" "))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    res
 }
 
 #[cfg(test)]

@@ -1761,7 +1761,27 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
             row.insert("resultFor".into(), Value::String(rid.clone()));
         }
     }
-    want.insert(format!("threads:{}", s.link.daemon_id), trows);
+    let tscope = format!("threads:{}", s.link.daemon_id);
+    {
+        let current: std::collections::HashMap<String, Values> = s.engine.rows(&tscope).into_iter().filter(|r| r.row.id.starts_with("site-")).map(|r| (r.row.id, r.row.values)).collect();
+        // Los hilos del sitio (`site-…`) son suyos: con la nube contestando, la Mac no los reescribe;
+        // y nunca borra lo que el sitio contestó a un pedido (`result`, `resultFor`).
+        if handover(state) {
+            trows.retain(|id, _| !id.starts_with("site-"));
+        }
+        for (id, row) in trows.iter_mut().filter(|(id, _)| id.starts_with("site-")) {
+            if let Some(have) = current.get(id) {
+                for k in ["result", "resultFor"] {
+                    if row.get(k).is_none_or(Value::is_null) {
+                        if let Some(v) = have.get(k).filter(|v| !v.is_null()) {
+                            row.insert(k.into(), v.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    want.insert(tscope, trows);
     let jobs_status: IndexMap<String, Value> = jobs.iter().filter_map(|j| Some((j["id"].as_str()?.to_string(), j["status"].clone()))).collect();
     let now = now_ms();
     for scope in &s.scopes {

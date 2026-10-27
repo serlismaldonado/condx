@@ -73,7 +73,7 @@ export function claudeTools(mode: StartRun["mode"], condx: readonly string[], ro
 /** Los argumentos de `claude` para una vuelta de la corrida. */
 export function claudeArgs(run: Pick<ClaudeRun, "mode" | "model" | "system" | "sessionId" | "tools">, text: string, mcpConfig: string, condx: readonly string[]): string[] {
   const { allowed, disallowed } = claudeTools(run.mode, condx, run.tools ?? []);
-  const args = ["-p", text, "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--append-system-prompt", run.system, "--mcp-config", mcpConfig, "--strict-mcp-config", "--allowedTools", allowed.join(","), "--disallowedTools", disallowed.join(","), "--permission-mode", run.mode === "fix" ? "acceptEdits" : "default"];
+  const args = ["-p", text, "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--append-system-prompt", run.system, "--mcp-config", mcpConfig, "--strict-mcp-config", "--allowedTools", allowed.join(","), "--disallowedTools", disallowed.join(","), "--permission-mode", run.mode === "fix" ? "acceptEdits" : "default", "--thinking-display", "summarized"];
   if (run.model) args.push("--model", run.model);
   if (run.sessionId) args.push("--resume", run.sessionId);
   return args;
@@ -97,7 +97,7 @@ export class ClaudeCode {
   #runs = new Map<string, ClaudeRun>();
   #procs = new Map<string, ChildProcess>();
   /** Lo que escribe ahora y las herramientas en curso, por corrida (solo en memoria). */
-  #live = new Map<string, { text: string; tools: string[] }>();
+  #live = new Map<string, { text: string; thinking: string; tools: string[] }>();
   #mcpConfig: string;
   #condx: readonly string[];
   #bin: string;
@@ -163,7 +163,7 @@ export class ClaudeCode {
     r.reason = undefined;
     r.transcript.push({ role: "user", text, at: Date.now() });
     this.#save(r);
-    this.#live.set(r.runId, { text: "", tools: [] });
+    this.#live.set(r.runId, { text: "", thinking: "", tools: [] });
     // Con token (el sitio en la nube), solo para este proceso; sin él, la sesión de Claude Code de la Mac.
     const token = this.#token(r.providerId);
     const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CODE_ENTRYPOINT: "condx" };
@@ -208,21 +208,25 @@ export class ClaudeCode {
     } catch {
       return;
     }
-    const live = this.#live.get(r.runId) ?? { text: "", tools: [] };
+    const live = this.#live.get(r.runId) ?? { text: "", thinking: "", tools: [] };
     if (ev.session_id && !r.sessionId) r.sessionId = ev.session_id;
     if (ev.type === "stream_event") {
       const e = ev.event;
       if (e?.type === "content_block_delta" && e.delta?.type === "text_delta") live.text += e.delta.text ?? "";
+      if (e?.type === "content_block_delta" && e.delta?.type === "thinking_delta") live.thinking += e.delta.thinking ?? "";
       if (e?.type === "content_block_start" && e.content_block?.type === "tool_use") live.tools = [String(e.content_block.name ?? "").replace(/^mcp__condx__/, "condx.")];
-      if (e?.type === "message_start") live.text = "";
+      if (e?.type === "message_start") Object.assign(live, { text: "", thinking: "" });
     } else if (ev.type === "assistant") {
       // El contexto en uso: lo que ocupó esta llamada (entrada, con lo que se leyó y escribió en caché).
       const u = ev.message?.usage;
       if (u) r.usage.context = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
-      const parts = (ev.message?.content ?? []) as { type: string; text?: string; name?: string; input?: unknown }[];
+      const parts = (ev.message?.content ?? []) as { type: string; text?: string; thinking?: string; name?: string; input?: unknown }[];
       const said = parts.map((p) => (p.type === "text" ? p.text ?? "" : p.type === "tool_use" ? toolLine(p.name ?? "", p.input) : "")).filter(Boolean).join("\n");
-      if (said) r.transcript.push({ role: "assistant", text: said, at: Date.now() });
-      live.text = "";
+      // El resumen de lo que pensó (con `--thinking-display summarized`): la app lo muestra plegado.
+      const thinking = parts.filter((p) => p.type === "thinking").map((p) => p.thinking ?? "").join("\n\n").trim();
+      if (said || thinking) r.transcript.push({ role: "assistant", text: said, ...(thinking ? { thinking } : {}), at: Date.now() });
+      if (said) live.text = "";
+      if (thinking) live.thinking = "";
     } else if (ev.type === "user") {
       for (const p of (ev.message?.content ?? []) as { type: string; content?: unknown; is_error?: boolean }[]) {
         if (p.type !== "tool_result") continue;
@@ -255,7 +259,7 @@ export class ClaudeCode {
     if (!r) return undefined;
     const prose = (t: TranscriptItem) => t.text.split("\n").filter((l) => !l.startsWith("→ ")).join("\n").trim();
     const last = [...r.transcript].reverse().find((t) => t.role === "assistant" && prose(t));
-    const live = r.status === "running" ? this.#live.get(runId) ?? { text: "", tools: [] } : null;
+    const live = r.status === "running" ? this.#live.get(runId) ?? { text: "", thinking: "", tools: [] } : null;
     return { runId, status: r.status, reason: r.reason ?? null, answer: last ? prose(last) : null, transcript: r.transcript, live, usage: r.usage, conversationId: 0 };
   }
 

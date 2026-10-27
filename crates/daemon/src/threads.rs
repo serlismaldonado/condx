@@ -174,10 +174,163 @@ pub fn stopped_item(run: &Value, author: &str, after: i64) -> Option<Value> {
     Some(json!({ "at": at, "kind": "system", "status": "failed", "text": format!("{author} stopped: {error}") }))
 }
 
+/// Cuántos pasos lleva una respuesta (los más nuevos) y cuánto texto cada uno.
+const MAX_STEPS: usize = 24;
+const STEP_CHARS: usize = 1_200;
+const RESULT_CHARS: usize = 240;
+
+fn clip(s: &str, n: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() > n { format!("{}…", s.chars().take(n).collect::<String>()) } else { s.to_string() }
+}
+
+/// Una ruta del repo, corta: desde la raíz del proyecto (sin la carpeta de proyectos o el worktree).
+fn short_path(p: &str) -> String {
+    if !p.starts_with('/') {
+        return p.to_string();
+    }
+    for marker in ["/projects/", "/worktrees/", "/Software/"] {
+        if let Some(ix) = p.find(marker) {
+            let rest = &p[ix + marker.len()..];
+            if let Some((_, inner)) = rest.split_once('/') {
+                return inner.to_string();
+            }
+        }
+    }
+    let parts: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+    parts[parts.len().saturating_sub(3)..].join("/")
+}
+
+/// Una llamada «nombre({json})» como se lee: el nombre y lo esencial (el archivo con la ruta corta, el
+/// patrón o el comando). El JSON puede venir recortado: entonces se busca el campo en el texto.
+fn tool_label(call: &str) -> String {
+    let Some((name, rest)) = call.split_once('(') else { return clip(call, 200) };
+    let args = rest.strip_suffix(')').unwrap_or(rest);
+    let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+    let pick = |k: &str| -> Option<String> {
+        if let Some(s) = v.get(k).and_then(Value::as_str) {
+            return Some(s.to_string());
+        }
+        let start = args.find(&format!("\"{k}\":\""))? + k.len() + 4;
+        Some(args[start..].split('"').next().unwrap_or("").to_string())
+    };
+    let path = pick("file_path").or_else(|| pick("path")).or_else(|| pick("notebook_path")).map(|p| short_path(&p));
+    let detail = match (pick("pattern"), path) {
+        (Some(pat), Some(p)) => Some(format!("{pat} · {p}")),
+        (Some(pat), None) => Some(pat),
+        (None, Some(p)) => Some(p),
+        (None, None) => ["command", "query", "url", "description", "prompt"].iter().find_map(|k| pick(k)).or_else(|| (args.len() > 2).then(|| args.to_string())),
+    };
+    match detail {
+        Some(d) if !d.trim().is_empty() => clip(&format!("{name}  {}", d.split_whitespace().collect::<Vec<_>>().join(" ")), 200),
+        _ => name.to_string(),
+    }
+}
+
+/// El transcript como lo lee la persona: cada respuesta del agente lleva en `steps` lo que hizo antes
+/// en esa vuelta (lo que pensó, lo que dijo mientras trabajaba y las herramientas que usó, con su
+/// resultado) y en `took` cuánto tardó (ms); los resultados de herramientas no van sueltos. Mientras
+/// trabaja, nada de la vuelta en curso es respuesta todavía: va en los pasos en curso (el segundo valor,
+/// para la respuesta en vivo).
+pub fn fold_steps(transcript: &[Value], running: bool) -> (Vec<Value>, Vec<Value>) {
+    let mut out = vec![];
+    let mut steps: Vec<Value> = vec![];
+    let mut since: Option<i64> = None;
+    // El último texto de la vuelta: es la respuesta, salvo que después siga trabajando.
+    let mut held: Option<Value> = None;
+    let push = |steps: &mut Vec<Value>, s: Value| {
+        steps.push(s);
+        if steps.len() > MAX_STEPS {
+            steps.remove(0);
+        }
+    };
+    let reply = |mut h: Value, steps: &mut Vec<Value>, since: Option<i64>| {
+        if !steps.is_empty() {
+            h["steps"] = json!(std::mem::take(steps));
+        }
+        if let (Some(at), Some(from)) = (h["at"].as_i64(), since) {
+            h["took"] = json!((at - from).max(0));
+        }
+        h
+    };
+    for t in transcript {
+        match t["role"].as_str() {
+            Some("user") => {
+                if let Some(h) = held.take() {
+                    out.push(reply(h, &mut steps, since));
+                }
+                steps.clear();
+                since = t["at"].as_i64();
+                out.push(t.clone());
+            }
+            Some("tool") => {
+                if let Some(call) = steps.iter_mut().rev().find(|s| s["kind"] == "tool").filter(|s| s.get("result").is_none()) {
+                    call["result"] = json!(clip(&t["text"].as_str().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" "), RESULT_CHARS));
+                    if t["isError"] == true {
+                        call["error"] = json!(true);
+                    }
+                }
+            }
+            _ => {
+                let text = t["text"].as_str().unwrap_or("");
+                let prose = text.lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n").trim().to_string();
+                let calls: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("→ ")).collect();
+                let thinking = t["thinking"].as_str().map(str::trim).filter(|s| !s.is_empty());
+                if let Some(h) = held.take() {
+                    push(&mut steps, json!({ "kind": "text", "text": clip(h["text"].as_str().unwrap_or(""), STEP_CHARS) }));
+                }
+                if let Some(th) = thinking {
+                    push(&mut steps, json!({ "kind": "thinking", "text": clip(th, STEP_CHARS) }));
+                }
+                if !prose.is_empty() {
+                    if calls.is_empty() {
+                        let mut h = t.clone();
+                        h["text"] = json!(prose);
+                        if let Some(o) = h.as_object_mut() {
+                            o.remove("thinking");
+                        }
+                        held = Some(h);
+                    } else {
+                        push(&mut steps, json!({ "kind": "text", "text": clip(&prose, STEP_CHARS) }));
+                    }
+                }
+                for c in calls {
+                    push(&mut steps, json!({ "kind": "tool", "text": tool_label(c) }));
+                }
+            }
+        }
+    }
+    if let Some(h) = held.take() {
+        if running {
+            push(&mut steps, json!({ "kind": "text", "text": clip(h["text"].as_str().unwrap_or(""), STEP_CHARS) }));
+        } else {
+            out.push(reply(h, &mut steps, since));
+        }
+    }
+    (out, if running { steps } else { vec![] })
+}
+
+/// Una respuesta con los pasos y el tiempo que trae su mensaje plegado (`fold_steps`).
+fn with_steps(mut item: Value, t: &Value) -> Value {
+    for k in ["steps", "took"] {
+        if !t[k].is_null() {
+            item[k] = t[k].clone();
+        }
+    }
+    item
+}
+
 /// Lo que un agente está escribiendo o haciendo ahora, como el último mensaje del hilo: el texto a
-/// medias (el teléfono lo revela mientras llega) o, sin texto todavía, qué hace.
+/// medias (el teléfono lo revela mientras llega) o, sin texto todavía, qué hace; con los pasos de la
+/// vuelta (`fold_steps`) y lo que está pensando.
 pub fn live_item(run: &Value, author: &str, logo: &str, after: i64) -> Option<Value> {
     let live = run["live"].as_object()?;
+    let transcript = run["transcript"].as_array().cloned().unwrap_or_default();
+    let (_, mut steps) = fold_steps(&transcript, true);
+    if let Some(th) = live.get("thinking").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+        steps.push(json!({ "kind": "thinking", "text": clip(th, STEP_CHARS), "live": true }));
+    }
+    let since = transcript.iter().rev().find(|t| t["role"] == "user").and_then(|t| t["at"].as_i64());
     let text: String = live.get("text").and_then(Value::as_str).unwrap_or("").lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n");
     let tools: Vec<&str> = live.get("tools").and_then(Value::as_array).map(|t| t.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     let activity = match tools.first().copied() {
@@ -188,7 +341,11 @@ pub fn live_item(run: &Value, author: &str, logo: &str, after: i64) -> Option<Va
         Some("condx") => "Checking the project…".to_string(),
         Some(other) => format!("Using {other}…"),
     };
-    Some(json!({ "at": after + 1, "kind": "reply", "live": true, "author": author, "logo": logo, "activity": activity, "text": text.trim() }))
+    let mut item = json!({ "at": after + 1, "kind": "reply", "live": true, "author": author, "logo": logo, "activity": activity, "text": text.trim(), "since": since });
+    if !steps.is_empty() {
+        item["steps"] = json!(steps);
+    }
+    Some(item)
 }
 
 pub async fn get(state: &Shared, id: &str) -> Result<Value> {
@@ -200,6 +357,10 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
         r["logo"] = json!(crate::agents::logo_for(state, run["provider"].as_str()));
         let gs = guests(state, id);
         if gs.is_empty() && state.store.notes(id).unwrap_or_default().is_empty() {
+            // La conversación con los pasos plegados en cada respuesta (la app de la Mac la muestra así).
+            let (folded, _) = fold_steps(r["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), r["status"] == "running");
+            r["folded"] = json!(folded);
+            r["liveItem"] = json!(live_item(&r, "Agent", r["logo"].as_str().unwrap_or(""), 0));
             return Ok(r);
         }
         return chat_with_guests(state, id, r, &run, gs).await;
@@ -259,7 +420,7 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
         let title = title_of(&node);
         let name = if node == "explainer" || node.starts_with("g-") || title.eq_ignore_ascii_case(&rname) { rname } else { format!("{rname} ({title})") };
         participants.push(json!({ "node": node, "role": role, "name": name, "run": agent_run, "status": live["status"], "logo": role_logo(state, &role) }));
-        let transcript = live["transcript"].as_array().cloned().unwrap_or_default();
+        let (transcript, _) = fold_steps(live["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), live["status"] == "running");
         // El Explicador y los invitados empiezan con «The developer asks: …».
         let explainer = node == "explainer" || node.starts_with("g-");
         // En un agente de flujo, la conversación con la persona empieza en el segundo mensaje suyo.
@@ -291,7 +452,7 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
                 Some("assistant") if explainer || users > 1 => {
                     let prose: String = text.lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n").trim().to_string();
                     if !prose.is_empty() {
-                        items.push(json!({ "at": t["at"], "kind": "reply", "author": name, "logo": role_logo(state, &role), "text": prose }));
+                        items.push(with_steps(json!({ "at": t["at"], "kind": "reply", "author": name, "logo": role_logo(state, &role), "text": prose }), &t));
                     }
                 }
                 _ => {}
@@ -318,7 +479,8 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
     let about = run["about"].is_string();
     let mut participants = vec![json!({ "node": "agent", "name": "Agent", "logo": chat["logo"] })];
     let mut first_user = true;
-    for t in chat["transcript"].as_array().cloned().unwrap_or_default() {
+    let (folded, _) = fold_steps(chat["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), chat["status"] == "running");
+    for t in folded {
         let text = t["text"].as_str().unwrap_or("");
         match t["role"].as_str() {
             Some("user") => {
@@ -329,7 +491,7 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
             Some("assistant") => {
                 let prose: String = text.lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n").trim().to_string();
                 if !prose.is_empty() {
-                    items.push(json!({ "at": t["at"], "kind": "reply", "author": "Agent", "text": prose }));
+                    items.push(with_steps(json!({ "at": t["at"], "kind": "reply", "author": "Agent", "text": prose }), &t));
                 }
             }
             _ => {}
@@ -345,7 +507,8 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
         items.extend(stopped_item(&live, &name, last_at(&live)));
         participants.push(json!({ "node": format!("g-{role}"), "role": role, "name": name, "logo": role_logo(state, &role) }));
         let mut users = 0;
-        for t in live["transcript"].as_array().cloned().unwrap_or_default() {
+        let (folded, _) = fold_steps(live["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), live["status"] == "running");
+        for t in folded {
             let text = t["text"].as_str().unwrap_or("");
             match t["role"].as_str() {
                 Some("user") => {
@@ -359,7 +522,7 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
                 Some("assistant") => {
                     let prose: String = text.lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n").trim().to_string();
                     if !prose.is_empty() {
-                        items.push(json!({ "at": t["at"], "kind": "reply", "author": name, "text": prose }));
+                        items.push(with_steps(json!({ "at": t["at"], "kind": "reply", "author": name, "text": prose }), &t));
                     }
                 }
                 _ => {}
@@ -570,5 +733,36 @@ mod tests {
         assert_eq!(mention("  @Risk, explain"), Some(("risk".into(), "explain".into())));
         assert_eq!(mention("@triage"), Some(("triage".into(), String::new())));
         assert_eq!(mention("no mention @here"), None);
+    }
+
+    #[test]
+    fn fold_steps_puts_the_work_before_each_answer() {
+        let tr = vec![
+            json!({ "role": "user", "text": "¿cuántas páginas?", "at": 1000 }),
+            json!({ "role": "assistant", "text": "", "thinking": "Busco en app/admin.", "at": 1100 }),
+            json!({ "role": "assistant", "text": "Voy a mirar la carpeta.", "at": 1200 }),
+            json!({ "role": "assistant", "text": "→ Glob(app/admin/**/page.tsx)", "at": 1300 }),
+            json!({ "role": "tool", "text": "a.tsx\nb.tsx", "at": 1400 }),
+            json!({ "role": "assistant", "text": "Hay 2 páginas.", "at": 4000 }),
+        ];
+        let (out, live) = fold_steps(&tr, false);
+        assert!(live.is_empty());
+        assert_eq!(out.len(), 2, "the question and one answer: {out:?}");
+        let answer = &out[1];
+        assert_eq!(answer["text"], "Hay 2 páginas.");
+        assert_eq!(answer["took"], 3000);
+        let kinds: Vec<&str> = answer["steps"].as_array().unwrap().iter().map(|s| s["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["thinking", "text", "tool"]);
+        assert_eq!(answer["steps"][2]["result"], "a.tsx b.tsx");
+        assert_eq!(answer["steps"][2]["text"], "Glob  app/admin/**/page.tsx");
+        assert_eq!(tool_label(r#"Read({"file_path":"/Users/x/Documents/Software/landing/app/admin/page.tsx"})"#), "Read  app/admin/page.tsx");
+        assert_eq!(tool_label(r#"Grep({"pattern":"subscri","-i":true,"path":"/data/condx/projects/web/app"})"#), "Grep  subscri · app");
+        assert_eq!(tool_label(r#"Bash({"command":"git log --oneline -5","descr"#), "Bash  git log --oneline -5");
+        assert_eq!(tool_label("condx.get_overview({})"), "condx.get_overview");
+        // Mientras trabaja, el último texto todavía es un paso (puede seguir usando herramientas).
+        let (out, live) = fold_steps(&tr, true);
+        assert_eq!(out.len(), 1);
+        assert_eq!(live.len(), 4);
+        assert_eq!(live[3]["text"], "Hay 2 páginas.");
     }
 }

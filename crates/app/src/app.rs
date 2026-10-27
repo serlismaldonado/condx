@@ -317,6 +317,9 @@ pub struct DevtoolApp {
     /// Para bajar a lo último cuando llegan mensajes nuevos.
     pub chat_scroll: ScrollHandle,
     pub chat_len: usize,
+    /// Los pasos de respuestas que la persona abrió o cerró a mano (los demás: abiertos mientras el
+    /// agente trabaja, cerrados cuando respondió).
+    pub steps_open: std::collections::HashMap<String, bool>,
     known_incidents: std::collections::HashSet<String>,
     /// Configuración → Agentes (`/api/agents`) y el tipo de proveedor elegido para agregar.
     pub agents: Option<Value>,
@@ -549,6 +552,7 @@ impl DevtoolApp {
             chat_placeholder: "",
             chat_scroll: ScrollHandle::new(),
             chat_len: 0,
+            steps_open: Default::default(),
             known_incidents: Default::default(),
             agents: None,
             agents_error: None,

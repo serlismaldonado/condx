@@ -19,6 +19,7 @@ test("Claude Code: leer y git de lectura siempre; escribir y chequeos solo al ar
   assert.deepEqual(args.slice(0, 2), ["-p", "hola"]);
   assert.ok(args.includes("--resume") && args[args.indexOf("--resume") + 1] === "abc");
   assert.equal(args[args.indexOf("--permission-mode") + 1], "default");
+  assert.equal(args[args.indexOf("--thinking-display") + 1], "summarized");
 });
 
 test("Claude Code: transmite el texto, guarda la sesión y la respuesta, y sigue la conversación", async () => {
@@ -32,6 +33,8 @@ const a = process.argv.slice(2);
 const resumed = a.includes("--resume") ? a[a.indexOf("--resume") + 1] : null;
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
 out({ type: "system", subtype: "init", session_id: "s-1" });
+out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "Reviso" } } });
+out({ type: "assistant", message: { content: [{ type: "thinking", thinking: "Reviso el proyecto primero." }] } });
 out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hol" } } });
 out({ type: "assistant", message: { content: [{ type: "tool_use", name: "mcp__condx__get_overview", input: {} }] } });
 out({ type: "user", message: { content: [{ type: "tool_result", content: "ok" }] } });
@@ -55,6 +58,7 @@ out({ type: "result", subtype: "success", result: resumed ? "Seguimos (" + resum
   assert.equal(r.answer, "Hola, todo bien.");
   assert.ok(r.transcript.some((t) => t.role === "assistant" && t.text.startsWith("→ condx.get_overview")));
   assert.equal(r.usage.total, 15);
+  assert.ok(r.transcript.some((t) => t.role === "assistant" && (t as { thinking?: string }).thinking === "Reviso el proyecto primero."));
   cc.message("r1", "¿y ahora?");
   await new Promise((res) => setTimeout(res, 50));
   await wait("done");

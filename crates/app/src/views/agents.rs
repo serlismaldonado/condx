@@ -258,11 +258,19 @@ fn conversation(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<Devt
                 app.chat_scroll.scroll_to_bottom();
             }
             let skip = usize::from(r["kind"] != "chat" && r["incident"].as_str().is_some_and(|i| !i.is_empty()));
-            for item in r["transcript"].as_array().cloned().unwrap_or_default().iter().skip(skip) {
-                msgs = msgs.child(message(item, cx));
+            // Con los pasos plegados en cada respuesta (el daemon los arma); uno viejo manda el transcript.
+            let folded = r["folded"].as_array().or(r["transcript"].as_array()).cloned().unwrap_or_default();
+            for item in folded.iter().skip(skip) {
+                msgs = msgs.child(message(app, item, cx));
             }
             if running {
-                msgs = msgs.child(h_flex().gap_2().items_center().child(ui::dot(Health::Warn, cx)).child(ui::muted(t!("The agent is working…"), cx).text_xs()));
+                match r["liveItem"].as_object().filter(|l| l.get("steps").is_some_and(|s| s.as_array().is_some_and(|s| !s.is_empty())) || l.get("text").and_then(Value::as_str).is_some_and(|x| !x.trim().is_empty())) {
+                    Some(live) => {
+                        let live = Value::Object(live.clone());
+                        msgs = msgs.child(v_flex().gap_1().children(steps_view(app, &live, cx)).when(live["text"].as_str().is_some_and(|x| !x.trim().is_empty()), |d| d.child(super::incidents::answer_view(live["text"].as_str().unwrap_or(""), cx))));
+                    }
+                    None => msgs = msgs.child(h_flex().gap_2().items_center().child(ui::dot(Health::Warn, cx)).child(ui::muted(t!("The agent is working…"), cx).text_xs())),
+                }
             }
         }
     }
@@ -407,7 +415,7 @@ fn thread_view(app: &mut DevtoolApp, r: Value, window: &mut Window, cx: &mut Con
     }
     let mut msgs = v_flex().gap_3().px_4().py_3().max_w(px(860.));
     for (i, item) in items.iter().enumerate() {
-        msgs = msgs.child(thread_item(i, item, cx));
+        msgs = msgs.child(thread_item(app, i, item, cx));
     }
     let waiting = r["waitingAnswer"] == true;
     let placeholder = if waiting { t!("Answer the question…  (or @agent to ask one of them)") } else { t!("Write to the agents…  (@risk to ask one; otherwise the Explainer answers)") };
@@ -419,7 +427,7 @@ fn thread_view(app: &mut DevtoolApp, r: Value, window: &mut Window, cx: &mut Con
         .child(composer)
 }
 
-fn thread_item(i: usize, item: &Value, cx: &mut Context<DevtoolApp>) -> AnyElement {
+fn thread_item(app: &DevtoolApp, i: usize, item: &Value, cx: &mut Context<DevtoolApp>) -> AnyElement {
     let t = crate::theme::Tokens::current(cx);
     let text = item["text"].as_str().unwrap_or_default().to_string();
     let card = || v_flex().flex_1().min_w_0().gap_1().px_3().py_2().bg(t.card).border_1().border_color(t.card_border);
@@ -493,7 +501,8 @@ fn thread_item(i: usize, item: &Value, cx: &mut Context<DevtoolApp>) -> AnyEleme
                     // Un agente de fuera (por el MCP).
                     .when(item["kind"] == "external", |d| d.child(div().px_1().border_1().border_color(t.card_border).text_size(px(10.)).text_color(t.muted).child(t!("external")))),
             )
-            .child(super::incidents::answer_view(&text, cx))
+            .children(steps_view(app, item, cx))
+            .when(!text.trim().is_empty() || item["live"] != true, |d| d.child(super::incidents::answer_view(&text, cx)))
             .into_any_element(),
         _ => {
             let health = match item["status"].as_str() {
@@ -528,9 +537,79 @@ fn examples(cx: &mut Context<DevtoolApp>) -> Div {
     row
 }
 
+/// «12 s», «1 min 5 s».
+fn span(ms: i64) -> String {
+    let s = (ms / 1000).max(0);
+    if s < 60 { format!("{s} s") } else if s % 60 == 0 { format!("{} min", s / 60) } else { format!("{} min {} s", s / 60, s % 60) }
+}
+
+/// Lo que hizo un agente antes de responder (lo que pensó, lo que dijo mientras trabajaba y las
+/// herramientas que usó, con lo que devolvieron), plegado bajo una línea como en Claude: abierto
+/// mientras trabaja, cerrado cuando ya respondió; un clic lo invierte.
+fn steps_view(app: &DevtoolApp, item: &Value, cx: &mut Context<DevtoolApp>) -> Option<AnyElement> {
+    let steps = item["steps"].as_array().filter(|s| !s.is_empty())?.clone();
+    let t = crate::theme::Tokens::current(cx);
+    let live = item["live"] == true;
+    let at = item["at"].as_i64().unwrap_or(0);
+    // La vuelta empezó con el mensaje de la persona: la misma llave en vivo y ya respondida.
+    let start = if live { item["since"].as_i64() } else { item["took"].as_i64().map(|d| at - d) };
+    let key = format!("{}:{}", ui::txt(&item["author"]), start.unwrap_or(at));
+    let open = app.steps_open.get(&key).copied().unwrap_or(live);
+    let tools = steps.iter().filter(|s| s["kind"] == "tool").count();
+    let tools_label = match tools {
+        0 => String::new(),
+        1 => format!(" · 1 {}", t!("tool")),
+        n => format!(" · {n} {}", t!("tools")),
+    };
+    let label = if live {
+        let elapsed = start.map(|s| format!(" {}", span(ui::now_ms() - s))).unwrap_or_default();
+        format!("{}{elapsed}{tools_label}", t!("Thinking…"))
+    } else {
+        let lead = if steps.iter().any(|s| s["kind"] == "thinking") { t!("Thought for") } else { t!("Worked for") };
+        format!("{lead} {}{tools_label}", item["took"].as_i64().map(span).unwrap_or_default())
+    };
+    let k = key.clone();
+    let head = h_flex()
+        .id(SharedString::from(format!("steps-{key}")))
+        .gap_1()
+        .items_center()
+        .cursor_pointer()
+        .text_size(px(11.5))
+        .text_color(if live { t.fg } else { t.muted })
+        .hover(move |s| s.text_color(t.fg))
+        .child(ely_core::primitives::Icon::new(if open { ely_core::primitives::IconName::ChevronDown } else { ely_core::primitives::IconName::ChevronRight }).size(ely_core::theme::IconSize::Xs).color(t.subtle))
+        .child(label)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let now = this.steps_open.get(&k).copied().unwrap_or(live);
+            this.steps_open.insert(k.clone(), !now);
+            cx.notify();
+        }));
+    let mut col = v_flex().gap_1().child(head);
+    if open {
+        let mut list = v_flex().gap_2().ml(px(5.)).pl_3().border_l_1().border_color(t.card_border);
+        for s in &steps {
+            let body = ui::txt(&s["text"]).to_string();
+            list = list.child(match s["kind"].as_str() {
+                Some("tool") => {
+                    let mut c = v_flex().gap_0p5().child(ui::mono(body).text_size(px(11.)).text_color(t.muted).truncate());
+                    if let Some(r) = s["result"].as_str().filter(|r| !r.is_empty()) {
+                        let color: Hsla = if s["error"] == true { rgb(0xe5756e).into() } else { t.subtle };
+                        c = c.child(ui::mono(r.to_string()).text_size(px(10.5)).text_color(color).truncate());
+                    }
+                    c.into_any_element()
+                }
+                Some("thinking") => div().text_size(px(12.)).text_color(t.muted).child(body).into_any_element(),
+                _ => div().text_size(px(12.)).text_color(t.fg).child(body).into_any_element(),
+            });
+        }
+        col = col.child(list);
+    }
+    Some(col.into_any_element())
+}
+
 /// Un mensaje: lo de la persona en un recuadro a la derecha; las llamadas del agente a sus
 /// herramientas, en una línea tenue; su respuesta, como texto.
-fn message(item: &Value, cx: &mut Context<DevtoolApp>) -> AnyElement {
+fn message(app: &DevtoolApp, item: &Value, cx: &mut Context<DevtoolApp>) -> AnyElement {
     let t = crate::theme::Tokens::current(cx);
     let text = item["text"].as_str().unwrap_or_default();
     match item["role"].as_str() {
@@ -556,6 +635,7 @@ fn message(item: &Value, cx: &mut Context<DevtoolApp>) -> AnyElement {
                     prose.push('\n');
                 }
             }
+            col = col.children(steps_view(app, item, cx));
             if !prose.trim().is_empty() {
                 col = col.child(super::incidents::answer_view(prose.trim(), cx));
             }

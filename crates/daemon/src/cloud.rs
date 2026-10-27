@@ -76,6 +76,33 @@ const ITEM_CHARS: usize = 12_000;
 const THREAD_CHARS: usize = 300_000;
 
 /// Los mensajes que entran en la fila: los más nuevos, hasta `THREAD_CHARS`.
+/// Cuántas respuestas (las últimas) suben con sus pasos: los de antes no se despliegan en el teléfono.
+const STEPS_KEPT: usize = 6;
+
+/// Los pasos de las últimas respuestas, redactados (los resultados de herramientas pueden traer
+/// secretos); sin campos vacíos.
+fn slim_steps(mut items: Vec<Value>) -> Vec<Value> {
+    let mut kept = 0;
+    for it in items.iter_mut().rev() {
+        let Some(o) = it.as_object_mut() else { continue };
+        o.retain(|_, v| !v.is_null());
+        let Some(steps) = o.get_mut("steps").and_then(Value::as_array_mut) else { continue };
+        if kept >= STEPS_KEPT {
+            o.remove("steps");
+            continue;
+        }
+        kept += 1;
+        for s in steps {
+            for k in ["text", "result"] {
+                if let Some(x) = s[k].as_str() {
+                    s[k] = json!(devtool_core::redact(x));
+                }
+            }
+        }
+    }
+    items
+}
+
 fn fit_items(items: Vec<Value>) -> Vec<Value> {
     let mut total = 0;
     let mut keep: Vec<Value> = vec![];
@@ -1151,10 +1178,10 @@ async fn thread_rows(state: &Shared, prev: &IndexMap<String, Values>) -> IndexMa
                     let fields: Vec<String> = res.iter().map(|(k, v)| format!("{k}: {}", v.as_str().unwrap_or_default())).collect();
                     text = format!("{text}\n{}", fields.join("\n"));
                 }
-                json!({ "kind": it["kind"], "author": it["author"], "logo": it["logo"], "to": it["to"], "at": it["at"], "status": it["status"], "job": it["job"], "source": it["event"]["source"], "answered": it["answered"], "live": it["live"], "activity": it["activity"], "text": cut(text.trim(), ITEM_CHARS) })
+                json!({ "kind": it["kind"], "author": it["author"], "logo": it["logo"], "to": it["to"], "at": it["at"], "status": it["status"], "job": it["job"], "source": it["event"]["source"], "answered": it["answered"], "live": it["live"], "activity": it["activity"], "steps": it["steps"], "took": it["took"], "since": it["since"], "text": cut(text.trim(), ITEM_CHARS) })
             }).collect()
         } else {
-            let msgs: Vec<Value> = th["transcript"].as_array().cloned().unwrap_or_default().into_iter().filter(|x| x["role"] != "tool").collect();
+            let (msgs, _) = crate::threads::fold_steps(th["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), th["status"] == "running");
             // Un chat abierto sobre un incidente: su primer mensaje es el contexto que armó el daemon.
             let about = state.store.agent_run(&id).ok().flatten().is_some_and(|r| r["about"].is_string());
             let skip = msgs.len().saturating_sub(300);
@@ -1165,7 +1192,7 @@ async fn thread_rows(state: &Shared, prev: &IndexMap<String, Values>) -> IndexMa
                     Some("user") => "user",
                     _ => "reply",
                 };
-                (!text.trim().is_empty()).then(|| json!({ "kind": kind, "author": x["author"].as_str().unwrap_or("Agent"), "at": x["at"], "text": cut(text.trim(), ITEM_CHARS) }))
+                (!text.trim().is_empty()).then(|| json!({ "kind": kind, "author": x["author"].as_str().unwrap_or("Agent"), "at": x["at"], "steps": x["steps"], "took": x["took"], "text": cut(text.trim(), ITEM_CHARS) }))
             }).collect::<Vec<Value>>()
             .into_iter()
             .chain(crate::threads::live_item(&th, "Agent", th["logo"].as_str().unwrap_or(""), msgs.iter().filter_map(|x| x["at"].as_i64()).max().unwrap_or(0)))
@@ -1175,7 +1202,7 @@ async fn thread_rows(state: &Shared, prev: &IndexMap<String, Values>) -> IndexMa
         // Lo que espera un agente libre, al final y marcado «en cola».
         let mut items = items;
         items.extend(crate::threads::queued_items(state, &id).into_iter().map(|q| json!({ "kind": "user", "status": "queued", "at": q["at"], "text": cut(q["text"].as_str().unwrap_or(""), ITEM_CHARS) })));
-        let items = fit_items(items);
+        let items = fit_items(slim_steps(items));
         let mut participants: Vec<Value> = th["participants"].as_array().cloned().unwrap_or_default().iter().map(|p| json!({ "node": p["node"], "name": p["name"], "logo": p["logo"] })).collect();
         // Un chat de un solo agente: él es el participante (con la marca de su proveedor).
         if participants.is_empty() && th["thread"] != true {

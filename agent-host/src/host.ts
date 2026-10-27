@@ -126,6 +126,8 @@ export function languageLine(code?: string): string {
 export interface TranscriptItem {
   role: "user" | "assistant" | "tool";
   text: string;
+  /** Lo que pensó el modelo antes de este mensaje (el resumen que da el proveedor). */
+  thinking?: string;
   tool?: string;
   isError?: boolean;
   at?: number;
@@ -250,8 +252,9 @@ export class Host {
     const partial = Array.isArray(live.generation?.message?.content)
       ? (live.generation.message.content as { type: string; text?: string }[]).filter((c) => c.type === "text").map((c) => c.text ?? "").join("")
       : "";
+    const thinking = Array.isArray(live.generation?.message?.content) ? thinkingOf(live.generation.message.content) : "";
     const tools = ((live.tools ?? []) as { name: string; status: string }[]).filter((t) => t.status !== "done").map((t) => t.name);
-    const now = busy ? { text: partial, tools } : null;
+    const now = busy ? { text: partial, thinking, tools } : null;
     // El contexto en uso: la última respuesta del modelo (su entrada, con caché, y su salida); la ventana,
     // la del modelo (pi compacta solo cerca de ese límite).
     const lastUsage = [...value.entries].reverse().map((e) => e.model?.[0] as { role?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } } | undefined).find((m) => m?.role === "assistant" && m.usage)?.usage;
@@ -297,6 +300,12 @@ function textOf(content: unknown): string {
   return content.map((c: { type?: string; text?: string; name?: string; arguments?: unknown }) => (c.type === "text" ? c.text ?? "" : c.type === "toolCall" ? `→ ${c.name}(${JSON.stringify(c.arguments)})` : "")).filter(Boolean).join("\n");
 }
 
+/** El pensamiento de un mensaje del modelo (los bloques `thinking` de pi-ai). */
+function thinkingOf(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content.filter((c: { type?: string }) => c.type === "thinking").map((c: { thinking?: string }) => c.thinking ?? "").join("\n\n").trim();
+}
+
 /** Lo que la app muestra: mensajes, llamadas a herramientas y sus resultados (recortados). */
 export function toTranscript(entries: { kind: string; model?: { role: string; content: unknown; toolName?: string; isError?: boolean; timestamp?: number }[] }[]): TranscriptItem[] {
   const out: TranscriptItem[] = [];
@@ -304,7 +313,10 @@ export function toTranscript(entries: { kind: string; model?: { role: string; co
     const m = e.model?.[0];
     if (!m) continue;
     if (m.role === "user") out.push({ role: "user", text: textOf(m.content), at: m.timestamp });
-    else if (m.role === "assistant") out.push({ role: "assistant", text: textOf(m.content), at: m.timestamp });
+    else if (m.role === "assistant") {
+      const thinking = thinkingOf(m.content);
+      out.push({ role: "assistant", text: textOf(m.content), ...(thinking ? { thinking } : {}), at: m.timestamp });
+    }
     else if (m.role === "toolResult") out.push({ role: "tool", tool: m.toolName, text: textOf(m.content).slice(0, 2_000), isError: m.isError, at: m.timestamp });
   }
   return out;

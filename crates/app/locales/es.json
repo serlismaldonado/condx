@@ -945,5 +945,10 @@
   "Leave empty to keep the saved key": "Vacío: se queda la clave guardada",
   "Token (optional)": "Token (opcional)",
   "For the cloud site, which has no Claude Code login: run `claude setup-token` in a terminal and paste the token here. It's stored encrypted and only goes to your devices and the cloud site.": "Para el sitio en la nube, que no tiene sesión de Claude Code: corre `claude setup-token` en una terminal y pega el token aquí. Se guarda cifrado y solo va a tus dispositivos y al sitio en la nube.",
-  "Context window": "Ventana de contexto"
+  "Context window": "Ventana de contexto",
+  "tool": "herramienta",
+  "tools": "herramientas",
+  "Thinking…": "Pensando…",
+  "Thought for": "Pensó",
+  "Worked for": "Trabajó"
 }

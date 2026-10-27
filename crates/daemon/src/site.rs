@@ -70,6 +70,14 @@ pub fn open_url(port: u16) -> Option<String> {
 /// Lo que publica el sitio sobre sí mismo (sus servicios locales), para el teléfono con la Mac apagada.
 pub const OVERVIEW_ROW: &str = "site-overview";
 
+/// La última vez que alguien encendió servicios en el sitio (el teléfono, el MCP o la vista previa de
+/// una tarea): mientras corren, cuentan como trabajo y el sitio no se apaga (hasta `SERVICES_KEEP_MS`).
+static SERVICE_ASK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub fn note_service_ask() {
+    SERVICE_ASK.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
@@ -292,7 +300,8 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     publish_overview(state, s)?;
     // ¿Detenerse? Con trabajo (agentes o trabajos en marcha) no; sin trabajo un rato, sí. Los servicios
     // locales encendidos cuentan como trabajo hasta 3 h después del último pedido de un teléfono.
-    let services_on = now - s.service_asked_at < SERVICES_KEEP_MS && state.procs.any_running();
+    let asked = s.service_asked_at.max(SERVICE_ASK.load(std::sync::atomic::Ordering::Relaxed));
+    let services_on = now - asked < SERVICES_KEEP_MS && state.procs.any_running();
     let busy = services_on || !state.store.agent_runs(&["running"], None)?.is_empty() || !state.store.jobs(&["running", "queued"], 1)?.is_empty();
     if busy {
         s.busy_at = now;

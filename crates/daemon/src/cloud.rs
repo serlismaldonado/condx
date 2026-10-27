@@ -148,6 +148,22 @@ fn clip(v: &Value, max: usize) -> Value {
     short_text(v, max)
 }
 
+/// Lo último que publicó el sitio en la nube de sus proyectos y servicios (fila `site-overview`): la Mac
+/// se lo muestra a los agentes de fuera (la vista previa en la nube se abre desde cualquier lado).
+static SITE_OVERVIEW: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
+
+pub fn site_overview() -> Option<Value> {
+    SITE_OVERVIEW.lock().unwrap().clone()
+}
+
+fn cache_site_overview(s: &Session) {
+    let scope = format!("threads:{}", s.link.daemon_id);
+    let v = s.engine.rows(&scope).into_iter().find(|r| r.row.id == crate::site::OVERVIEW_ROW).and_then(|r| r.row.values.get("overview").and_then(Value::as_str).and_then(|t| serde_json::from_str::<Value>(t).ok()));
+    if v.is_some() {
+        *SITE_OVERVIEW.lock().unwrap() = v;
+    }
+}
+
 pub async fn overview(state: &Shared) -> Value {
     let mut projects = vec![];
     let cloud = crate::site::is_cloud();
@@ -1744,6 +1760,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     process_decisions(state, s);
     process_requests(state, s);
     import_from_site(state, s);
+    cache_site_overview(s);
     process_thread_requests(state, s);
     let answered_mcp = process_mcp_calls(state, s);
     // Se hizo algo que pidió un teléfono: la próxima vuelta va enseguida (publica el resultado) y,

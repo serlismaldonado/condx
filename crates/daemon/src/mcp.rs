@@ -63,7 +63,7 @@ pub fn tools() -> Vec<Value> {
         tool("get_git", "ERP git: branch, ahead/behind, changes, dev/main and submodules versus their remote.", json!({}), &[]),
         tool("get_deployer", "Devbox deployer: phase (idle, syncing, error), image and latest log lines.", json!({}), &[]),
         tool("get_containers", "Docker containers (name, image, state, compose service).", json!({}), &[]),
-        tool("get_vercel", "Vercel frontend: production deploy, latest preview, in progress and latest failed.", json!({}), &[]),
+        tool("get_vercel", "Vercel frontend of PRODUCTION (main): production deploy, latest preview, in progress and latest failed. To try the app from anywhere (a phone), use the cloud site's preview instead: list_services → cloudSite.", json!({}), &[]),
         tool("list_incidents", "Incidents Condx detected (failed jobs, failed Vercel deploys, CI in red, Convex not responding): title, source, environment, evidence (redacted), how many times it happened and its status. status: open (default; includes ignored), resolved or all. Ignoring or resolving is only done in the app.", json!({ "status": { "type": "string", "enum": ["open", "resolved", "all"] }, "project": project_arg(), "limit": { "type": "integer", "default": 30 } }), &[]),
         tool("get_frontend", "A project's frontend on Vercel: production, previews (latest per branch), building, the latest failed deploy with the end of its build log, which Convex deployment production and the latest preview point to (read from the published site) and the production frontend's commit against Convex production's.", json!({ "project": { "type": "string", "description": "Project name (see list_projects); optional" } }), &[]),
         tool(
@@ -102,7 +102,7 @@ pub fn tools() -> Vec<Value> {
             json!({ "path": { "type": "string", "description": "Repo folder (~ allowed)" }, "name": { "type": "string", "description": "Short name; defaults to the Convex project in .env.local" } }),
             &["path"],
         ),
-        tool("list_services", "A project's local development environment: Convex backend, deployer (convex dev) and frontend, with their status.", json!({ "project": project_arg() }), &[]),
+        tool("list_services", "A project's development environment: Convex backend, deployer (convex dev) and frontend, with their status. `cloudSite`: the same on the cloud site, against the project's cloud dev, with `openUrl` (the frontend's public URL: this is where to try the app from anywhere, e.g. from a phone; start it with service_action, branch included). On the Mac the local services only open on that Mac.", json!({ "project": project_arg() }), &[]),
         tool(
             "service_action",
             "Starts, stops or restarts a development service (backend, deployer, frontend; in heskala-erp the frontend is vite) or all of them (all). On the Mac they're local; on the cloud site (when the Mac is off) there's no local backend: the deployer runs convex dev against the project's cloud dev and the frontend gets a public URL (list_services → publicUrl).",
@@ -450,7 +450,13 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
                     }
                 }
             }
-            json!({ "where": if crate::site::is_cloud() { "cloud site (Mac off): against the project's cloud dev" } else { "the Mac (local)" }, "services": list })
+            // En la Mac: también lo del sitio en la nube (lo que se abre desde cualquier lado).
+            let cloud_site = if crate::site::is_cloud() {
+                Value::Null
+            } else {
+                crate::cloud::site_overview().and_then(|o| o["projects"].as_array().and_then(|ps| ps.iter().find(|p| p["name"] == project.name.as_str()).cloned())).map(|p| json!({ "branch": p["git"]["branch"], "commit": p["git"]["commit"], "target": p["target"], "services": p["services"] })).unwrap_or(Value::Null)
+            };
+            json!({ "where": if crate::site::is_cloud() { "cloud site (Mac off): against the project's cloud dev" } else { "the Mac (local: opens only on this Mac)" }, "services": list, "cloudSite": cloud_site })
         }
         "service_action" => {
             need(Scope::JobsRequest)?;

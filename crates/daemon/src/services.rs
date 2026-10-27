@@ -296,6 +296,9 @@ pub fn action(state: &Shared, project: &Project, name: &str, action: &str) -> Re
             bail!("{n} is already busy ({b})");
         }
     }
+    if crate::site::is_cloud() && action != "stop" {
+        crate::site::note_service_ask();
+    }
     let st = state.clone();
     let action = action.to_string();
     // En el sitio en la nube, un proyecto a la vez (la máquina es chica): los de los demás se detienen.

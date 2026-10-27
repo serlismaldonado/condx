@@ -6,6 +6,7 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { MAX_BYTES } from "./files";
+import { addMcpRoutes } from "./mcpHttp";
 
 const http = httpRouter();
 
@@ -221,5 +222,8 @@ http.route({
     return new Response(null, { status: 302, headers: { location: `${cloud}/api/storage/${id}` } });
   }),
 });
+
+// El MCP remoto (Claude desde cualquier lugar): mcpHttp.ts.
+addMcpRoutes(http);
 
 export default http;

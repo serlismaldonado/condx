@@ -1278,6 +1278,31 @@ fn import_from_site(state: &Shared, s: &mut Session) {
     }
 }
 
+/// Las llamadas del MCP remoto (`remote_mcp.rs`): las nuevas corren aparte; las respuestas listas se
+/// escriben en su fila (`result`, `resultFor`). Devuelve si escribió alguna (para publicarla enseguida).
+fn process_mcp_calls(state: &Shared, s: &mut Session) -> bool {
+    let scope = format!("threads:{}", s.link.daemon_id);
+    let rows: Vec<(String, Values)> = s.engine.rows(&scope).into_iter().filter(|r| r.row.id.starts_with(crate::remote_mcp::ROW_PREFIX) && !r.pending).map(|r| (r.row.id.clone(), r.row.values.clone())).collect();
+    let wake = s.bell.as_ref().map(|b| b.waker());
+    s.mcp.start(state, &s.rt, &s.link.daemon_id, &rows, &trusted_devices(), wake);
+    let now = now_ms();
+    let mut wrote = false;
+    for (row, call, reply) in s.mcp.drain() {
+        // Si Condx Cloud ya no esperaba (la borró), no hay dónde contestar.
+        if !rows.iter().any(|(id, _)| id == &row) {
+            continue;
+        }
+        let mut set = Values::new();
+        set.insert("result".into(), json!(reply));
+        set.insert("resultFor".into(), json!(call));
+        match s.engine.commit(vec![OpDraft::patch(&scope, &row, set)], now) {
+            Ok(_) => wrote = true,
+            Err(e) => tracing::warn!("remote mcp: couldn't write the answer on {row}: {e}"),
+        }
+    }
+    wrote
+}
+
 /// Los mensajes nuevos de los teléfonos en los hilos: verificar la firma y mandarlos (cada uno una vez).
 fn process_thread_requests(state: &Shared, s: &mut Session) {
     let scope = format!("threads:{}", s.link.daemon_id);
@@ -1461,6 +1486,8 @@ struct Session {
     thread_results: IndexMap<String, (String, String)>,
     /// El timbre en vivo, el token para abrirlo y cuándo sonó por HTTP.
     bell: Option<crate::bell::Bell>,
+    /// Las llamadas del MCP remoto (Claude desde cualquier lugar): la Mac las contesta siempre.
+    mcp: crate::remote_mcp::Calls,
     token: String,
     rung_at: i64,
     /// El último latido publicado (`aliveAt` en la fila `_mac`).
@@ -1506,7 +1533,7 @@ fn open_session(link: Link, token: &str, rt: tokio::runtime::Handle) -> Result<S
         .into_iter()
         .filter_map(|r| Some((r.row.id.clone(), (r.row.values.get("resultFor")?.as_str()?.to_string(), r.row.values.get("result")?.as_str()?.to_string()))))
         .collect();
-    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0, alive_at: 0, site_handed: Default::default(), site_imported: Default::default(), projects_built: (0, vec![]), logs: Default::default(), catalog_built: (0, Value::Null), overview_built: (0, Value::Null), service_asked_at: 0 })
+    Ok(Session { transport: ConvexHttpTransport::new(&link.url, token), link, engine, scopes, results: IndexMap::new(), seen: Default::default(), incident_results, rt, sealed: IndexMap::new(), events_scope, threads_built: (0, IndexMap::new()), thread_results, again: false, busy_until: 0, bell: None, token: token.to_string(), rung_at: 0, alive_at: 0, site_handed: Default::default(), site_imported: Default::default(), projects_built: (0, vec![]), logs: Default::default(), catalog_built: (0, Value::Null), overview_built: (0, Value::Null), service_asked_at: 0, mcp: Default::default() })
 }
 
 /// Una vuelta: confirmar las diferencias, timbre, sincronizar. Devuelve el estado para la sonda.
@@ -1711,9 +1738,10 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     process_requests(state, s);
     import_from_site(state, s);
     process_thread_requests(state, s);
+    let answered_mcp = process_mcp_calls(state, s);
     // Se hizo algo que pidió un teléfono: la próxima vuelta va enseguida (publica el resultado) y,
     // por un rato, más seguido.
-    s.again = s.seen.len() > seen;
+    s.again = s.seen.len() > seen || answered_mcp;
     if s.again {
         s.busy_until = now_ms() + BUSY_FOR_MS;
     }

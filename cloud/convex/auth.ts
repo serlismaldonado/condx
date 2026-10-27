@@ -125,9 +125,11 @@ export async function siteWriteDenied(ctx: QueryCtx, principal: Principal, op: O
     const bad = keys.find((k) => !SITE_OWN_FIELDS.includes(k));
     return bad ? `A cloud site can't write “${bad}”` : null;
   }
-  if (op.kind !== "patch" || (op.rowId.startsWith("_") && op.rowId !== "_new" && op.rowId !== "_run")) return "A cloud site only answers in threads";
-  // En `_run` solo contesta (los pedidos de servicios con la Mac apagada), nunca escribe sus respuestas.
-  const fields = op.rowId === "_run" ? SITE_MAC_FIELDS.filter((k) => k !== "siteItems") : SITE_MAC_FIELDS;
+  // `_mcp-…`: una llamada del MCP remoto (mcp.ts) que el sitio contesta si la Mac no late.
+  const mcp = op.rowId.startsWith("_mcp-");
+  if (op.kind !== "patch" || (op.rowId.startsWith("_") && op.rowId !== "_new" && op.rowId !== "_run" && !mcp)) return "A cloud site only answers in threads";
+  // En `_run` y en las llamadas solo contesta, nunca escribe sus respuestas de hilo.
+  const fields = op.rowId === "_run" || mcp ? SITE_MAC_FIELDS.filter((k) => k !== "siteItems") : SITE_MAC_FIELDS;
   const bad = keys.find((k) => !fields.includes(k));
   if (bad) return `A cloud site can't write “${bad}” in the Mac's threads`;
   const mac = await ctx.db.query("lf_rows").withIndex("by_scope_and_rowId", (q) => q.eq("scope", op.scope).eq("rowId", "_mac")).unique();

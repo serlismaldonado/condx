@@ -54,6 +54,15 @@ impl Bell {
         self.0.latest.lock().unwrap().take()
     }
 
+    /// Para despertar desde otro hilo a quien espera (algo local terminó: una llamada del MCP remoto).
+    pub fn waker(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let me = self.0.clone();
+        Arc::new(move || {
+            *me.rang.lock().unwrap() = true;
+            me.ring.notify_all();
+        })
+    }
+
     /// Espera a que suene, hasta `max`. Devuelve si sonó.
     pub fn wait(&self, max: Duration) -> bool {
         let rang = self.0.rang.lock().unwrap();

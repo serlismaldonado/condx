@@ -100,6 +100,40 @@ export default defineSchema({
     count: v.number(),
   }).index("by_key_and_minute", ["key", "minute"]),
 
+  /**
+   * MCP remoto (`mcp.ts`): Claude y otros agentes llegan a Condx desde cualquier lugar. Un permiso lo
+   * crea un teléfono de confianza (firmado con su llave: la Mac y el sitio lo verifican en cada
+   * llamada) con un código que la persona escribe al autorizar. Los clientes se registran solos (OAuth
+   * con registro dinámico); de los códigos y tokens se guarda el SHA-256.
+   */
+  mcpGrants: defineTable({
+    grantId: v.string(),
+    daemonId: v.string(),
+    deviceId: v.string(),
+    deviceKey: v.string(),
+    name: v.string(),
+    level: v.string(),
+    codeHash: v.string(),
+    signedAt: v.number(),
+    signature: v.string(),
+    status: v.union(v.literal("open"), v.literal("active"), v.literal("revoked")),
+    expiresAt: v.number(),
+    clientId: v.optional(v.string()),
+    /// La última lista de herramientas que contestó la Mac o el sitio (si ninguno está, se usa esta).
+    tools: v.optional(v.string()),
+    lastUsedAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_grantId", ["grantId"])
+    .index("by_codeHash", ["codeHash"])
+    .index("by_daemonId", ["daemonId"]),
+  mcpClients: defineTable({ clientId: v.string(), name: v.string(), redirectUris: v.array(v.string()), createdAt: v.number() }).index("by_clientId", ["clientId"]),
+  mcpCodes: defineTable({ codeHash: v.string(), grantId: v.string(), clientId: v.string(), redirectUri: v.string(), challenge: v.string(), expiresAt: v.number(), used: v.boolean() }).index("by_codeHash", ["codeHash"]),
+  mcpTokens: defineTable({ tokenHash: v.string(), refreshHash: v.string(), grantId: v.string(), clientId: v.string(), expiresAt: v.number(), refreshExpiresAt: v.number() })
+    .index("by_tokenHash", ["tokenHash"])
+    .index("by_refreshHash", ["refreshHash"])
+    .index("by_grantId", ["grantId"]),
+
   /** Versión monotónica de cada alcance (sube con cada cambio). `minVersion`: lo más viejo retenido. */
   lf_scopes: defineTable({
     scope: v.string(),

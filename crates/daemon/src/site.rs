@@ -225,6 +225,8 @@ struct Session {
     /// Cuándo publicó su resumen y cuándo un teléfono le pidió algo a un servicio.
     overview_at: i64,
     service_asked_at: i64,
+    /// Las llamadas del MCP remoto que contesta con la Mac apagada (`remote_mcp.rs`).
+    mcp: crate::remote_mcp::Calls,
 }
 
 /// Un mensaje de teléfono que el sitio está contestando: en qué fila va la respuesta (un hilo nuevo ya
@@ -250,7 +252,7 @@ fn open(id: &Identity, rt: tokio::runtime::Handle) -> Result<Session> {
     engine.enable_scope(&threads_scope, None).map_err(|e| anyhow!("{e}"))?;
     let age = id.age.parse::<age::x25519::Identity>().map_err(|e| anyhow!("bad encryption identity in site.json: {e}"))?;
     let bell = crate::bell::Bell::start(&id.url, &id.token, &[keys_scope.clone(), threads_scope.clone()], localfirst_core::PROTOCOL_VERSION);
-    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0, busy_at: now_ms(), stopping: false, rt, answering: IndexMap::new(), taken: Default::default(), cloning: Default::default(), overview_at: 0, service_asked_at: 0 })
+    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0, busy_at: now_ms(), stopping: false, rt, answering: IndexMap::new(), taken: Default::default(), cloning: Default::default(), overview_at: 0, service_asked_at: 0, mcp: Default::default() })
 }
 
 /// Una vuelta: timbre (en vivo o por HTTP) y sincronizar; luego aplicar las claves que cambiaron.
@@ -282,6 +284,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let mac_away = !mac_alive_at.is_some_and(|at| now - at < MAC_GONE_MS);
     clone_projects(state, s);
     answer_threads(state, s, mac_away);
+    answer_mcp(state, s, mac_away);
     run_services(state, s, mac_away);
     publish_overview(state, s)?;
     // ¿Detenerse? Con trabajo (agentes o trabajos en marcha) no; sin trabajo un rato, sí. Los servicios
@@ -403,6 +406,34 @@ fn publish_overview(state: &Shared, s: &mut Session) -> Result<()> {
     let op = if exists { OpDraft::patch(&s.threads_scope, OVERVIEW_ROW, set) } else { OpDraft::create(&s.threads_scope, set).with_row(OVERVIEW_ROW) };
     s.engine.commit(vec![op], now_ms()).map_err(|e| anyhow!("{e}"))?;
     Ok(())
+}
+
+/// Las llamadas del MCP remoto (Claude desde cualquier lugar) con la Mac apagada: las verifica con los
+/// teléfonos de confianza que publica la Mac, las corre aparte y contesta en sus campos (`siteFor`,
+/// `siteResult`), que Condx Cloud le deja escribir solo si la Mac no late.
+fn answer_mcp(state: &Shared, s: &mut Session, mac_away: bool) {
+    let all = s.engine.rows(&s.threads_scope);
+    let devices: Vec<crate::cloud::TrustedDevice> = all.iter().find(|r| r.row.id == crate::cloud::DEVICES_ROW).and_then(|r| r.row.values.get("devices").and_then(Value::as_str)).and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+    let rows: Vec<(String, Values)> = if mac_away { all.into_iter().filter(|r| r.row.id.starts_with(crate::remote_mcp::ROW_PREFIX) && !r.pending).map(|r| (r.row.id.clone(), r.row.values.clone())).collect() } else { vec![] };
+    let daemon_id = s.threads_scope.trim_start_matches("threads:").to_string();
+    s.mcp.start(state, &s.rt, &daemon_id, &rows, &devices, Some(s.bell.waker()));
+    let mut wrote = false;
+    for (row, call, reply) in s.mcp.drain() {
+        if !rows.iter().any(|(id, _)| id == &row) {
+            continue;
+        }
+        let mut set = Values::new();
+        set.insert("siteResult".into(), json!(reply));
+        set.insert("siteFor".into(), json!(call));
+        match s.engine.commit(vec![OpDraft::patch(&s.threads_scope, &row, set)], now_ms()) {
+            Ok(_) => wrote = true,
+            Err(e) => tracing::warn!("site: couldn't write the remote mcp answer on {row}: {e}"),
+        }
+    }
+    if wrote {
+        s.busy_at = now_ms();
+        let _ = crate::cloud::block_on(sync_once(&mut s.engine, &s.transport, now_ms, 50));
+    }
 }
 
 /// Los mensajes de los teléfonos que le tocan al sitio (S5): los de sus hilos (`site-…`) siempre; los

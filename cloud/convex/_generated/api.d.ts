@@ -14,6 +14,8 @@ import type * as daemons from "../daemons.js";
 import type * as files from "../files.js";
 import type * as http from "../http.js";
 import type * as ingest from "../ingest.js";
+import type * as mcp from "../mcp.js";
+import type * as mcpHttp from "../mcpHttp.js";
 import type * as pairing from "../pairing.js";
 import type * as releases from "../releases.js";
 import type * as sync from "../sync.js";
@@ -31,6 +33,8 @@ declare const fullApi: ApiFromModules<{
   files: typeof files;
   http: typeof http;
   ingest: typeof ingest;
+  mcp: typeof mcp;
+  mcpHttp: typeof mcpHttp;
   pairing: typeof pairing;
   releases: typeof releases;
   sync: typeof sync;

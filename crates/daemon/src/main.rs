@@ -23,6 +23,7 @@ mod pipeline;
 mod policy;
 mod probes;
 mod recipes;
+mod remote_mcp;
 mod native;
 mod notify;
 mod outcomes;

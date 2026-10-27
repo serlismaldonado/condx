@@ -176,6 +176,38 @@ pub fn resolve(token: &str) -> Option<Client> {
     Some(Client { name: "external", scopes: scopes(&c), conn: Some(Arc::new(c)) })
 }
 
+/// Un agente que llega por el MCP remoto de Condx Cloud (`remote_mcp.rs`), con un permiso que firmó un
+/// teléfono: queda como una conexión más (`mcp-<permiso>`, sin token local que la abra), así lo que
+/// escribe sale con su nombre y sus menciones le llegan. Con el mismo nombre que otra, se distingue.
+pub fn remote(grant_id: &str, name: &str, level: &str) -> Client {
+    let id = format!("mcp-{grant_id}");
+    let mut all = list();
+    let c = match all.iter_mut().find(|c| c.id == id) {
+        Some(c) => {
+            if now_ms() - c.last_seen > 15_000 {
+                c.last_seen = now_ms();
+                let snapshot = c.clone();
+                let _ = save(&all);
+                snapshot
+            } else {
+                c.clone()
+            }
+        }
+        None => {
+            let mut name = name.trim().to_string();
+            if all.iter().any(|c| c.handle() == handle_of(&name)) {
+                name = format!("{name} (cloud)");
+            }
+            let kind = if name.to_lowercase().contains("claude") { "claude-code" } else { "other" };
+            let c = Connection { id: id.clone(), name, kind: kind.into(), level: level.into(), answer_questions: level == "orchestrate", edit_flows: false, token_hash: "remote".into(), created_at: now_ms(), last_seen: now_ms(), cursor: 0 };
+            all.push(c.clone());
+            let _ = save(&all);
+            c
+        }
+    };
+    Client { name: "external", scopes: scopes(&c), conn: Some(Arc::new(c)) }
+}
+
 /// Alguien lo mencionó en un hilo: queda para cuando pregunte (`wait_for_mention`).
 pub fn mention(state: &crate::state::Shared, c: &Connection, thread: &str, text: &str, by: &str) -> Result<i64> {
     state.store.save_note(thread, now_ms(), &json!({ "kind": "user", "to": c.name, "toConnection": c.id, "text": text, "by": by }))

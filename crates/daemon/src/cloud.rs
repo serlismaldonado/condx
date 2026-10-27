@@ -69,7 +69,7 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects", "catalog", "overview", "context", "flows"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects", "catalog", "overview", "context", "flows", "roles"];
 /// Lo más largo de un mensaje de un hilo en el teléfono (antes 700: las respuestas se cortaban).
 const ITEM_CHARS: usize = 12_000;
 /// Lo que ocupan los mensajes de un hilo en su fila: si se pasa, se dejan afuera los más viejos.
@@ -119,6 +119,19 @@ fn fit_items(items: Vec<Value>) -> Vec<Value> {
 
 /// La fila de los hilos que no es un hilo: la llave age de la Mac, para que el teléfono le cifre los adjuntos.
 pub const MAC_ROW: &str = "_mac";
+
+/// «Que conteste la nube» (el interruptor del teléfono, para probar el sitio sin apagar la Mac): la Mac
+/// lo publica en su latido (`handover`), deja de contestar hilos, pedidos y llamadas del MCP (solo
+/// atiende el pedido de volver), y el sitio contesta como con la Mac apagada.
+const HANDOVER_KEY: &str = "meta:handover";
+
+pub fn handover(state: &Shared) -> bool {
+    state.store.probes().ok().and_then(|l| l.into_iter().find(|(k, _)| k == HANDOVER_KEY)).is_some_and(|(_, v)| v == json!(true))
+}
+
+fn set_handover(state: &Shared, on: bool) -> Result<()> {
+    state.store.save_probe(HANDOVER_KEY, &json!(on))
+}
 /// La fila donde el teléfono pide un hilo nuevo (un chat): su primer mensaje firmado va aquí.
 pub const NEW_ROW: &str = "_new";
 /// La fila con el catálogo de agentes (para mencionarlos desde el teléfono).
@@ -249,6 +262,14 @@ fn run_request(state: &Shared, s: &Session, row: &Values, devices: &[TrustedDevi
     let by = format!("phone:{}", req.device.name);
     // La configuración de los agentes que un teléfono puede cambiar: por ahora, el idioma.
     if let Some(set) = ask["settings"].as_object() {
+        // El interruptor Mac/nube del teléfono.
+        if let Some(cloud) = set.get("cloud").and_then(Value::as_bool) {
+            return match set_handover(state, cloud) {
+                Ok(()) if cloud => "the cloud site answers now (the Mac steps aside)".into(),
+                Ok(()) => "the Mac answers again".into(),
+                Err(e) => format!("rejected: {e:#}"),
+            };
+        }
         let mut current = serde_json::to_value(crate::agents::settings(state)).unwrap_or_default();
         if let Some(language) = set.get("language").and_then(Value::as_str) {
             current["language"] = json!(language.trim());
@@ -1308,6 +1329,9 @@ fn import_from_site(state: &Shared, s: &mut Session) {
 /// Las llamadas del MCP remoto (`remote_mcp.rs`): las nuevas corren aparte; las respuestas listas se
 /// escriben en su fila (`result`, `resultFor`). Devuelve si escribió alguna (para publicarla enseguida).
 fn process_mcp_calls(state: &Shared, s: &mut Session) -> bool {
+    if handover(state) {
+        return false;
+    }
     let scope = format!("threads:{}", s.link.daemon_id);
     let rows: Vec<(String, Values)> = s.engine.rows(&scope).into_iter().filter(|r| r.row.id.starts_with(crate::remote_mcp::ROW_PREFIX) && !r.pending).map(|r| (r.row.id.clone(), r.row.values.clone())).collect();
     let wake = s.bell.as_ref().map(|b| b.waker());
@@ -1341,6 +1365,11 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
         let by_site = row.row.values.get("siteFor").and_then(Value::as_str) == Some(request_id.as_str());
         // Un hilo del sitio en la nube lo atiende la Mac en cuanto lo importó (con la Mac aquí el sitio no contesta).
         let foreign = row.row.id.starts_with("site-") && state.store.agent_run(&row.row.id).ok().flatten().is_none();
+        // Con la nube contestando, la Mac solo atiende el pedido de volver (un ajuste en `_run`).
+        let settings_ask = row.row.id == RUN_ROW && row.row.values.get("requestArg").and_then(Value::as_str).is_some_and(|a| a.contains("\"settings\""));
+        if handover(state) && !settings_ask {
+            continue;
+        }
         if row.pending || answered || by_site || foreign || !s.seen.insert(format!("{}:{request_id}", row.row.id)) {
             continue;
         }
@@ -1665,7 +1694,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     if now - s.alive_at >= HEARTBEAT_MS {
         s.alive_at = now;
     }
-    let mut mac_row = obj(json!({ "aliveAt": s.alive_at }));
+    let mut mac_row = obj(json!({ "aliveAt": s.alive_at, "handover": handover(state) }));
     if let Ok(mac) = crate::agents::mac_recipient() {
         mac_row.insert("recipient".into(), Value::String(mac.to_string()));
     }
@@ -1694,7 +1723,8 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     settings_v["notify"] = serde_json::to_value(crate::notify::settings(state)).unwrap_or_default();
     trows.insert(SETTINGS_ROW.into(), obj(json!({ "title": "settings", "settings": settings_v.to_string() })));
     let flows: Vec<Value> = state.store.projects().unwrap_or_default().iter().flat_map(|p| crate::workflows::list(state, &p.name).unwrap_or_default()).filter_map(|w| serde_json::to_value(w).ok()).collect();
-    trows.insert(FLOWS_ROW.into(), obj(json!({ "title": "flows", "flows": serde_json::to_string(&flows).unwrap_or_default() })));
+    // Con los agentes del catálogo (sus instrucciones, modo y modelo): en el sitio son los mismos.
+    trows.insert(FLOWS_ROW.into(), obj(json!({ "title": "flows", "flows": serde_json::to_string(&flows).unwrap_or_default(), "roles": serde_json::to_string(&crate::roles::list(state)).unwrap_or_default() })));
     trows.insert(DEVICES_ROW.into(), obj(json!({ "title": "devices", "devices": serde_json::to_string(&trusted_devices()).unwrap_or_default() })));
     if now_ms() - s.catalog_built.0 > 60_000 {
         s.catalog_built = (now_ms(), catalog(state));

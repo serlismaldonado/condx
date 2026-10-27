@@ -176,7 +176,12 @@ pub fn merge_into_dev(dir: &Path, branch: &str, by: &str) -> Result<String> {
             pr["number"].as_i64().ok_or_else(|| anyhow!("GitHub didn't return the PR"))?
         }
     };
-    let done = call("PUT", &format!("/repos/{owner}/{repo}/pulls/{number}/merge"), Some(json!({ "merge_method": "merge" })))?;
+    let done = match call("PUT", &format!("/repos/{owner}/{repo}/pulls/{number}/merge"), Some(json!({ "merge_method": "merge" }))) {
+        Ok(v) => v,
+        // 405 «merge conflicts»: la rama se hizo sobre una base vieja.
+        Err(e) if format!("{e:#}").to_lowercase().contains("conflict") => bail!("{branch} conflicts with {base} (it was made on an older {base}): ask @Fixer in its thread to update it on the current {base}, then merge again (PR #{number} stays open)"),
+        Err(e) => return Err(e),
+    };
     if done["merged"] != true {
         bail!("GitHub didn't merge PR #{number}: {}", done["message"].as_str().unwrap_or("no details"));
     }

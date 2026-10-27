@@ -244,6 +244,8 @@ struct Answering {
     base: Vec<Value>,
     user: Value,
     shown: Value,
+    /// Quién contesta: el sitio, o el agente que se mencionó (`@Fixer`, `@Risk`…).
+    author: String,
 }
 
 fn open(id: &Identity, rt: tokio::runtime::Handle) -> Result<Session> {
@@ -292,11 +294,14 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     }
     *SITE_LOGO_NOW.lock().unwrap() = crate::agents::logo_for(state, None);
     let mac_alive_at = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::MAC_ROW).and_then(|r| r.row.values.get("aliveAt").and_then(Value::as_i64));
-    let mac_away = !mac_alive_at.is_some_and(|at| now - at < MAC_GONE_MS);
+    let mac_alive = mac_alive_at.is_some_and(|at| now - at < MAC_GONE_MS);
+    // El interruptor del teléfono: con la Mac encendida, igual contesta el sitio.
+    let handover = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::MAC_ROW).is_some_and(|r| r.row.values.get("handover") == Some(&json!(true)));
+    let mac_away = !mac_alive || handover;
     clone_projects(state, s);
     answer_threads(state, s, mac_away);
     answer_mcp(state, s, mac_away);
-    run_services(state, s, mac_away);
+    run_services(state, s, mac_away, mac_alive);
     publish_overview(state, s)?;
     // ¿Detenerse? Con trabajo (agentes o trabajos en marcha) no; sin trabajo un rato, sí. Los servicios
     // locales encendidos cuentan como trabajo hasta 3 h después del último pedido de un teléfono.
@@ -323,13 +328,17 @@ const SERVICES_KEEP_MS: i64 = 3 * 3_600_000;
 /// Los pedidos de servicios (`_run` con `service`) con la Mac apagada: levantar, detener o reiniciar
 /// el backend, el deployer o el frontend de un proyecto en esta máquina. Lo demás (recetas, flujos,
 /// ajustes) espera a la Mac.
-fn run_services(state: &Shared, s: &mut Session, mac_away: bool) {
+fn run_services(state: &Shared, s: &mut Session, mac_away: bool, mac_alive: bool) {
     if !mac_away {
         return;
     }
     let rows = s.engine.rows(&s.threads_scope);
     let Some(r) = rows.iter().find(|r| r.row.id == crate::cloud::RUN_ROW) else { return };
     let v = &r.row.values;
+    // Un ajuste (como volver a la Mac) lo atiende la Mac si está encendida.
+    if mac_alive && v.get("requestArg").and_then(Value::as_str).is_some_and(|a| a.contains("\"settings\"")) {
+        return;
+    }
     let Some(request_id) = v.get("requestId").and_then(Value::as_str).map(str::to_string) else { return };
     let answered = [v.get("resultFor"), v.get("siteFor")].iter().any(|f| f.and_then(|x| x.as_str()) == Some(request_id.as_str()));
     if r.pending || answered || !s.taken.insert(format!("_run:{request_id}")) {
@@ -459,6 +468,7 @@ fn answer_mcp(state: &Shared, s: &mut Session, mac_away: bool) {
 /// contexto y, cuando el agente contesta, escribe la respuesta donde va.
 fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
     let rows = s.engine.rows(&s.threads_scope);
+    remember_mac_threads(&rows);
     let devices: Vec<crate::cloud::TrustedDevice> = rows
         .iter()
         .find(|r| r.row.id == crate::cloud::DEVICES_ROW)
@@ -519,8 +529,34 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
         // Sale ya (sin esperar a la próxima vuelta).
         let _ = crate::cloud::block_on(sync_once(&mut s.engine, &s.transport, now_ms, 50));
         let _rt = s.rt.enter();
-        match s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model, crate::agent_host::start_chat(state, &prompt, project.as_deref(), &format!("phone:{}", req.device.name)))) {
-            Ok(run) => {
+        // `@agente …`: ese agente del catálogo, como en la Mac. Uno que escribe (Fixer) continúa la rama
+        // de la tarea del hilo: parte de su punta en GitHub y su commit sube a esa misma rama.
+        let routed = crate::threads::mention(&said).and_then(|(handle, rest)| crate::roles::list(state).into_iter().find(|r| r.id == handle || r.name.to_lowercase() == handle).map(|r| (r, rest)));
+        let started = match routed {
+            Some((role, rest)) => {
+                let write = role.mode == crate::roles::Mode::Write;
+                let branch = thread_branch(v);
+                if write && branch.is_none() {
+                    Err(anyhow!("{} needs a task's branch to continue, and this thread has none (ask it in a task's thread)", role.name))
+                } else {
+                    let run_id = format!("site-{}-{}", role.id, crate::cloud::random_hex(4).unwrap_or_default());
+                    let task = format!("{}\n\n{}\n\nThe developer asks: {rest}", crate::roles::guest_brief(&role), if let Some(b) = &branch { format!("(You continue the task's branch {b}: your change is committed on top of it.)\n\n{prompt}") } else { prompt.clone() });
+                    let res = s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model.clone(), crate::agent_host::start_role(state, &role, &run_id, &task, project.as_deref(), "cloud site", branch.as_deref())));
+                    if let (Ok(_), true, Some(b)) = (&res, write, &branch) {
+                        if let Ok(Some(mut r)) = state.store.agent_run(&run_id) {
+                            r["continues"] = json!(b);
+                            let _ = state.store.save_agent_run(&r);
+                        }
+                    }
+                    res.map(|r| (r, role.name.clone()))
+                }
+            }
+            None => s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model, crate::agent_host::start_chat(state, &prompt, project.as_deref(), &format!("phone:{}", req.device.name)))).map(|r| (r, SITE_AUTHOR.to_string())),
+        };
+        match started {
+            Ok((run, author)) => {
+                let mut a = a;
+                a.author = author;
                 s.answering.insert(run["id"].as_str().unwrap_or_default().to_string(), a);
             }
             Err(e) => {
@@ -538,10 +574,19 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
         // Con lo que tiene el host (transcripción y lo que hace ahora): los pasos, como en la Mac.
         let Ok(run) = s.rt.block_on(crate::agent_host::get(state, &run_id)) else { continue };
         let at = s.answering[&run_id].user["at"].as_i64().unwrap_or(0);
+        let author = s.answering[&run_id].author.clone();
         let (reply, done) = match run["status"].as_str() {
-            Some("running") => (crate::threads::live_item(&run, SITE_AUTHOR, site_logo(), at).unwrap_or_else(|| thinking(at)), false),
+            Some("running") => (crate::threads::live_item(&run, &author, site_logo(), at).unwrap_or_else(|| thinking(at)), false),
             Some("done") => {
-                let mut reply = json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": site_logo(), "at": now_ms(), "text": run["answer"].as_str().unwrap_or("").trim() });
+                // Un agente que escribe: su commit en la rama de la tarea (o por qué no quedó).
+                let fix = &run["fix"];
+                let saved = match (fix["changes"].as_bool(), fix["pushed"].as_bool()) {
+                    (Some(true), Some(true)) => format!("\n\nCommit {} on {}.", fix["commit"].as_str().unwrap_or("?").chars().take(8).collect::<String>(), fix["branch"].as_str().or(run["continues"].as_str()).unwrap_or("its branch")),
+                    (Some(true), Some(false)) => format!("\n\nThe commit stayed on the cloud site: couldn't push it ({}).", fix["pushError"].as_str().unwrap_or("?")),
+                    (Some(false), _) => "\n\nNo changes.".to_string(),
+                    _ => String::new(),
+                };
+                let mut reply = json!({ "kind": "reply", "author": author, "logo": site_logo(), "at": now_ms(), "text": format!("{}{saved}", run["answer"].as_str().unwrap_or("").trim()) });
                 let (folded, _) = crate::threads::fold_steps(run["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), false);
                 if let Some(last) = folded.last().filter(|t| t["role"] == "assistant") {
                     reply["steps"] = last["steps"].clone();
@@ -549,7 +594,7 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
                 }
                 (reply, true)
             }
-            Some(st) => (json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": site_logo(), "at": now_ms(), "text": format!("The agent {st}: {}", run["error"].as_str().unwrap_or("no details")) }), true),
+            Some(st) => (json!({ "kind": "reply", "author": author, "logo": site_logo(), "at": now_ms(), "text": format!("The agent {st}: {}", run["error"].as_str().unwrap_or("no details")) }), true),
             None => continue,
         };
         if !done && s.answering[&run_id].shown == reply {
@@ -622,7 +667,7 @@ fn take(s: &mut Session, id: &str, request_id: &str, user: Value, v: &Values, pr
         (id.to_string(), base, vec![OpDraft::patch(&s.threads_scope, id, set)])
     };
     s.engine.commit(drafts, now).map_err(|e| anyhow!("{e}"))?;
-    Ok(Answering { row, base, user: user.clone(), shown: thinking(at) })
+    Ok(Answering { row, base, user: user.clone(), shown: thinking(at), author: SITE_AUTHOR.to_string() })
 }
 
 /// Publica el hilo con la respuesta (en vivo o final): en un hilo del sitio, como la Mac en los suyos;
@@ -847,6 +892,55 @@ fn canonical_url(url: &str, token: Option<&str>) -> Option<String> {
     v["full_name"].as_str().map(|n| format!("https://github.com/{n}.git"))
 }
 
+/// Los hilos que publicó la Mac (lo último de cada uno): con la Mac apagada, los agentes de fuera los
+/// consultan desde el sitio aunque sus corridas vivan en la Mac.
+static MAC_THREADS: std::sync::Mutex<Option<std::collections::HashMap<String, Value>>> = std::sync::Mutex::new(None);
+
+fn remember_mac_threads(rows: &[localfirst_core::ViewRow]) {
+    let mut map = std::collections::HashMap::new();
+    for r in rows.iter().filter(|r| !r.row.id.starts_with('_') && !r.row.id.starts_with("site-")) {
+        let v = &r.row.values;
+        let items: Vec<Value> = ["items", "siteItems"].iter().filter_map(|k| v.get(*k).and_then(Value::as_str)).filter_map(|t| serde_json::from_str::<Vec<Value>>(t).ok()).flatten().collect();
+        map.insert(r.row.id.clone(), json!({ "id": r.row.id, "title": v.get("title"), "kind": v.get("kind"), "status": v.get("status"), "project": v.get("project"), "updatedAt": v.get("updatedAt"), "items": items, "branch": thread_branch(v) }));
+    }
+    *MAC_THREADS.lock().unwrap() = Some(map);
+}
+
+/// Lo último que publicó la Mac de un hilo (o una corrida) suyo.
+pub fn mac_thread(id: &str) -> Option<Value> {
+    MAC_THREADS.lock().unwrap().as_ref().and_then(|m| m.get(id).cloned())
+}
+
+/// Git de un proyecto en el sitio, con lo último de GitHub: rama y HEAD del clon, y los últimos commits
+/// de la rama de desarrollo y de la principal (en la Mac lo da su sondeo; aquí no hay sondeo).
+pub fn git_report(dir: &std::path::Path) -> Value {
+    let fetched = crate::gitflow::fetch_origin(dir).map_err(|e| format!("{e:#}"));
+    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(dir).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let log = |r: &str| -> Value {
+        match git(&["log", "-5", "--format=%h%x09%ad%x09%s", "--date=short", r]) {
+            Some(out) => json!(out.lines().map(|l| { let mut p = l.splitn(3, '\t'); json!({ "commit": p.next(), "date": p.next(), "subject": p.next() }) }).collect::<Vec<_>>()),
+            None => Value::Null,
+        }
+    };
+    json!({
+        "where": "cloud site",
+        "fetched": fetched.is_ok(), "fetchError": fetched.err(),
+        "branch": git(&["rev-parse", "--abbrev-ref", "HEAD"]), "head": git(&["log", "-1", "--format=%h %s"]),
+        "dev": crate::gitflow::dev_head(dir).map(|(b, _)| json!({ "branch": b, "commits": log(&format!("origin/{b}")) })),
+        "main": log("origin/main"),
+        "changes": git(&["status", "--porcelain"]).map(|s| s.lines().count()),
+    })
+}
+
+/// La rama de la tarea de un hilo (`condx/fix-…`, en la tarjeta de su agente), la más reciente.
+fn thread_branch(v: &Values) -> Option<String> {
+    let items: Vec<Value> = ["items", "siteItems"].iter().filter_map(|k| v.get(*k).and_then(Value::as_str)).filter_map(|t| serde_json::from_str::<Vec<Value>>(t).ok()).flatten().collect();
+    items.iter().rev().filter_map(|i| i["text"].as_str()).find_map(|text| {
+        let at = text.find("condx/fix-")?;
+        Some(text[at..].chars().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/')).collect())
+    })
+}
+
 /// La conversación hasta ahora (lo de la Mac y lo del sitio), como texto para el agente.
 fn transcript(v: &Values) -> String {
     let list = |k: &str| v.get(k).and_then(Value::as_str).and_then(|t| serde_json::from_str::<Vec<Value>>(t).ok()).unwrap_or_default();
@@ -1001,7 +1095,15 @@ fn apply_settings(state: &Shared, s: &Session) -> Result<bool> {
 /// Los flujos de la Mac (fila `_flows`): los mismos en el sitio, con el mismo id. Los de un proyecto
 /// que la Mac ya no tiene se quitan (incluidos los que el sitio sembró por su cuenta al clonar).
 fn apply_flows(state: &Shared, s: &Session) -> Result<()> {
-    let Some(text) = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::FLOWS_ROW).and_then(|r| r.row.values.get("flows").and_then(Value::as_str).map(str::to_string)) else { return Ok(()) };
+    let row = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::FLOWS_ROW);
+    // Los agentes del catálogo de la Mac (los mismos, con sus instrucciones y modelos).
+    if let Some(roles) = row.as_ref().and_then(|r| r.row.values.get("roles").and_then(Value::as_str)).and_then(|t| serde_json::from_str::<Vec<crate::roles::Role>>(t).ok()) {
+        if serde_json::to_value(crate::roles::list(state))? != serde_json::to_value(&roles)? {
+            crate::roles::replace_all(state, &roles)?;
+            tracing::info!("site: {} agents copied from the Mac", roles.len());
+        }
+    }
+    let Some(text) = row.and_then(|r| r.row.values.get("flows").and_then(Value::as_str).map(str::to_string)) else { return Ok(()) };
     static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
     if *LAST.lock().unwrap() == text {
         return Ok(());

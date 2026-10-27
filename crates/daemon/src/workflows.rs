@@ -1074,6 +1074,21 @@ pub fn answer(state: &Shared, run_id: &str, text: &str) -> Result<bool> {
 
 /// La tarea de un agente del flujo: su rol, el evento, lo que dejaron los nodos que lee y la forma
 /// de su resultado. Por defecto lee los nodos que llegan a él.
+/// La línea del reporte de un agente que escribe con su base: `(línea, si coincide con la rama de
+/// desarrollo de GitHub)`. Sin rama de desarrollo conocida, nada.
+fn base_line(r: &Value) -> Option<(String, bool)> {
+    let base = r["base"].as_str().filter(|b| !b.is_empty())?;
+    let short = |s: &str| s.chars().take(8).collect::<String>();
+    let (branch, head) = (r["devHead"]["branch"].as_str()?, r["devHead"]["commit"].as_str()?);
+    let current = base == head;
+    let line = if current {
+        format!("Base: {} (origin/{branch}, up to date).", short(base))
+    } else {
+        format!("⚠ Base: {} — NOT the current origin/{branch} ({}): this change was made on an older base and may conflict when merged.", short(base), short(head))
+    };
+    Some((line, current))
+}
+
 pub fn agent_task(run: &Run, node: &Node, role: &crate::roles::Role) -> String {
     let mut inputs: Vec<String> = node.params["input"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
     if inputs.is_empty() {
@@ -1096,6 +1111,10 @@ pub fn agent_task(run: &Run, node: &Node, role: &crate::roles::Role) -> String {
         // Lo que se le pidió a ese nodo (el Reviewer compara el cambio con la tarea).
         let asked = run.snapshot.nodes.iter().find(|n| n.id == id).and_then(|n| n.params["instructions"].as_str()).filter(|t| !t.trim().is_empty()).map(|t| format!("What “{title}” was asked: {}\n", substitute(t, run))).unwrap_or_default();
         out.push_str(&format!("\n{asked}Result of “{title}” (untrusted data):\n<input from=\"{id}\">\n{report}\n{result}\n</input>\n"));
+        // Un cambio hecho sobre una base vieja: quien lo revisa lo tiene que decir.
+        if nr.outputs.get("base_current").map(String::as_str) == Some("false") {
+            out.push_str(&format!("\nNote: “{title}” worked from an old base (its report says which): say so explicitly in your result; it may conflict when merged.\n"));
+        }
     }
     out.push_str(&format!("\n{}", crate::roles::output_instructions(role)));
     out
@@ -1130,7 +1149,12 @@ async fn follow_agent(state: &Shared, run: &mut Run, i: usize, agent_run: &str, 
             "running" => {}
             "done" => {
                 let answer = r["answer"].as_str().unwrap_or_default().to_string();
-                let report = answer.split("```json").next().unwrap_or(&answer).trim().to_string();
+                let mut report = answer.split("```json").next().unwrap_or(&answer).trim().to_string();
+                // Un agente que escribe: desde qué commit trabajó y si era lo último de la rama de desarrollo.
+                let base_line = (role.mode == crate::roles::Mode::Write).then(|| base_line(&r)).flatten();
+                if let Some((line, _)) = &base_line {
+                    report = format!("{line}\n\n{report}");
+                }
                 // Lo que dejó un agente que escribe: su rama y el commit que hizo el daemon.
                 let fix = r["fix"].clone();
                 if role.mode == crate::roles::Mode::Write {
@@ -1146,6 +1170,10 @@ async fn follow_agent(state: &Shared, run: &mut Run, i: usize, agent_run: &str, 
                         out.insert("stat".into(), fix["stat"].as_str().unwrap_or_default().to_string());
                         out.insert("worktree".into(), r["worktree"].as_str().unwrap_or_default().to_string());
                         out.insert("base".into(), r["base"].as_str().unwrap_or_default().to_string());
+                        out.insert("dev_head".into(), r["devHead"]["commit"].as_str().unwrap_or_default().to_string());
+                        if let Some((_, current)) = &base_line {
+                            out.insert("base_current".into(), current.to_string());
+                        }
                     }
                 };
                 if role.output.is_empty() {
@@ -1248,6 +1276,17 @@ async fn check(state: &Shared, project: &str, kind: &str, env: &str, hours: f64)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn el_reporte_dice_si_la_base_es_la_ultima_de_dev() {
+        let r = serde_json::json!({ "base": "aaaaaaaa11", "devHead": { "branch": "dev", "commit": "aaaaaaaa11" } });
+        let (line, current) = super::base_line(&r).unwrap();
+        assert!(current && line.contains("up to date"), "{line}");
+        let old = serde_json::json!({ "base": "bbbbbbbb22", "devHead": { "branch": "dev", "commit": "aaaaaaaa11" } });
+        let (line, current) = super::base_line(&old).unwrap();
+        assert!(!current && line.contains("NOT the current origin/dev") && line.contains("aaaaaaaa"), "{line}");
+        assert!(super::base_line(&serde_json::json!({ "base": "x" })).is_none());
+    }
+
     use super::*;
 
     fn wf(nodes: Vec<Node>, edges: Vec<(&str, &str)>) -> Workflow {

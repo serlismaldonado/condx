@@ -67,3 +67,10 @@ test("con la Mac apagada contesta los pedidos de servicios en _run y publica su 
   await expect(site(t, op({ kind: "patch", rowId: "_run", set: { result: "x" } }))).rejects.toThrow(/can't write “result”/);
   await expect(site(t, op({ kind: "create", rowId: "site-overview", set: { title: "overview", overview: "{}" } }))).resolves.toMatchObject({ status: "ok" });
 });
+
+test("con el interruptor «que conteste la nube», el sitio contesta aunque la Mac lata", async () => {
+  const t = await setup(Date.now() - 30_000);
+  await expect(site(t, op({ kind: "patch", rowId: "chat-1", set: { siteFor: "r1" } }))).rejects.toThrow(/The Mac is answering/);
+  await t.mutation(api.sync.push, { token: A.token, group: group(op({ kind: "patch", rowId: "_mac", set: { handover: true } })), protocolVersion: PV });
+  await expect(site(t, op({ kind: "patch", rowId: "chat-1", set: { siteFor: "r1" } }))).resolves.toMatchObject({ status: "ok" });
+});

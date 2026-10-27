@@ -276,11 +276,15 @@ fn git(dir: &std::path::Path, args: &[&str]) -> Result<String> {
 }
 
 /// El commit del que parte un arreglo: el del incidente si está en el repo, si no su rama, si no HEAD.
+/// Una rama (`dev` en una tarea) es la de GitHub recién traída (`origin/dev`), no la copia local, que
+/// puede estar vieja.
 fn fix_base(repo: &std::path::Path, incident: &Value) -> String {
     let ev = &incident["evidence"];
     for candidate in [ev["commit"].as_str(), ev["branch"].as_str()].into_iter().flatten() {
-        if let Ok(sha) = git(repo, &["rev-parse", "--verify", "--quiet", &format!("{candidate}^{{commit}}")]) {
-            return sha;
+        for r in [format!("refs/remotes/origin/{candidate}"), candidate.to_string()] {
+            if let Ok(sha) = git(repo, &["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")]) {
+                return sha;
+            }
         }
     }
     git(repo, &["rev-parse", "HEAD"]).unwrap_or_else(|_| "HEAD".into())
@@ -290,6 +294,9 @@ fn fix_base(repo: &std::path::Path, incident: &Value) -> String {
 /// sin red: no se puede instalar nada).
 fn prepare_worktree(repo: &std::path::Path, worktrees: &std::path::Path, run_id: &str, incident: &Value) -> Result<(PathBuf, String, String)> {
     git(repo, &["rev-parse", "--git-dir"]).context("fixes need the project to be a git repository")?;
+    // Lo último de GitHub antes de elegir la base: sin eso, un agente trabajaría sobre lo que haya
+    // quedado en esta copia (un `dev` de antes del último merge) sin avisar.
+    crate::gitflow::fetch_origin(repo).map_err(|e| anyhow!("couldn't update from GitHub before starting, so it won't work from an old base: {e:#}"))?;
     let base = fix_base(repo, incident);
     let dir = worktrees.join(run_id);
     let branch = format!("condx/fix-{}", run_id.trim_start_matches("run-"));
@@ -576,8 +583,10 @@ pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str,
         let (dir, branch, base) = tokio::task::spawn_blocking(move || prepare_worktree(&r, &worktrees, &id, &hint)).await.map_err(|e| anyhow!(e.to_string()))??;
         (dir, Some(branch), Some(base))
     } else {
-        (repo, None, None)
+        (repo.clone(), None, None)
     };
+    // La rama de desarrollo de GitHub en ese momento: el reporte dice si la base coincide con ella.
+    let dev_head = if write { crate::gitflow::dev_head(&repo).map(|(b, sha)| json!({ "branch": b, "commit": sha })) } else { None };
     let mode = if write { "fix" } else { "task" };
     let body = json!({ "runId": run_id, "mode": mode, "providerId": provider_id, "model": model, "cwd": cwd.display().to_string(), "text": text, "tools": role.tools });
     let st = state.clone();
@@ -588,7 +597,7 @@ pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str,
         "provider": provider_id, "model": model, "by": format!("flow “{flow}”"),
         "status": "running", "startedAt": now_ms(), "endedAt": null, "answer": null, "error": null,
         "usage": { "total": 0 }, "conversationId": res["conversationId"],
-        "worktree": write.then(|| cwd.display().to_string()), "branch": branch, "base": base, "fix": null,
+        "worktree": write.then(|| cwd.display().to_string()), "branch": branch, "base": base, "devHead": dev_head, "fix": null,
         "limits": { "maxTokens": role.max_tokens, "maxMinutes": role.max_minutes },
     });
     state.store.save_agent_run(&run)?;
@@ -723,7 +732,7 @@ fn finish(state: &Shared, mut run: Value, status: &str, answer: Option<String>, 
         // Respaldo: la rama del arreglo sube a GitHub en cuanto queda el commit.
         if run["fix"]["changes"] == true {
             if let (Some(dir), Some(branch)) = (run["worktree"].as_str(), run["branch"].as_str()) {
-                if let Value::Object(b) = crate::gitflow::backup(state, std::path::Path::new(dir), branch) {
+                if let Value::Object(b) = crate::gitflow::backup(state, std::path::Path::new(dir), branch, run["continues"].as_str()) {
                     for (k, v) in b {
                         run["fix"][k] = v;
                     }

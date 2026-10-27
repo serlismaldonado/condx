@@ -77,6 +77,23 @@ fn origin(dir: &Path) -> Option<String> {
     git(dir, &["remote", "get-url", "origin"], None).ok().filter(|u| !u.is_empty())
 }
 
+/// Trae lo nuevo de GitHub (`origin`), solo lectura: primero como esté configurado el remoto (SSH en la
+/// Mac), si no por https con el token del dueño del repo (el sitio en la nube). Sin remoto, nada.
+pub fn fetch_origin(dir: &Path) -> Result<()> {
+    let Some(url) = origin(dir) else { return Ok(()) };
+    if git(dir, &["fetch", "-q", "--prune", "origin"], None).is_ok() {
+        return Ok(());
+    }
+    let (owner, repo) = github_slug(&url).ok_or_else(|| anyhow!("the remote isn't on GitHub ({})", devtool_core::redact(&url)))?;
+    let token = token_for(dir).ok_or_else(|| anyhow!("there's no GitHub token for {owner} (condxd secret set github-token:{owner})"))?;
+    git(dir, &["fetch", "-q", "--prune", &format!("https://github.com/{owner}/{repo}.git"), "+refs/heads/*:refs/remotes/origin/*"], Some(&token)).map(|_| ())
+}
+
+/// La rama de desarrollo del remoto (`dev` o `develop`) y su commit, si la hay.
+pub fn dev_head(dir: &Path) -> Option<(String, String)> {
+    ["dev", "develop"].into_iter().find_map(|b| git(dir, &["rev-parse", "--verify", "-q", &format!("refs/remotes/origin/{b}^{{commit}}")], None).ok().map(|sha| (b.to_string(), sha)))
+}
+
 /// La rama principal del remoto (`origin/HEAD`), o `main`.
 fn default_branch(dir: &Path) -> String {
     git(dir, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], None).ok().and_then(|r| r.strip_prefix("origin/").map(str::to_string)).unwrap_or_else(|| "main".into())
@@ -133,9 +150,25 @@ pub fn policy(state: &Shared) -> Policy {
     crate::agents::settings(state).git
 }
 
-/// Respaldo de un arreglo recién guardado: sube su rama si la política lo pide. Devuelve lo que
-/// pasó para guardarlo en la corrida (`pushed` o `pushError`), sin cortar el arreglo si falla.
-pub fn backup(state: &Shared, dir: &Path, branch: &str) -> Value {
+/// Sube `local` sobre la rama `remote` de `origin` (avance directo: un agente que continúa la rama de
+/// una tarea parte de su punta recién traída).
+pub fn push_onto(dir: &Path, local: &str, remote: &str) -> Result<()> {
+    let url = origin(dir).ok_or_else(|| anyhow!("the repo has no remote “origin”"))?;
+    let token = if url.starts_with("https://") { Some(token_for(dir).ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?) } else { None };
+    git(dir, &["push", "-q", "origin", &format!("{local}:refs/heads/{remote}")], token.as_deref())?;
+    Ok(())
+}
+
+/// Respaldo de un arreglo recién guardado: sube su rama si la política lo pide (o, si continúa la rama
+/// de una tarea, `onto`, siempre: sin subir, el commit no llega a esa rama). Devuelve lo que pasó para
+/// guardarlo en la corrida (`pushed` o `pushError`), sin cortar el arreglo si falla.
+pub fn backup(state: &Shared, dir: &Path, branch: &str, onto: Option<&str>) -> Value {
+    if let Some(remote) = onto {
+        return match push_onto(dir, branch, remote) {
+            Ok(()) => json!({ "pushed": true, "branch": remote }),
+            Err(e) => json!({ "pushed": false, "pushError": format!("{e:#}") }),
+        };
+    }
     if !policy(state).backup_push {
         return json!({});
     }

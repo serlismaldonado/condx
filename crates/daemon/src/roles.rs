@@ -161,6 +161,11 @@ pub fn get(state: &Shared, id: &str) -> Option<Role> {
     list(state).into_iter().find(|r| r.id == id)
 }
 
+/// El catálogo entero de otra máquina (el sitio en la nube copia el de la Mac).
+pub fn replace_all(state: &Shared, list: &[Role]) -> Result<()> {
+    save_all(state, list)
+}
+
 fn save_all(state: &Shared, list: &[Role]) -> Result<()> {
     state.store.save_probe(KEY, &serde_json::to_value(list)?)?;
     Ok(())

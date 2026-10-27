@@ -568,7 +568,7 @@ pub async fn for_external(state: &Shared, id: &str) -> Result<Value> {
 }
 
 /// `@nombre resto` → (nombre, resto).
-fn mention(text: &str) -> Option<(String, String)> {
+pub(crate) fn mention(text: &str) -> Option<(String, String)> {
     let t = text.trim_start();
     let rest = t.strip_prefix('@')?;
     let (name, msg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));

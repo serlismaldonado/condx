@@ -133,8 +133,10 @@ export async function siteWriteDenied(ctx: QueryCtx, principal: Principal, op: O
   const bad = keys.find((k) => !fields.includes(k));
   if (bad) return `A cloud site can't write “${bad}” in the Mac's threads`;
   const mac = await ctx.db.query("lf_rows").withIndex("by_scope_and_rowId", (q) => q.eq("scope", op.scope).eq("rowId", "_mac")).unique();
-  const aliveAt = (mac?.values as { aliveAt?: unknown } | undefined)?.aliveAt;
-  if (typeof aliveAt === "number" && Date.now() - aliveAt < MAC_GONE_MS) return "The Mac is answering this thread";
+  const macValues = mac?.values as { aliveAt?: unknown; handover?: unknown } | undefined;
+  const aliveAt = macValues?.aliveAt;
+  // Con el interruptor del teléfono («que conteste la nube»), la Mac se hace a un lado aunque lata.
+  if (typeof aliveAt === "number" && Date.now() - aliveAt < MAC_GONE_MS && macValues?.handover !== true) return "The Mac is answering this thread";
   return null;
 }
 

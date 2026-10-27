@@ -379,8 +379,9 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
       stage.appendChild(frame);
     });
 
-    // La ilustración de píxeles: un atardecer ámbar sobre el agua. Píxeles chicos, el color
-    // interpolado en muchos tonos y un tramado leve (como boat.dev), montañas lisas y reflejos.
+    // La ilustración de píxeles: un atardecer ámbar sobre el agua. Píxeles chicos, el color en muchos
+    // tonos y un tramado leve (como boat.dev). El cielo y las montañas se dibujan una vez; el agua y el
+    // brillo del sol se mueven apenas (12 cuadros por segundo), solo cuando la escena se ve.
     function scene(canvas, opts) {
       const ctx = canvas.getContext("2d");
       const stops = [[0, [20, 17, 11]], [0.25, [46, 35, 16]], [0.45, [92, 64, 20]], [0.62, [158, 108, 24]], [0.78, [226, 158, 30]], [0.9, [250, 200, 92]], [1, [255, 242, 214]]];
@@ -393,48 +394,80 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
         return stops[stops.length - 1][1];
       };
       const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-      const draw = () => {
+      const levels = 22;
+      let W, H, img, horizon, sunX, sunY, sunR, far, near, base;
+      const put = (x, y, v) => {
+        const dither = (bayer[(y % 4) * 4 + (x % 4)] / 16 - 0.5) / levels;
+        const c = color(Math.round((v + dither) * levels) / levels), i = (y * W + x) * 4;
+        img.data[i] = c[0]; img.data[i + 1] = c[1]; img.data[i + 2] = c[2]; img.data[i + 3] = 255;
+      };
+      // El cielo y las montañas (lo que no se mueve), con el brillo del sol según `glow`.
+      const sky = (glow) => {
+        for (let y = 0; y < horizon; y++) for (let x = 0; x < W; x++) {
+          const d = Math.hypot(x - sunX, (y - sunY) * 1.05);
+          let v = base[y * W + x];
+          if (v < 0) v = 0.24 + Math.pow(y / horizon, 1.4) * 0.5 + Math.exp(-d / (sunR * 4)) * 0.5 * glow;
+          put(x, y, d < sunR && base[y * W + x] < 0 ? 1 : v);
+        }
+      };
+      // El agua: el reflejo ondula con `t` y aparecen destellos.
+      const water = (t) => {
+        for (let y = horizon; y < H; y++) {
+          const depth = (y - horizon) / (H - horizon);
+          for (let x = 0; x < W; x++) {
+            let v = 0.38 - depth * 0.24 + Math.exp(-Math.abs(x - sunX) / (W * 0.18)) * 0.12;
+            const band = Math.sin(y * 1.3 - t * 1.6 + Math.sin(x * 0.05 + t * 0.4) * 1.5) * 0.5 + 0.5;
+            const near_sun = Math.exp(-Math.pow((x - sunX) / (sunR * (1.4 + depth * 3)), 2));
+            v += near_sun * band * (0.55 - depth * 0.35);
+            if (Math.sin(y * 2.1 + x * 0.02 - t * 0.7) > 0.97) v += 0.05;
+            // Destellos: pocos, cerca del reflejo, que se prenden y apagan.
+            const h = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+            const r = h - Math.floor(h);
+            if (r > 0.996 && near_sun > 0.15 && Math.sin(t * 2 + r * 900) > 0.6) v = 0.95;
+            put(x, y, v);
+          }
+        }
+      };
+      const setup = () => {
         const px = window.innerWidth < 640 ? 3 : 4;
-        const W = Math.ceil(canvas.clientWidth / px), H = Math.ceil(canvas.clientHeight / px);
+        W = Math.ceil(canvas.clientWidth / px); H = Math.ceil(canvas.clientHeight / px);
         canvas.width = W; canvas.height = H;
-        const img = ctx.createImageData(W, H);
-        const horizon = Math.floor(H * opts.horizon);
-        const sunX = W * opts.sun, sunY = horizon - H * 0.2, sunR = Math.max(8, H * 0.07);
-        // Dos cordilleras suaves (senos superpuestos, sin ruido brusco).
-        const far = [], near = [];
+        img = ctx.createImageData(W, H);
+        horizon = Math.floor(H * opts.horizon);
+        sunX = W * opts.sun; sunY = horizon - H * 0.2; sunR = Math.max(8, H * 0.07);
+        far = []; near = [];
         for (let x = 0; x < W; x++) {
           const u = x / W;
           far.push(horizon - H * (0.07 + 0.05 * Math.sin(u * 9 + 0.6) + 0.025 * Math.sin(u * 23 + 2) + 0.012 * Math.sin(u * 61)));
           near.push(horizon - H * (0.025 + 0.03 * Math.sin(u * 13 + 2.4) + 0.012 * Math.sin(u * 37 + 1) + 0.006 * Math.sin(u * 97)));
         }
-        const levels = 22;
-        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-          let v;
-          const d = Math.hypot(x - sunX, (y - sunY) * 1.05);
-          if (y < horizon) {
-            v = 0.24 + Math.pow(y / horizon, 1.4) * 0.5 + Math.exp(-d / (sunR * 4)) * 0.5;
-            if (d < sunR) v = 1;
-            if (y > near[x]) v = 0.16 + Math.exp(-Math.abs(x - sunX) / (W * 0.25)) * 0.12;
-            else if (y > far[x]) v = 0.26 + Math.exp(-Math.abs(x - sunX) / (W * 0.2)) * 0.18;
-          } else {
-            const depth = (y - horizon) / (H - horizon);
-            v = 0.38 - depth * 0.24 + Math.exp(-Math.abs(x - sunX) / (W * 0.18)) * 0.12;
-            // El reflejo del sol: líneas horizontales que se abren y se apagan hacia abajo.
-            const band = Math.sin(y * 1.3 + Math.sin(x * 0.05) * 1.5) * 0.5 + 0.5;
-            const near_sun = Math.exp(-Math.pow((x - sunX) / (sunR * (1.4 + depth * 3)), 2));
-            v += near_sun * band * (0.55 - depth * 0.35);
-            if (Math.sin(y * 2.1 + x * 0.02) > 0.97) v += 0.05;
-          }
-          // Tramado leve: apenas mueve el tono entre dos vecinos.
-          const dither = (bayer[(y % 4) * 4 + (x % 4)] / 16 - 0.5) / levels;
-          const q = Math.round((v + dither) * levels) / levels;
-          const c = color(q), i = (y * W + x) * 4;
-          img.data[i] = c[0]; img.data[i + 1] = c[1]; img.data[i + 2] = c[2]; img.data[i + 3] = 255;
+        // Las montañas tapan el cielo: su tono fijo (-1 donde se ve el cielo).
+        base = new Float32Array(W * horizon).fill(-1);
+        for (let y = 0; y < horizon; y++) for (let x = 0; x < W; x++) {
+          if (y > near[x]) base[y * W + x] = 0.16 + Math.exp(-Math.abs(x - sunX) / (W * 0.25)) * 0.12;
+          else if (y > far[x]) base[y * W + x] = 0.26 + Math.exp(-Math.abs(x - sunX) / (W * 0.2)) * 0.18;
         }
+        sky(1); water(0);
         ctx.putImageData(img, 0, 0);
       };
-      draw();
-      let t; window.addEventListener("resize", () => { clearTimeout(t); t = setTimeout(draw, 150); });
+      setup();
+      let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(setup, 150); });
+      // Sin animación si el sistema pide menos movimiento.
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      let visible = false, last = 0, frame = 0;
+      new IntersectionObserver(([e]) => { visible = e.isIntersecting; if (visible) requestAnimationFrame(tick); }).observe(canvas);
+      function tick(now) {
+        if (!visible) return;
+        if (now - last > 83) {
+          last = now; frame++;
+          const t = now / 1000;
+          // El brillo del sol respira cada pocos segundos (el cielo se rehace cada 3 cuadros).
+          if (frame % 3 === 0) sky(0.94 + Math.sin(t * 0.8) * 0.06);
+          water(t);
+          ctx.putImageData(img, 0, 0);
+        }
+        requestAnimationFrame(tick);
+      }
     }
     scene(document.getElementById("scene"), { horizon: 0.72, sun: 0.78 });
     scene(document.getElementById("scene2"), { horizon: 0.62, sun: 0.5 });

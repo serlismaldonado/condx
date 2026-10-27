@@ -353,7 +353,12 @@ fn run_services(state: &Shared, s: &mut Session, mac_away: bool) {
                     Ok(done) => format!("{done} (cloud site)"),
                     Err(e) => format!("rejected: {e:#}"),
                 },
-                None => "rejected: the Mac is off; from the cloud site only services and passing to production can be asked".into(),
+                // Subir a dev la rama de un agente: también con la Mac apagada (solo GitHub).
+                None if ask["merge"].is_object() => match crate::projects::get(state, ask["merge"]["project"].as_str()).and_then(|p| crate::promote::merge_into_dev(&p.repo, ask["merge"]["branch"].as_str().unwrap_or_default(), &by)) {
+                    Ok(done) => format!("{done} (cloud site)"),
+                    Err(e) => format!("rejected: {e:#}"),
+                },
+                None => "rejected: the Mac is off; from the cloud site only services, merging into dev and passing to production can be asked".into(),
                 Some(svc) => {
                     let name = svc.get("name").and_then(Value::as_str).unwrap_or_default();
                     let action = svc.get("action").and_then(Value::as_str).unwrap_or_default();

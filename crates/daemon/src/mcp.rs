@@ -184,6 +184,7 @@ pub fn tools() -> Vec<Value> {
         tool("wait_for_mention", "Waits until someone mentions you (@your-name) in a thread, up to timeoutSeconds (default 60, at most 120). Returns the mentions (thread and text), or none.", json!({ "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 120 } }), &[]),
         tool("list_agents", "Condx's agents (the catalog): id, name, what they do, whether they read or write, and their provider.", json!({}), &[]),
         tool("start_chat", "Orchestrate: start a new thread with a Condx agent that reads the code and what Condx knows. Returns the thread id; read it with read_thread.", json!({ "text": { "type": "string" }, "project": project_arg() }), &["text"]),
+        tool("merge_to_dev", "Orchestrate: merge a branch (usually a task agent's `condx/fix-…`, see the task's thread) into the project's dev branch through GitHub: opens the PR (or uses the open one) and merges it if its CI didn't fail. Only when the developer asks for it. Production stays dev → main, from the developer's phone.", json!({ "branch": { "type": "string" }, "project": project_arg() }), &["branch"]),
         tool("get_guide", "How to work with Condx from anywhere (read it first): who answers (the Mac or the cloud site), where to try a project from a phone, how to build a feature with a task and iterate on it, and what's never possible here.", json!({}), &[]),
         tool("give_task", "Orchestrate: give a task (a change to make) to the flows that start on tasks (e.g. “Do a task”): an agent does it on its own branch, another reviews it, the checks run and, where the project has a cloud dev and the cloud site runs it (the Mac off), the branch runs on cloud dev and the flow's last notice has a URL to try it (read_thread). To iterate: post_to_thread with @fixer and what to change (it commits again on its branch), then service_action restart all with branch = that branch to see the new commit. Production is never touched.", json!({ "text": { "type": "string" }, "project": project_arg() }), &["text"]),
         tool("cancel_run", "Orchestrate: cancel a flow run.", json!({ "id": { "type": "string" } }), &["id"]),
@@ -203,7 +204,7 @@ pub const EXTERNAL_TOOLS: &[&str] = &[
     "request_job", "report_event", "list_projects", "list_approvals",
     // El entorno de desarrollo: en la Mac, el local; con la Mac apagada, el sitio en la nube lo levanta
     // contra el cloud dev del proyecto y el frontend sale con su URL pública (`publicUrl`).
-    "list_services", "service_action", "get_service_logs", "get_guide",
+    "list_services", "service_action", "get_service_logs", "get_guide", "merge_to_dev",
 ];
 
 /// Si este cliente ve esta herramienta.
@@ -213,7 +214,7 @@ pub fn allowed(client: &Client, name: &str) -> bool {
         "external" => {
             let scope = match name {
                 "post_to_thread" => Some(Scope::ThreadsWrite),
-                "start_chat" | "give_task" | "run_workflow" | "cancel_run" | "retry_run" | "request_job" | "report_event" | "service_action" => Some(Scope::Orchestrate),
+                "start_chat" | "give_task" | "run_workflow" | "cancel_run" | "retry_run" | "request_job" | "report_event" | "service_action" | "merge_to_dev" => Some(Scope::Orchestrate),
                 "answer_question" => Some(Scope::AnswerQuestions),
                 "save_agent" | "save_workflow" => Some(Scope::EditFlows),
                 _ => None,
@@ -480,6 +481,14 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
         }
         "list_approvals" => json!(state.store.jobs(&["waiting-approval"], 100)?.iter().map(jobs::summary).collect::<Vec<_>>()),
         "get_guide" => json!({ "guide": GUIDE }),
+        "merge_to_dev" => {
+            need(Scope::JobsRequest)?;
+            let project = crate::projects::get(state, args["project"].as_str())?;
+            let branch = args["branch"].as_str().unwrap_or_default().to_string();
+            let by = by.to_string();
+            let repo = project.repo.clone();
+            json!({ "result": tokio::task::spawn_blocking(move || crate::promote::merge_into_dev(&repo, &branch, &by)).await.map_err(|e| anyhow!(e.to_string()))?? })
+        }
         "list_tabs" => json!(hub.tabs()),
         "get_snapshot" => hub.snapshot(tab)?,
         "get_report" => hub.command("report", Value::Null, tab).await?,

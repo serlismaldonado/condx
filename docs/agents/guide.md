@@ -36,6 +36,10 @@ Say so when you switch branches.
 5. To iterate: `post_to_thread` in the task's thread with `@fixer` and what to change; it commits again
    on its branch. Then `service_action` restart `all` with `branch` = that branch, and give the URL.
 6. If a node failed, `read_thread` / `get_workflow_run` say why; `retry_run` retries from there.
+7. When the developer says it's good ("súbelo", "merge it"): `merge_to_dev` with the agent's branch
+   (it's in the task's thread). Condx opens the PR into dev and merges it if its CI didn't fail. The
+   developer can also do it from the task's thread in the Condx app (a slider). Never merge on your own
+   initiative.
 
 ## Ask about the code
 

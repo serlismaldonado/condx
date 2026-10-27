@@ -147,6 +147,45 @@ pub fn preview_cached(dir: &Path) -> Value {
     v
 }
 
+/// Sube una rama (la de un agente) a la rama de desarrollo (`dev` o `develop`): abre el PR, o usa el
+/// que ya estaba, y lo fusiona si el CI de la rama no falló ni sigue corriendo. Lo pide la persona
+/// (deslizador del teléfono, o Claude con el nivel orquestar); producción sigue siendo `dev → main`.
+pub fn merge_into_dev(dir: &Path, branch: &str, by: &str) -> Result<String> {
+    let (owner, repo) = slug(dir).ok_or_else(|| anyhow!("the repo isn't on GitHub"))?;
+    let info = call("GET", &format!("/repos/{owner}/{repo}"), None)?;
+    let (owner, repo) = info["full_name"].as_str().and_then(|f| f.split_once('/')).map(|(o, r)| (o.to_string(), r.to_string())).unwrap_or((owner, repo));
+    let base = head_branch(&owner, &repo).ok_or_else(|| anyhow!("{owner}/{repo} has no dev branch to merge into"))?;
+    let head = call("GET", &format!("/repos/{owner}/{repo}/branches/{branch}"), None).map_err(|_| anyhow!("the branch {branch} isn't on GitHub"))?;
+    let sha = head["commit"]["sha"].as_str().unwrap_or_default().to_string();
+    let cmp = call("GET", &format!("/repos/{owner}/{repo}/compare/{base}...{branch}"), None)?;
+    if cmp["ahead_by"].as_i64().unwrap_or(0) == 0 {
+        bail!("{branch} has nothing new for {base} (already merged?)");
+    }
+    match ci_of(&owner, &repo, &sha).as_str() {
+        "failure" => bail!("the CI of {branch} failed: fix it before merging"),
+        "pending" => bail!("the CI of {branch} is still running: try again when it finishes"),
+        _ => {}
+    }
+    let open = call("GET", &format!("/repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}&base={base}"), None).ok().and_then(|v| v.as_array().and_then(|a| a.first().cloned()));
+    let number = match open.and_then(|p| p["number"].as_i64()) {
+        Some(n) => n,
+        None => {
+            let subject = cmp["commits"].as_array().and_then(|c| c.last()).and_then(|c| c["commit"]["message"].as_str()).and_then(|m| m.lines().next()).unwrap_or(branch).to_string();
+            let body = format!("From Condx: {branch} into {base} (asked by {by}).");
+            let pr = call("POST", &format!("/repos/{owner}/{repo}/pulls"), Some(json!({ "title": subject, "head": branch, "base": base, "body": body })))?;
+            pr["number"].as_i64().ok_or_else(|| anyhow!("GitHub didn't return the PR"))?
+        }
+    };
+    let done = call("PUT", &format!("/repos/{owner}/{repo}/pulls/{number}/merge"), Some(json!({ "merge_method": "merge" })))?;
+    if done["merged"] != true {
+        bail!("GitHub didn't merge PR #{number}: {}", done["message"].as_str().unwrap_or("no details"));
+    }
+    if let Some(m) = CACHE.lock().unwrap().as_mut() {
+        m.remove(&dir.display().to_string());
+    }
+    Ok(format!("merged PR #{number} ({branch} → {base}) in {owner}/{repo}"))
+}
+
 /// Fusiona la rama de desarrollo en la principal (abre el PR si no hay uno). No fusiona si el CI
 /// falló o sigue corriendo. Devuelve qué hizo.
 pub fn merge(dir: &Path, by: &str) -> Result<String> {

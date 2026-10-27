@@ -266,6 +266,14 @@ fn run_request(state: &Shared, s: &Session, row: &Values, devices: &[TrustedDevi
             Err(e) => format!("rejected: {e:#}"),
         };
     }
+    // Subir a dev la rama de un agente (el deslizador del hilo de la tarea): PR y fusión por GitHub.
+    if let Some(m) = ask["merge"].as_object() {
+        let branch = m.get("branch").and_then(Value::as_str).unwrap_or_default();
+        return match crate::projects::get(state, m.get("project").and_then(Value::as_str)).and_then(|p| crate::promote::merge_into_dev(&p.repo, branch, &by)) {
+            Ok(done) => done,
+            Err(e) => format!("rejected: {e:#}"),
+        };
+    }
     // Subir la rama en la que trabaja la Mac (sus commits) para seguir en la nube desde ahí. Las
     // ramas principales no: esas se suben a mano o por un flujo.
     if let Some(h) = ask["handoff"].as_object() {

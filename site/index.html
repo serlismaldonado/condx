@@ -154,9 +154,14 @@
 
 
     /* Easter eggs: un globo de diálogo pixel y un aviso arriba. */
-    .bubble { position: absolute; z-index: 40; transform: translate(-50%, calc(-100% - 10px)); background: #fff4d6; color: #1f1503; border: 2px solid #1f1503; box-shadow: 3px 3px 0 rgba(31, 21, 3, 0.4); padding: 6px 10px; font: 12px/1.4 "IBM Plex Mono", monospace; max-width: 230px; pointer-events: none; animation: pop 0.15s steps(3); }
-    .bubble b { display: block; font-weight: 500; color: #a87400; }
-    .bubble::after { content: ""; position: absolute; left: 50%; bottom: -8px; width: 8px; height: 8px; background: #fff4d6; border-right: 2px solid #1f1503; border-bottom: 2px solid #1f1503; transform: translateX(-50%) rotate(45deg); }
+    .bubble { position: absolute; z-index: 40; background: #fff4d6; color: #1f1503; border: 2px solid #1f1503; box-shadow: 3px 3px 0 rgba(31, 21, 3, 0.4); padding: 5px 9px; font: 11.5px/1.4 "IBM Plex Mono", monospace; max-width: 190px; pointer-events: none; animation: talk 0.18s steps(3); transition: opacity 0.3s; }
+    .bubble b { display: block; font-weight: 500; color: #a87400; font-size: 10.5px; }
+    .bubble.old { opacity: 0.45; }
+    .bubble::after { content: ""; position: absolute; width: 7px; height: 7px; background: #fff4d6; }
+    .bubble.down::after { left: var(--tail, 50%); bottom: -6px; border-right: 2px solid #1f1503; border-bottom: 2px solid #1f1503; transform: translateX(-50%) rotate(45deg); }
+    .bubble.left::after { left: -6px; top: 12px; border-left: 2px solid #1f1503; border-bottom: 2px solid #1f1503; transform: rotate(45deg); }
+    .bubble.right::after { right: -6px; top: 12px; border-right: 2px solid #1f1503; border-top: 2px solid #1f1503; transform: rotate(45deg); }
+    @keyframes talk { from { opacity: 0; translate: 0 4px; } }
     .toast { position: fixed; z-index: 50; left: 50%; top: 18px; transform: translateX(-50%); background: #241b0c; color: #fff1cf; border: 2px solid var(--accent); box-shadow: 4px 4px 0 rgba(31, 21, 3, 0.4); padding: 10px 16px; font: 13px "IBM Plex Mono", monospace; animation: pop 0.2s steps(3); }
     @keyframes pop { from { opacity: 0; transform: translate(-50%, calc(-100% - 2px)); } }
     .toast { animation-name: drop; } @keyframes drop { from { opacity: 0; transform: translate(-50%, -12px); } }
@@ -824,33 +829,67 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
       const el = document.createElement("div"); el.className = "toast"; el.textContent = text;
       document.body.appendChild(el); setTimeout(() => el.remove(), ms);
     };
-    const LINES = {
-      Triage: ["Found it. Line 42, as always.", "It's not DNS. I checked twice.", "Stack trace says hi."],
-      Fixer: ["On my own branch. Never main.", "Fixed it. Running checks…", "One-line change. Promise."],
-      Risk: ["Risk: low. Probably.", "Production users? Then medium.", "I'd wait for the review."],
-      Reviewer: ["LGTM… after one more look.", "Approve. The test covers it.", "Requesting changes, nicely."],
-      Mayer: ["I maintain Condx. Even this page.", "Shipping a release tonight.", "Who put a rocket in the hero?"],
-      Explainer: ["Let me explain the diff.", "Short version: it works now."],
+    // Conversaciones cortas entre los agentes: empieza el que tocaste y otro le contesta.
+    const TALKS = {
+      Triage: [[["Triage", "Found it: line 42."], ["Fixer", "On it. My own branch."], ["Reviewer", "Send me the diff."]],
+               [["Triage", "It's not DNS. I checked."], ["Risk", "Then it's low risk."]]],
+      Fixer: [[["Fixer", "Fix is ready."], ["Reviewer", "LGTM. Checks?"], ["Fixer", "All green."]],
+              [["Fixer", "One-line change, promise."], ["Reviewer", "It's never one line."]]],
+      Risk: [[["Risk", "Risk: low. Probably."], ["Mayer", "Then ship it to dev."], ["Risk", "After the human approves."]],
+             [["Risk", "Production users?"], ["Triage", "Only on cloud dev."], ["Risk", "Low, then."]]],
+      Reviewer: [[["Reviewer", "One more look…"], ["Fixer", "It's one line!"], ["Reviewer", "Fine. Approved."]],
+                 [["Reviewer", "Who wrote this test?"], ["Fixer", "…me."]]],
+      Mayer: [[["Mayer", "Release tonight?"], ["Risk", "Medium risk."], ["Mayer", "Tomorrow, then."]],
+              [["Mayer", "Who put a rocket here?"], ["Explainer", "The landing page did."]]],
+      Explainer: [[["Explainer", "Short version: it works."], ["Reviewer", "Long version?"]]],
     };
-    const said = {};
-    const bubble = (x, y, name, text, ms = 4000) => {
+    const turn = {};
+    // Dónde no puede ir un globo: lo que se lee en la portada.
+    const blocked = () => [...document.querySelectorAll(".hero h1, .hero .lede, .hero .term, .hero .small, nav.top")].map((el) => el.getBoundingClientRect());
+    const hits = (a, list) => list.some((b) => a.left < b.right + 6 && a.right > b.left - 6 && a.top < b.bottom + 6 && a.bottom > b.top - 6);
+    let talkId = 0;
+    // Un globo junto a la cabeza (x, y en la pantalla): arriba si no tapa nada; si no, al costado.
+    const bubble = (x, y, name, text, ms = 3200) => {
       const el = document.createElement("div"); el.className = "bubble";
       el.innerHTML = `<b>${name}</b>`; el.append(text);
-      el.style.left = x + window.scrollX + "px"; el.style.top = y + window.scrollY + "px";
-      document.body.appendChild(el); setTimeout(() => el.remove(), ms);
+      el.style.visibility = "hidden";
+      document.body.appendChild(el);
+      const w = el.offsetWidth, h = el.offsetHeight, vw = document.documentElement.clientWidth, avoid = blocked();
+      const clampX = (l) => Math.max(8, Math.min(vw - w - 8, l));
+      const tries = [
+        { cls: "down", left: clampX(x - w / 2), top: y - h - 12 },
+        { cls: "left", left: x + 16, top: y - 6 },
+        { cls: "right", left: x - w - 16, top: y - 6 },
+        { cls: "down", left: clampX(x - w / 2), top: y - h - 46 },
+      ];
+      const fit = tries.find((c) => c.left >= 4 && c.left + w <= vw - 4 && !hits({ left: c.left, right: c.left + w, top: c.top, bottom: c.top + h }, avoid)) || tries[0];
+      el.classList.add(fit.cls);
+      if (fit.cls === "down") el.style.setProperty("--tail", `${Math.max(10, Math.min(w - 10, x - fit.left))}px`);
+      el.style.left = fit.left + window.scrollX + "px"; el.style.top = fit.top + window.scrollY + "px";
+      el.style.visibility = "";
+      setTimeout(() => el.remove(), ms);
+      return el;
     };
-    // 1. Clic en un ingeniero de la portada: dice lo suyo (otra frase cada vez).
+    // 1. Clic en un ingeniero de la portada: una conversación de dos o tres turnos.
     const hero = document.querySelector(".hero");
+    const say = (who, text, id) => {
+      if (id !== talkId) return;
+      const c = heroScene.crew().find((x) => x.name === who) || heroScene.crew()[0];
+      document.querySelectorAll(".bubble.old").forEach((b) => b.remove());
+      document.querySelectorAll(".bubble").forEach((b) => b.classList.add("old"));
+      const p = heroScene.headOf(c);
+      bubble(p.x, p.y, who, text);
+    };
     hero.addEventListener("mousemove", (e) => hero.classList.toggle("crew-hover", !!heroScene.crewAt(e.clientX, e.clientY)));
     hero.addEventListener("click", (e) => {
       if (e.target.closest("a, button, .term")) return;
       const c = heroScene.crewAt(e.clientX, e.clientY);
       if (!c) return;
-      const lines = LINES[c.name] || ["…"];
-      said[c.name] = ((said[c.name] ?? -1) + 1) % lines.length;
-      const p = heroScene.headOf(c);
+      const talks = TALKS[c.name] || [[[c.name, "…"]]];
+      turn[c.name] = ((turn[c.name] ?? -1) + 1) % talks.length;
+      const id = ++talkId;
       document.querySelectorAll(".bubble").forEach((b) => b.remove());
-      bubble(p.x, p.y, c.name, lines[said[c.name]]);
+      talks[turn[c.name]].forEach(([who, text], i) => setTimeout(() => say(who, text, id), i * 1500));
     });
     // 2. El código Konami: todos aprueban y despegan los dos cohetes.
     const KONAMI = ["ArrowUp", "ArrowUp", "ArrowDown", "ArrowDown", "ArrowLeft", "ArrowRight", "ArrowLeft", "ArrowRight", "b", "a"];
@@ -861,7 +900,11 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
       typed = [];
       heroScene.launch(); endScene.launch();
       toast("🚀 All agents approve. Launching.");
-      heroScene.crew().forEach((c, i) => setTimeout(() => { const p = heroScene.headOf(c); bubble(p.x, p.y, c.name, "Go!", 1800); }, i * 160));
+      // Un «go / no-go» como en un lanzamiento: cada agente contesta por turno.
+      const id = ++talkId;
+      document.querySelectorAll(".bubble").forEach((b) => b.remove());
+      [["Mayer", "Go / no-go for launch?"], ["Triage", "Go."], ["Fixer", "Go."], ["Risk", "Go. Risk: low."], ["Reviewer", "Go."], ["Mayer", "We are go. 🚀"]]
+        .forEach(([who, text], k) => setTimeout(() => say(who, text, id), k * 900));
     });
     // 3. Cinco clics en el logo.
     let logoClicks = 0, logoTimer;

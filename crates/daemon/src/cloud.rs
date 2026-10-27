@@ -1319,8 +1319,10 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
                         if id == NEW_ROW {
                             // Un hilo nuevo: un chat con el agente, que arranca con este mensaje.
                             let by = format!("phone:{}", r.device.name);
+                            let (project, text) = crate::agents::take_project(&text);
+                            let project = project.filter(|n| state.store.projects().unwrap_or_default().iter().any(|p| &p.name == n));
                             let (model, text) = crate::agents::take_model(&text);
-                            match s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model, crate::agent_host::start_chat_with(state, &text, None, &by, &p.images))) {
+                            match s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model, crate::agent_host::start_chat_with(state, &text, project.as_deref(), &by, &p.images))) {
                                 Ok(run) => format!("thread {}", run["id"].as_str().unwrap_or("?")),
                                 Err(e) => format!("rejected: {e:#}"),
                             }

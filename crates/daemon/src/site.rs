@@ -439,7 +439,12 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
                 continue;
             }
         };
-        let mut text = req.arg.trim().to_string();
+        // El proyecto y el modelo elegidos en el teléfono van al principio (`[project: …] [model: …]`).
+        let (picked, said) = crate::agents::take_project(req.arg.trim());
+        let picked = picked.filter(|n| state.store.projects().unwrap_or_default().iter().any(|p| &p.name == n));
+        let (model, said) = crate::agents::take_model(&said);
+        let said = said.trim().to_string();
+        let mut text = said.clone();
         if req.files.is_some() {
             text.push_str("\n\n(The phone sent attachments; they're sealed for the Mac and can't be opened here.)");
         }
@@ -450,9 +455,9 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
         // Un hilo nuevo: el proyecto que nombra el mensaje (la fila `_new` puede traer el de un hilo
         // anterior); los del sitio guardan el suyo.
         let row_project = v.get("project").and_then(Value::as_str).filter(|p| !p.is_empty()).map(str::to_string);
-        let project = if id == crate::cloud::NEW_ROW { crate::agent_host::mentioned_project(state, &text).or(row_project) } else { row_project.or_else(|| crate::agent_host::mentioned_project(state, &text)) };
+        let project = if id == crate::cloud::NEW_ROW { picked.or_else(|| crate::agent_host::mentioned_project(state, &text)).or(row_project) } else { row_project.or_else(|| crate::agent_host::mentioned_project(state, &text)) };
         let at = v.get("requestedAt").and_then(Value::as_i64).unwrap_or_else(now_ms);
-        let user = json!({ "kind": "user", "author": null, "at": at, "text": req.arg.trim() });
+        let user = json!({ "kind": "user", "author": null, "at": at, "text": said });
         tracing::info!("site: answering a phone message on {id}");
         // Primero, como la Mac: el mensaje recibido (✓✓ en el teléfono) y la respuesta pensando; el
         // agente arranca después (si el host está frío tarda unos segundos).
@@ -466,7 +471,7 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
         // Sale ya (sin esperar a la próxima vuelta).
         let _ = crate::cloud::block_on(sync_once(&mut s.engine, &s.transport, now_ms, 50));
         let _rt = s.rt.enter();
-        match s.rt.block_on(crate::agent_host::start_chat(state, &prompt, project.as_deref(), &format!("phone:{}", req.device.name))) {
+        match s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model, crate::agent_host::start_chat(state, &prompt, project.as_deref(), &format!("phone:{}", req.device.name)))) {
             Ok(run) => {
                 s.answering.insert(run["id"].as_str().unwrap_or_default().to_string(), a);
             }

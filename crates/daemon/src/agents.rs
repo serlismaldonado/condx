@@ -115,8 +115,18 @@ tokio::task_local! {
 
 /// `[model: opus] hola` → (`opus`, `hola`): el modelo elegido para este mensaje, al principio.
 pub fn take_model(text: &str) -> (Option<String>, String) {
+    take_tag("model", text)
+}
+
+/// `[project: web] hola` → (`web`, `hola`): el proyecto elegido en el teléfono (el «+» del chat) para un
+/// hilo nuevo. Va antes que `[model: …]`; en un hilo que ya existe se quita y no cambia nada.
+pub fn take_project(text: &str) -> (Option<String>, String) {
+    take_tag("project", text)
+}
+
+fn take_tag(tag: &str, text: &str) -> (Option<String>, String) {
     let t = text.trim_start();
-    if let Some(rest) = t.strip_prefix("[model:") {
+    if let Some(rest) = t.strip_prefix(&format!("[{tag}:")) {
         if let Some((m, after)) = rest.split_once(']') {
             let m = m.trim();
             if !m.is_empty() && m.len() <= 120 && m.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:/@".contains(c)) {
@@ -649,6 +659,9 @@ mod model_pick_tests {
         assert_eq!(take_model("  [model:claude-sonnet-5-5]   @risk mira esto"), (Some("claude-sonnet-5-5".into()), "@risk mira esto".into()));
         assert_eq!(take_model("hola [model: opus]"), (None, "hola [model: opus]".into()));
         assert_eq!(take_model("[model: rm -rf] x"), (None, "[model: rm -rf] x".into()));
+        let (project, rest) = take_project("[project: landing-page] [model: opus] hola");
+        assert_eq!(project.as_deref(), Some("landing-page"));
+        assert_eq!(take_model(&rest), (Some("opus".into()), "hola".into()));
         assert_eq!(models_of(&json!({ "model": "a", "models": ["a", "b"] })), vec!["a", "b"]);
         assert_eq!(models_of(&json!({ "model": "a" })), vec!["a"]);
     }

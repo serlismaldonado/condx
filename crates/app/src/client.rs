@@ -42,8 +42,9 @@ impl Daemon {
             base: format!("http://127.0.0.1:{port}"),
             repo,
             token,
-            // Los logs de Convex tardan ~8 s; measure, hasta 2 min.
-            agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(150)).build(),
+            // Los logs de Convex tardan ~8 s; measure, hasta 2 min. Sin conexiones guardadas: una que el
+            // daemon cerró (se reinició) hacía fallar la primera escritura (aprobar) con «connection reset».
+            agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(150)).max_idle_connections(0).build(),
             reads: ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build(),
         })
     }

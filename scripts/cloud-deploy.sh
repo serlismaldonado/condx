@@ -52,6 +52,13 @@ trap 'rm -f "$ENVF"' EXIT
 printf 'CONVEX_DEPLOY_KEY="%s"\n' "$KEY" > "$ENVF"
 env -u CONVEX_SELF_HOSTED_URL -u CONVEX_SELF_HOSTED_ADMIN_KEY -u CONVEX_DEPLOYMENT -u CONVEX_URL -u CONVEX_DEPLOY_KEY \
   npx convex deploy --env-file "$ENVF"
+# La URL pública (el dominio propio delante del deployment, p. ej. por el proxy de Vercel): el MCP remoto
+# la anuncia en su descubrimiento OAuth (el proxy no pasa el host original).
+PUBLIC="${CONDX_SITE:-$(python3 -c 'import json,os,sys; print(json.load(open(os.path.expanduser("~/.condx/daemon/cloud.json"))).get("site") or "")' 2>/dev/null)}"
+if [ -n "$PUBLIC" ]; then
+  env -u CONVEX_SELF_HOSTED_URL -u CONVEX_SELF_HOSTED_ADMIN_KEY -u CONVEX_DEPLOYMENT -u CONVEX_URL -u CONVEX_DEPLOY_KEY \
+    npx convex env set CONDX_PUBLIC_URL "${PUBLIC%/}" --env-file "$ENVF" >/dev/null && echo "Public URL: ${PUBLIC%/}"
+fi
 
 if [ -n "${CONDX_DEPLOY_ONLY:-}" ]; then
   unset KEY

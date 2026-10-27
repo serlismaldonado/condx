@@ -490,8 +490,9 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
         fg = document.createElement("canvas"); fg.width = W; fg.height = H;
         const f = fg.getContext("2d");
         const deck = H - Math.max(4, Math.round(H * (opts.fadeBottom ? 0.25 : 0.06)));
-        f.fillStyle = css(0.04); f.fillRect(0, deck, W, H - deck);
-        f.fillStyle = css(0.2); f.fillRect(0, deck, W, 1);
+        // El piso de la plataforma: solo en la escena de cierre (en la portada el suelo baja parejo hasta
+        // deshacerse en píxeles, sin una franja ni una raya).
+        if (!opts.fadeBottom) { f.fillStyle = css(0.04); f.fillRect(0, deck, W, H - deck); }
         const railY = deck - Math.max(5, Math.round(H * 0.07));
         f.fillStyle = css(0.08);
         f.fillRect(0, railY, W, 1);

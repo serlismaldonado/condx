@@ -447,13 +447,16 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
             t if t.is_empty() => text.clone(),
             t => format!("(Earlier in this conversation:)\n{t}\n\n(New message from {}:)\n{text}", req.device.name),
         };
-        let project = v.get("project").and_then(Value::as_str).map(str::to_string);
+        // Un hilo nuevo: el proyecto que nombra el mensaje (la fila `_new` puede traer el de un hilo
+        // anterior); los del sitio guardan el suyo.
+        let row_project = v.get("project").and_then(Value::as_str).filter(|p| !p.is_empty()).map(str::to_string);
+        let project = if id == crate::cloud::NEW_ROW { crate::agent_host::mentioned_project(state, &text).or(row_project) } else { row_project.or_else(|| crate::agent_host::mentioned_project(state, &text)) };
         let at = v.get("requestedAt").and_then(Value::as_i64).unwrap_or_else(now_ms);
         let user = json!({ "kind": "user", "author": null, "at": at, "text": req.arg.trim() });
         tracing::info!("site: answering a phone message on {id}");
         // Primero, como la Mac: el mensaje recibido (✓✓ en el teléfono) y la respuesta pensando; el
         // agente arranca después (si el host está frío tarda unos segundos).
-        let a = match take(s, id, request_id, user, v) {
+        let a = match take(s, id, request_id, user, v, project.as_deref()) {
             Ok(a) => a,
             Err(e) => {
                 tracing::warn!("site: couldn't take the message on {id}: {e:#}");
@@ -520,7 +523,7 @@ fn thinking(at: i64) -> Value {
 
 /// Toma un mensaje: lo marca recibido y publica el mensaje con la respuesta pensando. Un hilo pedido
 /// con «New thread» se crea ya como `site-…` (el teléfono lo abre enseguida).
-fn take(s: &mut Session, id: &str, request_id: &str, user: Value, v: &Values) -> Result<Answering> {
+fn take(s: &mut Session, id: &str, request_id: &str, user: Value, v: &Values, project: Option<&str>) -> Result<Answering> {
     let now = now_ms();
     let list = |k: &str| v.get(k).and_then(Value::as_str).and_then(|t| serde_json::from_str::<Vec<Value>>(t).ok()).unwrap_or_default();
     let at = user["at"].as_i64().unwrap_or(now);
@@ -533,6 +536,9 @@ fn take(s: &mut Session, id: &str, request_id: &str, user: Value, v: &Values) ->
         let mut new = Values::new();
         for (k, val) in [("title", json!(title)), ("kind", json!("chat")), ("status", json!("running")), ("updatedAt", json!(now)), ("items", items(&[])), ("participants", json!(participants)), ("waitingAnswer", json!(false))] {
             new.insert(k.into(), val);
+        }
+        if let Some(p) = project {
+            new.insert("project".into(), json!(p));
         }
         set.insert("siteFor".into(), json!(request_id));
         set.insert("siteResult".into(), json!(format!("thread {row}")));

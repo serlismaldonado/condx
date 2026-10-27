@@ -556,13 +556,14 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
         let started = match routed {
             Some((role, rest)) => {
                 let write = role.mode == crate::roles::Mode::Write;
-                let branch = thread_branch(v);
-                if write && branch.is_none() {
-                    Err(anyhow!("{} needs a task's branch to continue, and this thread has none (ask it in a task's thread)", role.name))
-                } else {
+                // En el hilo de una tarea, uno que escribe continúa su rama; fuera de una, trabaja en
+                // una rama nueva desde el `dev` de GitHub (como en la Mac).
+                let branch = if write { thread_branch(v) } else { None };
+                {
                     let run_id = format!("site-{}-{}", role.id, crate::cloud::random_hex(4).unwrap_or_default());
                     let task = format!("{}\n\n{}\n\nThe developer asks: {rest}", crate::roles::guest_brief(&role), if let Some(b) = &branch { format!("(You continue the task's branch {b}: your change is committed on top of it.)\n\n{prompt}") } else { prompt.clone() });
-                    let res = s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model.clone(), crate::agent_host::start_role(state, &role, &run_id, &task, project.as_deref(), "cloud site", branch.as_deref())));
+                    let base = branch.clone().or_else(|| write.then(|| "dev".to_string()));
+                    let res = s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model.clone(), crate::agent_host::start_role(state, &role, &run_id, &task, project.as_deref(), "cloud site", base.as_deref())));
                     if let (Ok(_), true, Some(b)) = (&res, write, &branch) {
                         if let Ok(Some(mut r)) = state.store.agent_run(&run_id) {
                             r["continues"] = json!(b);

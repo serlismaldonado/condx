@@ -89,6 +89,10 @@
     .dot { width: 7px; height: 7px; background: #4ade80; flex: none; }
     .dot.y { background: var(--accent); }
     .row small { margin-left: auto; font: 10px "IBM Plex Mono"; color: #b9a982; }
+    button.slide { font: 500 11px/1.45 "IBM Plex Mono", monospace; cursor: pointer; }
+    button.slide:hover { filter: brightness(1.06); }
+    button.slide:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 rgba(31, 21, 3, 0.35); }
+    button.slide:disabled { cursor: default; filter: none; transform: none; opacity: 0.85; }
     .slide { background: var(--accent); color: var(--on-accent); font-weight: 500; padding: 5px 10px; text-align: center; border: 2px solid #1f1503; }
 
     /* Bandas alternadas (como las secciones de boat). */
@@ -225,7 +229,7 @@
           <h2>Your agents in your pocket</h2>
           <p class="sub">The Android app talks to your Mac, or to the cloud when the Mac is off. Every message and approval is signed with a key that never leaves the phone.</p>
           <div class="cap">your phone · away from the Mac</div>
-          <div class="frame"><canvas class="art" data-art="phone" aria-hidden="true"></canvas><div class="mini top"><div class="row"><span class="dot"></span>Fixer replied · see changes</div></div><div class="mini"><div class="row" style="justify-self:end">Deploy to cloud dev?</div><div class="slide" style="justify-self:end">Approve</div></div></div>
+          <div class="frame"><canvas class="art" data-art="phone" aria-hidden="true"></canvas><div class="mini top"><div class="row"><span class="dot"></span>Fixer replied · see changes</div></div><div class="mini"><div class="row" style="justify-self:end" data-status><span class="dot y"></span>Deploy to cloud dev?</div><button class="slide" type="button" style="justify-self:end" data-approve>Approve</button></div></div>
         </div>
         <div class="list">
           <div><b>Threads</b><span>Reply to a message and it goes to whoever wrote it. Type @ to bring in someone else.</span></div>
@@ -599,17 +603,21 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
       const night = kind === "night";
       let W, H, bg, hz;
       const rect = (g, v, x, y, w, h) => { g.fillStyle = fill(v); g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); };
-      // Una persona de perfil (silueta), con audífonos.
+      // Una persona (silueta): cabeza con audífonos, cuello, torso, un brazo y dos piernas separadas.
       const person = (g, x, foot, h, v, extra) => {
-        const head = Math.max(2, Math.round(h * 0.16)), bw = Math.max(3, Math.round(h * 0.28));
-        const top = foot - h;
-        rect(g, v, x - head / 2, top, head, head + 1);
-        rect(g, v, x - bw / 2, top + head + 1, bw, h * 0.42);
-        rect(g, v, x - bw / 2 + 1, top + head + 1 + h * 0.42, Math.max(1, bw / 2 - 1), h * 0.4);
-        rect(g, v, x + 1, top + head + 1 + h * 0.42, Math.max(1, bw / 2 - 1), h * 0.4);
-        rect(g, v, x - head / 2 - 1, top + 1, 1, head - 1);
-        if (extra === "point") for (let k = 0; k < h * 0.35; k++) rect(g, v, x + bw / 2 + k * 0.6, top + head + 2 - k, 1, 1);
-        if (extra === "tablet") rect(g, 0.97, x + bw / 2, top + head + 2, 3, 2);
+        const head = Math.max(2, Math.round(h * 0.15)), bw = Math.max(3, Math.round(h * 0.24));
+        const top = foot - h, neck = top + head, torso = Math.round(h * 0.38), legs = foot - (neck + 1 + torso);
+        const gap = Math.max(1, Math.round(bw * 0.14)), leg = Math.max(1, Math.floor((bw - gap) / 2));
+        rect(g, v, x - head / 2, top, head, head);                        // cabeza
+        rect(g, v, x - head / 2 + 1, top - 1, head - 2, 1);               // pelo
+        rect(g, v, x - Math.max(1, head / 4), neck, Math.max(1, head / 2), 1); // cuello
+        rect(g, v, x - bw / 2, neck + 1, bw, torso);                      // torso
+        rect(g, v, x - bw / 2, neck + 1 + torso, leg, legs);              // pierna
+        rect(g, v, x - bw / 2 + leg + gap, neck + 1 + torso, leg, legs);  // pierna
+        rect(g, v, x - bw / 2 - 1, neck + 2, 1, Math.round(torso * 0.85)); // brazo
+        rect(g, v, x - head / 2 - 1, top + 1, 1, Math.max(1, head - 2));  // audífonos
+        if (extra === "point") for (let k = 0; k < h * 0.35; k++) rect(g, v, x + bw / 2 + k * 0.6, neck + 2 - k, 1, 1);
+        if (extra === "tablet") rect(g, 0.97, x + bw / 2, neck + 2, 3, 2);
         if (extra === "bino") rect(g, v, x + head / 2, top + 1, 2, 2);
       };
       const tower = (g, x, base, h) => {
@@ -673,12 +681,14 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
           rect(g, 0.25, cx - 1, cy, 2, hz - cy);
           for (let k = -8; k <= 8; k++) rect(g, 0.3, cx + k - 4, cy - 6 + Math.round((k * k) / 12) - 2, 1, 2);
           rect(g, 0.3, cx - 4, cy - 10, 1, 6);
-        } else if (kind === "phone") {                // un ingeniero con el teléfono encendido, la torre lejos
-          tower(g, W * 0.82, hz - 2, Math.round(H * 0.16)); rocket(g, W * 0.82 + 2, hz - 2 - Math.round(H * 0.065), Math.round(H * 0.065));
-          const hh = Math.round(H * 0.42), px0 = Math.round(W * 0.3);
-          person(g, px0, hz + Math.round(H * 0.1), hh, 0.2, "");
-          rect(g, 0.2, px0 + 2, hz + Math.round(H * 0.1) - hh * 0.62, 5, 2);
-          rect(g, 0.98, px0 + 6, hz + Math.round(H * 0.1) - hh * 0.7, 4, 6);
+        } else if (kind === "phone") {                // un ingeniero con el teléfono en la mano; el cohete se dibuja aparte
+          tower(g, W * 0.82, hz - 2, Math.round(H * 0.16));
+          const hh = Math.round(H * 0.42), px0 = Math.round(W * 0.3), foot = hz + Math.round(H * 0.1);
+          person(g, px0, foot, hh, 0.2, "");
+          const arm = foot - Math.round(hh * 0.6);
+          rect(g, 0.2, px0 + 2, arm, Math.round(hh * 0.16), 2);              // antebrazo hacia el teléfono
+          rect(g, 0.2, px0 + 2 + Math.round(hh * 0.16), arm - 5, 4, 7);       // el teléfono
+          rect(g, 0.98, px0 + 3 + Math.round(hh * 0.16), arm - 4, 2, 5);      // su pantalla
         } else if (kind === "launch") {               // el lanzamiento: la torre y la estela
           tower(g, W * 0.3, hz - 1, Math.round(H * 0.22));
         }
@@ -698,7 +708,23 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
           for (let s = 0; s < 14; s++) { ctx.fillStyle = fill(0.92 - s * 0.012); ctx.fillRect(x - 1 - (s % 3 === 0 ? 1 : 0), y + rh + s * 2, 3 + (s > 6 ? 1 : 0), 2); }
           rocket(ctx, x, y, rh); ctx.fillStyle = fill(1); ctx.fillRect(x, y + rh, 1, 2 + (blink ? 1 : 0));
         }
-        if (kind === "phone") { const hh = Math.round(H * 0.42), px0 = Math.round(W * 0.3); ctx.fillStyle = fill(blink ? 1 : 0.9); ctx.fillRect(px0 + 7, Math.round(hz + H * 0.1 - hh * 0.7) + 1, 2, 2); }
+        if (kind === "phone") {
+          const rh = Math.round(H * 0.065), x = Math.round(W * 0.82) + 2, pad = hz - 2 - rh;
+          const since = canvas._launch ? time - canvas._launch : -1;
+          if (since < 0 || since > 7) { rocket(ctx, x, pad, rh); }
+          else {
+            const k = Math.max(0, since - 0.6), y = Math.round(pad - k * k * H * 0.16);
+            const trail = Math.min(Math.round(pad - y) + 4, H);
+            for (let s = 0; s < trail; s += 2) { ctx.fillStyle = fill(0.95 - Math.min(0.25, s / H)); ctx.fillRect(x - 1 - ((s >> 1) % 3 === 0 ? 1 : 0), y + rh + s, 3 + (s > 12 ? 1 : 0), 2); }
+            ctx.fillStyle = fill(1); ctx.fillRect(x, y + rh, 1, 2 + (blink ? 2 : 1));
+            if (y > -rh) rocket(ctx, x, y, rh);
+            // El resplandor del encendido en la base.
+            if (since < 1.6) { ctx.fillStyle = `rgba(255,236,190,${0.6 * (1 - since / 1.6)})`; ctx.fillRect(x - 6, hz - 6, 13, 6); }
+          }
+          // La pantalla del teléfono se enciende con cada aviso.
+          const hh = Math.round(H * 0.42), px0 = Math.round(W * 0.3), arm = hz + Math.round(H * 0.1) - Math.round(hh * 0.6);
+          ctx.fillStyle = fill(blink ? 1 : 0.9); ctx.fillRect(px0 + 3 + Math.round(hh * 0.16), arm - 4, 2, 2);
+        }
         if (kind === "night") { ctx.fillStyle = fill(blink ? 0.97 : 0.6); ctx.fillRect(Math.round(W * 0.62) + 11, hz - 21, 2, 2); }
       };
       setup();
@@ -709,6 +735,21 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
       function tick(now) { if (!visible) return; if (now - last > 110) { last = now; draw(now / 1000); } requestAnimationFrame(tick); }
     }
     document.querySelectorAll("canvas.art").forEach(vignette);
+
+    // «Approve» en la escena del teléfono: el cohete despega y la caja cuenta qué pasa.
+    document.querySelectorAll("[data-approve]").forEach((btn) => {
+      const frame = btn.closest(".frame"), art = frame.querySelector("canvas.art"), status = frame.querySelector("[data-status]");
+      const original = status.innerHTML;
+      const say = (dot, text) => { status.innerHTML = `<span class="dot${dot ? " " + dot : ""}"></span>${text}`; };
+      btn.addEventListener("click", () => {
+        art._launch = performance.now() / 1000;
+        btn.disabled = true; btn.textContent = "Approved";
+        say("", "Approved from this phone");
+        setTimeout(() => say("y", "Deploying to cloud dev…"), 900);
+        setTimeout(() => say("", "Live on cloud dev"), 4200);
+        setTimeout(() => { status.innerHTML = original; btn.disabled = false; btn.textContent = "Approve"; art._launch = 0; }, 8000);
+      });
+    });
 
     const phone = window.innerWidth < 640;
     scene(document.getElementById("scene"), { horizon: phone ? 0.9 : 0.84, pad: phone ? 0.86 : 0.9, people: phone ? 0.12 : 0.22, crew: phone ? 4 : 5, crewAt: phone ? 0.08 : 0.5, crewSpan: phone ? 0.6 : 0.28, offset: 1 });

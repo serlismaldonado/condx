@@ -38,7 +38,7 @@ mod views;
 
 use gpui_kit::*;
 
-actions!(devtool, [Quit]);
+actions!(devtool, [Quit, CloseWindow]);
 
 /// Abre la ventana principal, o la trae al frente si ya está abierta.
 #[cfg(not(target_family = "wasm"))]
@@ -72,7 +72,7 @@ fn open_main_window(cx: &mut App) {
 
 /// El menú de la app (se vuelve a armar al cambiar de idioma).
 pub fn set_app_menus(cx: &mut App) {
-    cx.set_menus([Menu { name: "Condx".into(), items: vec![MenuItem::action(t!("Quit"), Quit)], disabled: false }]);
+    cx.set_menus([Menu { name: "Condx".into(), items: vec![MenuItem::action(t!("Close Window"), CloseWindow), MenuItem::separator(), MenuItem::action(t!("Quit"), Quit)], disabled: false }]);
 }
 
 /// La app de escritorio (el binario `condx`).
@@ -83,12 +83,21 @@ pub fn run_desktop() {
         i18n::set_lang(i18n::Lang::parse(&prefs.get("lang").unwrap_or_default()));
     }
     // Ely y GPUI Kit en una ventana: los archivos de Ely primero, el resto de Kit.
-    application().with_assets(ely_core::Assets::before(logos::WithLogos(assets::Assets))).run(|cx| {
+    let app = application().with_assets(ely_core::Assets::before(logos::WithLogos(assets::Assets)));
+    // Cerrar la ventana no sale (sigue en segundo plano, con el ícono de la barra y los avisos);
+    // tocar el ícono del Dock la vuelve a abrir. Salir es Cmd+Q (o «Salir» en la barra).
+    app.on_reopen(open_main_window);
+    app.run(|cx| {
         init(cx);
         ely_core::init(cx).expect("Ely resources failed to load");
         i18n::apply_ely(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.on_action(|_: &CloseWindow, cx| {
+            if let Some(window) = cx.active_window() {
+                let _ = window.update(cx, |_, window, _| window.remove_window());
+            }
+        });
+        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None), KeyBinding::new("cmd-w", CloseWindow, None)]);
         terminal::bind_keys(cx);
         nav::bind_keys(cx);
         set_app_menus(cx);

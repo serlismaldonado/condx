@@ -764,7 +764,7 @@ fn git_auth_headers() -> Vec<Option<String>> {
 /// Un clon listo para que trabajen los agentes: los submódulos de sus workspaces (`packages/*`,
 /// `apps/*`: el código los importa; otros, como herramientas, no hacen falta) y las dependencias
 /// instaladas (los chequeos corren sin red: no podrían instalarlas).
-fn make_ready(dir: &std::path::Path) -> Result<()> {
+pub fn make_ready(dir: &std::path::Path) -> Result<()> {
     let git = |args: &[&str], header: Option<&str>| {
         let mut cmd = std::process::Command::new("git");
         if let Some(h) = header {

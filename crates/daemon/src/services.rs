@@ -457,7 +457,13 @@ pub fn follow_branch(project: &Project, branch: &str) -> String {
         return format!("branch {here} (the cloud copy has its own changes; it didn't switch to {branch})");
     }
     match git(&["checkout", "-q", "-B", branch, &format!("origin/{branch}")]) {
-        Some(_) => format!("branch {branch}"),
+        Some(_) => {
+            // Otra rama puede traer submódulos o dependencias que la anterior no tenía.
+            if let Err(e) = crate::site::make_ready(&project.repo) {
+                tracing::warn!("site: {} on {branch} isn't ready: {e:#}", project.name);
+            }
+            format!("branch {branch}")
+        }
         None => format!("branch {here} (couldn't switch to {branch})"),
     }
 }

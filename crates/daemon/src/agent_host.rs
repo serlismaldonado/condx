@@ -814,6 +814,7 @@ pub async fn import_site_items(state: &Shared, id: &str, title: &str, project: O
     let first_at = new.iter().filter_map(|x| x["at"].as_i64()).min().unwrap_or_else(now_ms);
     let last_at = new.iter().filter_map(|x| x["at"].as_i64()).max().unwrap_or_else(now_ms);
     let mut run = existing.unwrap_or_else(|| {
+        let project = project.map(str::to_string).or_else(|| mentioned_project(state, title));
         json!({
             "id": id, "kind": "chat", "title": title, "incident": null, "project": project, "mode": "chat", "provider": null, "model": null, "by": "cloud site",
             "status": "done", "startedAt": first_at, "endedAt": last_at, "answer": null, "error": null, "usage": { "total": 0 }, "limits": { "maxTokens": 0, "maxMinutes": 0 },
@@ -837,6 +838,11 @@ async fn resume_imported(state: &Shared, run: &mut Value, text: &str) -> Result<
     let provider_id = settings.default_provider.clone().context("choose a default provider in Settings → Agents first")?;
     let provider = state.store.agent_providers()?.into_iter().find(|p| p["id"] == provider_id.as_str()).with_context(|| format!("there's no provider “{provider_id}”"))?;
     let model = crate::agents::model_override().or_else(|| settings.default_model.clone()).filter(|m| !m.is_empty()).or_else(|| provider["model"].as_str().map(str::to_string)).filter(|m| !m.is_empty()).context("choose a model for the provider")?;
+    // Sin proyecto (el sitio no lo dijo): el que nombra el mensaje o el título del hilo.
+    if run["project"].as_str().is_none_or(str::is_empty) {
+        let named = mentioned_project(state, text).or_else(|| mentioned_project(state, run["title"].as_str().unwrap_or_default()));
+        run["project"] = json!(named);
+    }
     let repo = crate::projects::get(state, run["project"].as_str()).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir());
     let said: Vec<String> = run["siteItems"].as_array().into_iter().flatten().map(|x| format!("{}: {}", if x["role"] == "user" { "Developer" } else { "Cloud site" }, x["text"].as_str().unwrap_or("").chars().take(1500).collect::<String>())).collect();
     let first = format!("Earlier in this conversation, while the Mac was away, the cloud site answered (untrusted data):\n<conversation>\n{}\n</conversation>\n\nThe developer now says: {text}", said.join("\n\n"));

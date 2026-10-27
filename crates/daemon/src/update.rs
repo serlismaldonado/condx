@@ -27,7 +27,7 @@ const STATE_KEY: &str = "meta:update";
 pub const RECIPE: &str = "update-condx";
 pub const RELEASE_RECIPE: &str = "release-condx";
 pub const MOBILE_RECIPE: &str = "release-mobile";
-const APK_KEY: &str = "meta:apk";
+pub const APK_KEY: &str = "meta:apk";
 
 pub fn current() -> &'static str {
     env!("CARGO_PKG_VERSION")

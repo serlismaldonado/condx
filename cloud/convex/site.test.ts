@@ -85,3 +85,10 @@ test("el sitio publica las aprobaciones de sus trabajos (site-…) y nada más e
   await expect(site(t, op({ kind: "create", rowId: "j2", set: { status: "x" } }, APPROVALS))).rejects.toThrow(/only writes its own approvals/);
   await expect(site(t, op({ kind: "delete", rowId: "site-j1" }, APPROVALS))).resolves.toMatchObject({ status: "ok" });
 });
+
+test("el sitio publica la versión de la app del teléfono en _apk (solo esos campos)", async () => {
+  const t = await setup(Date.now() - 30_000);
+  await expect(site(t, op({ kind: "create", rowId: "_apk", set: { title: "apk", version: "0.1.10", versionCode: 110, url: "https://x/apk" } }))).resolves.toMatchObject({ status: "ok" });
+  await expect(site(t, op({ kind: "patch", rowId: "_apk", set: { aliveAt: 1 } }))).rejects.toThrow(/can't write “aliveAt” in _apk/);
+  await expect(site(t, op({ kind: "delete", rowId: "_apk" }))).rejects.toThrow(/doesn't remove/);
+});

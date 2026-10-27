@@ -689,9 +689,15 @@ pub fn fingerprint(public_key_hex: &str) -> String {
 /// HTTP) y la publica. Devuelve el enlace de descarga (en el sitio, con la llave de esa versión).
 pub fn publish_apk(path: &std::path::Path, version: &str, code: i64) -> Result<String> {
     use sha2::{Digest, Sha256};
-    let link = load_link().context("not linked to Condx Cloud")?;
-    let token = load_token().context("not linked to Condx Cloud")?;
-    let api = site_url(&link.url);
+    // La Mac con su enlace, o el sitio en la nube con su identidad (Condx Cloud acepta a los dos).
+    let (api, token, public) = match (load_link(), load_token()) {
+        (Some(link), Some(token)) => (site_url(&link.url), token, link.site()),
+        _ => {
+            let id = crate::site::load().context("not linked to Condx Cloud")?;
+            let api = site_url(&id.url);
+            (api.clone(), id.token, api)
+        }
+    };
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(300)).build();
     let auth = format!("Bearer {token}");
     let post = |route: &str, body: Value| -> Result<Value> {
@@ -708,7 +714,7 @@ pub fn publish_apk(path: &std::path::Path, version: &str, code: i64) -> Result<S
     let sha = format!("{:x}", Sha256::digest(&bytes));
     let r = post("/releases/publish", json!({ "platform": "android", "version": version, "versionCode": code, "storageId": storage_id, "sha256": sha, "size": bytes.len() }))?;
     let route = r["path"].as_str().context("Condx Cloud gave no download path")?;
-    Ok(format!("{}{route}", link.site()))
+    Ok(format!("{public}{route}"))
 }
 
 fn call(kind: &str, path: &str, mut args: Value) -> Result<Value> {
@@ -1762,6 +1768,12 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
         s.projects_built = (now_ms(), published_projects(state));
     }
     trows.insert(PROJECTS_ROW.into(), obj(json!({ "title": "projects", "projects": serde_json::to_string(&s.projects_built.1).unwrap_or_default() })));
+    // Una versión que publicó el sitio en la nube (sin la Mac) puede ser más nueva: la Mac la adopta.
+    let published = s.engine.rows(&format!("threads:{}", s.link.daemon_id)).into_iter().find(|r| r.row.id == APK_ROW).map(|r| r.row.values);
+    let newer = published.as_ref().filter(|p| p.get("versionCode").and_then(Value::as_i64).unwrap_or(0) > crate::update::latest_apk(state).and_then(|a| a["versionCode"].as_i64()).unwrap_or(0));
+    if let Some(p) = newer {
+        let _ = state.store.save_probe(crate::update::APK_KEY, &json!({ "version": p.get("version"), "versionCode": p.get("versionCode"), "url": p.get("url"), "publishedAt": now_ms() }));
+    }
     if let Some(apk) = crate::update::latest_apk(state) {
         trows.insert(APK_ROW.into(), obj(json!({ "title": "apk", "version": apk["version"], "versionCode": apk["versionCode"], "url": apk["url"] })));
     }

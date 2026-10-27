@@ -301,6 +301,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     if let Err(e) = site_approvals(state, s) {
         tracing::warn!("site: approvals: {e:#}");
     }
+    publish_apk_row(state, s);
     *SITE_LOGO_NOW.lock().unwrap() = crate::agents::logo_for(state, None);
     let mac_alive_at = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::MAC_ROW).and_then(|r| r.row.values.get("aliveAt").and_then(Value::as_i64));
     let mac_alive = mac_alive_at.is_some_and(|at| now - at < MAC_GONE_MS);
@@ -1189,6 +1190,29 @@ fn apply_settings(state: &Shared, s: &Session) -> Result<bool> {
         tracing::info!("site: agent settings copied from the Mac");
     }
     Ok(true)
+}
+
+/// Una versión de la app del teléfono que publicó el sitio (sin la Mac): va a la fila `_apk`, de donde
+/// el teléfono saca el aviso «Instalar». Solo si es más nueva que la publicada.
+fn publish_apk_row(state: &Shared, s: &mut Session) {
+    let Some(apk) = crate::update::latest_apk(state) else { return };
+    let code = apk["versionCode"].as_i64().unwrap_or(0);
+    let row = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::APK_ROW);
+    if row.as_ref().and_then(|r| r.row.values.get("versionCode").and_then(Value::as_i64)).unwrap_or(0) >= code {
+        return;
+    }
+    let mut set = Values::new();
+    for (k, v) in [("title", json!("apk")), ("version", apk["version"].clone()), ("versionCode", json!(code)), ("url", apk["url"].clone())] {
+        set.insert(k.into(), v);
+    }
+    let op = match row {
+        Some(_) => OpDraft::patch(&s.threads_scope, crate::cloud::APK_ROW, set),
+        None => OpDraft::create(&s.threads_scope, set).with_row(crate::cloud::APK_ROW),
+    };
+    match s.engine.commit(vec![op], now_ms()) {
+        Ok(_) => tracing::info!("site: phone app {} published to the phone", apk["version"]),
+        Err(e) => tracing::warn!("site: couldn't publish the phone app row: {e}"),
+    }
 }
 
 /// Las aprobaciones de los trabajos del sitio (un release pedido por Claude, por ejemplo): se publican

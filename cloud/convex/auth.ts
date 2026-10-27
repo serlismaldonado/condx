@@ -134,6 +134,12 @@ export async function siteWriteDenied(ctx: QueryCtx, principal: Principal, op: O
     const bad = keys.find((k) => !SITE_OWN_FIELDS.includes(k));
     return bad ? `A cloud site can't write “${bad}”` : null;
   }
+  // `_apk`: la versión de la app del teléfono que el sitio publicó sin la Mac (el teléfono ofrece instalarla).
+  if (op.rowId === "_apk") {
+    if (op.kind === "delete") return "A cloud site doesn't remove the phone app";
+    const bad = keys.find((k) => !["title", "version", "versionCode", "url"].includes(k));
+    return bad ? `A cloud site can't write “${bad}” in _apk` : null;
+  }
   // `_mcp-…`: una llamada del MCP remoto (mcp.ts) que el sitio contesta si la Mac no late.
   const mcp = op.rowId.startsWith("_mcp-");
   if (op.kind !== "patch" || (op.rowId.startsWith("_") && op.rowId !== "_new" && op.rowId !== "_run" && !mcp)) return "A cloud site only answers in threads";

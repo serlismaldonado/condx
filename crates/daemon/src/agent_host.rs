@@ -950,6 +950,12 @@ pub async fn message(state: &Shared, id: &str, text: &str, images: &[Value]) -> 
     run["turnStart"] = json!(run["usage"]["total"].as_u64().unwrap_or(0));
     run["turnAt"] = json!(now_ms());
     let st = state.clone();
+    // A uno que escribe en su worktree: Condx hace el commit al terminar (si no, dice que se lo negaron).
+    let text = if run["worktree"].as_str().is_some_and(|w| !w.is_empty()) {
+        format!("{text}\n\n(Condx note: make the change in the files; Condx commits and pushes it to your branch when you finish. Don't run git add/commit and don't say the commit is pending or denied.)")
+    } else {
+        text.to_string()
+    };
     let (path, body) = (format!("/runs/{id}/message"), json!({ "text": text, "images": images }));
     tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", &path, Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;
     let resumed = run["status"] != "running";

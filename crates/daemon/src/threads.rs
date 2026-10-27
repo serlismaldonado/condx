@@ -232,6 +232,11 @@ fn tool_label(call: &str) -> String {
 /// resultado) y en `took` cuánto tardó (ms); los resultados de herramientas no van sueltos. Mientras
 /// trabaja, nada de la vuelta en curso es respuesta todavía: va en los pasos en curso (el segundo valor,
 /// para la respuesta en vivo).
+/// Lo que el daemon le agrega a un mensaje para el agente (`(Condx note: …)`): no se muestra.
+pub fn without_note(text: &str) -> &str {
+    text.split("\n\n(Condx note:").next().unwrap_or(text)
+}
+
 pub fn fold_steps(transcript: &[Value], running: bool) -> (Vec<Value>, Vec<Value>) {
     let mut out = vec![];
     let mut steps: Vec<Value> = vec![];
@@ -272,7 +277,7 @@ pub fn fold_steps(transcript: &[Value], running: bool) -> (Vec<Value>, Vec<Value
                 }
             }
             _ => {
-                let text = t["text"].as_str().unwrap_or("");
+                let text = without_note(t["text"].as_str().unwrap_or(""));
                 let prose = text.lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n").trim().to_string();
                 let calls: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("→ ")).collect();
                 let thinking = t["thinking"].as_str().map(str::trim).filter(|s| !s.is_empty());
@@ -481,7 +486,7 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
     let mut first_user = true;
     let (folded, _) = fold_steps(chat["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), chat["status"] == "running");
     for t in folded {
-        let text = t["text"].as_str().unwrap_or("");
+        let text = without_note(t["text"].as_str().unwrap_or(""));
         match t["role"].as_str() {
             Some("user") => {
                 let kind = if about && first_user { "context" } else { "user" };
@@ -516,7 +521,7 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
         let mut users = 0;
         let (folded, _) = fold_steps(live["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), live["status"] == "running");
         for t in folded {
-            let text = t["text"].as_str().unwrap_or("");
+            let text = without_note(t["text"].as_str().unwrap_or(""));
             match t["role"].as_str() {
                 Some("user") => {
                     users += 1;

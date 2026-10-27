@@ -935,7 +935,10 @@ const OWN_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "
 /// Cada 5 s si alguna trabaja, si no cada minuto; solo lo que cambió.
 fn publish_runs(state: &Shared, s: &mut Session) -> Result<()> {
     let working = !state.store.runs(None, &["running", "waiting-approval", "waiting-answer"], 1)?.is_empty() || !state.store.agent_runs(&["running"], None)?.is_empty();
-    if now_ms() - s.runs.0 < if working { 5_000 } else { 60_000 } {
+    // Justo cuando algo termina, enseguida (si no, la respuesta tardaba hasta un minuto en el teléfono).
+    static WAS_WORKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let just_done = WAS_WORKING.swap(working, std::sync::atomic::Ordering::Relaxed) && !working;
+    if !just_done && now_ms() - s.runs.0 < if working { 5_000 } else { 60_000 } {
         return Ok(());
     }
     let prev = std::mem::take(&mut s.runs.1);

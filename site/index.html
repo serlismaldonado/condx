@@ -880,8 +880,12 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
         { cls: "left", left: x + 16, top: y - 6 },
         { cls: "right", left: x - w - 16, top: y - 6 },
         { cls: "down", left: clampX(x - w / 2), top: y - h - 46 },
+        { cls: "down", left: clampX(x - 14), top: y - h - 12 },
+        { cls: "down", left: clampX(x - w + 14), top: y - h - 12 },
       ];
-      const fit = tries.find((c) => c.left >= 4 && c.left + w <= vw - 4 && !hits({ left: c.left, right: c.left + w, top: c.top, bottom: c.top + h }, avoid)) || tries[0];
+      const fit = tries.find((c) => c.left >= 4 && c.left + w <= vw - 4 && !hits({ left: c.left, right: c.left + w, top: c.top, bottom: c.top + h }, avoid));
+      // Sin lugar libre junto a esa cabeza, nada encima del texto: quien llama decide.
+      if (!fit) { el.remove(); return null; }
       el.classList.add(fit.cls);
       if (fit.cls === "down") el.style.setProperty("--tail", `${Math.max(10, Math.min(w - 10, x - fit.left))}px`);
       el.style.left = fit.left + window.scrollX + "px"; el.style.top = fit.top + window.scrollY + "px";
@@ -893,14 +897,17 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
     const hero = document.querySelector(".hero");
     const say = (who, text, id) => {
       if (id !== talkId) return;
-      const c = heroScene.crew().find((x) => x.name === who) || heroScene.crew()[0];
+      const crew = heroScene.crew();
+      const c = crew.find((x) => x.name === who) || crew[0];
       document.querySelectorAll(".bubble.old").forEach((b) => b.remove());
       document.querySelectorAll(".bubble").forEach((b) => b.classList.add("old"));
-      const p = heroScene.headOf(c);
-      bubble(p.x, p.y, who, text);
+      // Si su globo taparía el texto (quien está detrás de la portada), lo dice el más cercano con lugar.
+      const near = [...crew].sort((a, b) => Math.abs(a.x - c.x) - Math.abs(b.x - c.x));
+      for (const k of near) {
+        const p = heroScene.headOf(k);
+        if (bubble(p.x, p.y, k.name, text)) return;
+      }
     };
-    // La tripulación reacciona a cada lanzamiento (un diálogo distinto cada vez). Si alguien tocó a un
-    // ingeniero hace poco, esa conversación manda.
     // La conversación empieza con cada lanzamiento: encendido, despegue, ascenso y «ya está arriba».
     // Cada lanzamiento trae otro diálogo. Tocar a un ingeniero lanza el cohete y esa persona abre.
     let hold = false, launches = 0, lead = null;

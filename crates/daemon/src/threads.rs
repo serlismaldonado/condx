@@ -721,6 +721,13 @@ async fn route(state: &Shared, id: &str, text: &str, images: &[Value]) -> Result
             if let Some(r) = to_connection(state, id, text, &name) {
                 return r;
             }
+            // El agente del hilo (uno que empezó con @Fixer): sigue él, en su rama; no otro igual.
+            let own = state.store.agent_run(id)?.and_then(|r| r["role"].as_str().map(str::to_string));
+            if own.as_deref().and_then(|r| catalog_role(state, r)).is_some_and(|r| r.id == name || r.name.to_lowercase() == name) {
+                crate::agent_host::message(state, id, text, images).await?;
+                crate::agent_host::notice_on_reply(state, id);
+                return Ok(json!({ "to": "agent" }));
+            }
             if let Some(r) = catalog_role(state, &name).filter(|_| !rest.is_empty()) {
                 let chat = crate::agent_host::get(state, id).await?;
                 // El proyecto del chat (el invitado trabaja en el mismo repo que el agente del chat).

@@ -638,7 +638,20 @@ fn clone_projects(state: &Shared, s: &mut Session) {
     let have: Vec<String> = state.store.projects().unwrap_or_default().into_iter().map(|p| p.name).collect();
     for p in wanted {
         let (Some(name), Some(url)) = (p["name"].as_str().map(str::to_string), p["url"].as_str().map(str::to_string)) else { continue };
-        if have.contains(&name) || !url.starts_with("https://github.com/") {
+        if have.contains(&name) {
+            // Ya clonado: que tenga sus submódulos y dependencias (una vez por arranque; los clones de antes no los tenían).
+            let mut busy = s.cloning.lock().unwrap();
+            if busy.insert(format!("ready:{name}"), now_ms()).is_none() {
+                let dir = home().join("projects").join(&name);
+                std::thread::spawn(move || {
+                    if let Err(e) = make_ready(&dir) {
+                        tracing::warn!("site: {name} isn't ready to work on: {e:#}");
+                    }
+                });
+            }
+            continue;
+        }
+        if !url.starts_with("https://github.com/") {
             continue;
         }
         {
@@ -733,6 +746,64 @@ fn clone_project(state: &Shared, name: &str, url: &str, branch: &str) -> Result<
         }
     }
     crate::projects::register(state, &dir, Some(name))?;
+    make_ready(&dir)
+}
+
+/// Los tokens de GitHub del sitio como encabezados de git (y al final sin ninguno, para lo público).
+fn git_auth_headers() -> Vec<Option<String>> {
+    use base64::Engine as _;
+    let mut out: Vec<Option<String>> = crate::secrets::accounts_with_prefix("github-token")
+        .iter()
+        .filter_map(|a| crate::secrets::get(a).ok().flatten())
+        .map(|t| Some(format!("http.extraHeader=Authorization: Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{}", t.trim())))))
+        .collect();
+    out.push(None);
+    out
+}
+
+/// Un clon listo para que trabajen los agentes: los submódulos de sus workspaces (`packages/*`,
+/// `apps/*`: el código los importa; otros, como herramientas, no hacen falta) y las dependencias
+/// instaladas (los chequeos corren sin red: no podrían instalarlas).
+fn make_ready(dir: &std::path::Path) -> Result<()> {
+    let git = |args: &[&str], header: Option<&str>| {
+        let mut cmd = std::process::Command::new("git");
+        if let Some(h) = header {
+            cmd.args(["-c", h]);
+        }
+        cmd.env("GIT_TERMINAL_PROMPT", "0").arg("-C").arg(dir).args(args).output()
+    };
+    if dir.join(".gitmodules").exists() {
+        let listed = git(&["config", "-f", ".gitmodules", "--get-regexp", "path"], None)?;
+        let paths: Vec<String> = String::from_utf8_lossy(&listed.stdout).lines().filter_map(|l| l.split_whitespace().nth(1)).filter(|p| p.starts_with("packages/") || p.starts_with("apps/")).filter(|p| !dir.join(p).join(".git").exists()).map(str::to_string).collect();
+        if !paths.is_empty() {
+            let mut last = String::new();
+            let ok = git_auth_headers().iter().any(|h| {
+                let mut args = vec!["submodule", "update", "--init", "--"];
+                args.extend(paths.iter().map(String::as_str));
+                match git(&args, h.as_deref()) {
+                    Ok(o) if o.status.success() => true,
+                    Ok(o) => {
+                        last = devtool_core::redact(&String::from_utf8_lossy(&o.stderr)).chars().take(300).collect();
+                        false
+                    }
+                    Err(_) => false,
+                }
+            });
+            if !ok {
+                bail!("couldn't fetch the submodules {} (a GitHub token needs Contents: read on them): {last}", paths.join(", "));
+            }
+            tracing::info!("site: submodules {} ready in {}", paths.join(", "), dir.display());
+        }
+    }
+    if dir.join("package.json").exists() && !dir.join("node_modules").is_dir() {
+        let bun = dir.join("bun.lock").exists() || dir.join("bun.lockb").exists();
+        let (program, args): (&str, &[&str]) = if bun { ("bun", &["install"]) } else if dir.join("package-lock.json").exists() { ("npm", &["ci"]) } else { ("npm", &["install"]) };
+        let out = std::process::Command::new(program).args(args).current_dir(dir).output().with_context(|| format!("couldn't run {program}"))?;
+        if !out.status.success() {
+            bail!("{program} {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).lines().rev().take(3).collect::<Vec<_>>().join(" | "));
+        }
+        tracing::info!("site: dependencies installed in {}", dir.display());
+    }
     Ok(())
 }
 

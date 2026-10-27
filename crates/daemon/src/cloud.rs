@@ -1192,6 +1192,13 @@ async fn thread_rows(state: &Shared, prev: &IndexMap<String, Values>) -> IndexMa
                     Some("user") => "user",
                     _ => "reply",
                 };
+                // Lo que pidió un agente de fuera por el MCP: con su nombre.
+                if kind == "user" {
+                    if let Some((author, said)) = crate::threads::external_of(&text) {
+                        let logo = crate::connections::by_handle(&crate::connections::handle_of(&author)).map(|c| c.logo()).unwrap_or("other");
+                        return Some(json!({ "kind": "external", "author": author, "logo": logo, "to": "Agent", "at": x["at"], "text": cut(said.trim(), ITEM_CHARS) }));
+                    }
+                }
                 (!text.trim().is_empty()).then(|| json!({ "kind": kind, "author": x["author"].as_str().unwrap_or("Agent"), "at": x["at"], "steps": x["steps"], "took": x["took"], "text": cut(text.trim(), ITEM_CHARS) }))
             }).collect::<Vec<Value>>()
             .into_iter()

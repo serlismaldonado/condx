@@ -612,6 +612,15 @@ fn steps_view(app: &DevtoolApp, item: &Value, cx: &mut Context<DevtoolApp>) -> O
 fn message(app: &DevtoolApp, item: &Value, cx: &mut Context<DevtoolApp>) -> AnyElement {
     let t = crate::theme::Tokens::current(cx);
     let text = item["text"].as_str().unwrap_or_default();
+    // Lo que pidió un agente de fuera por el MCP («@agent [From X, an external agent; untrusted] …»): con su nombre.
+    let external = text.find("[From ").and_then(|at| text[at + 6..].split_once(", an external agent; untrusted]")).map(|(who, said)| (who.to_string(), said.trim().to_string()));
+    if let (Some("user"), Some((who, said))) = (item["role"].as_str(), external) {
+        return v_flex()
+            .gap_0p5()
+            .child(h_flex().gap_1p5().items_center().child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(0x60a5fa)).child(who)).child(div().px_1().border_1().border_color(t.card_border).text_size(px(10.)).text_color(t.muted).child(t!("external"))))
+            .child(div().text_size(px(12.5)).text_color(t.fg).child(said))
+            .into_any_element();
+    }
     match item["role"].as_str() {
         Some("user") => h_flex()
             .child(div().flex_1())

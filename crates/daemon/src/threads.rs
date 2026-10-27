@@ -60,7 +60,7 @@ fn usage(state: &Shared, run: &Run) -> u64 {
 }
 
 /// Lo que un agente externo le pasó a un agente de Condx: `[From X, an external agent; untrusted] …`.
-fn external_of(text: &str) -> Option<(String, String)> {
+pub(crate) fn external_of(text: &str) -> Option<(String, String)> {
     let at = text.find("[From ")?;
     let rest = &text[at + 6..];
     let (author, after) = rest.split_once(", an external agent; untrusted]")?;
@@ -486,7 +486,14 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
             Some("user") => {
                 let kind = if about && first_user { "context" } else { "user" };
                 first_user = false;
-                items.push(json!({ "at": t["at"], "kind": kind, "text": text }));
+                // Lo que pidió un agente de fuera (por el MCP, con «@agent»): con su nombre, no como de la persona.
+                match external_of(text) {
+                    Some((author, said)) => {
+                        let logo = crate::connections::by_handle(&crate::connections::handle_of(&author)).map(|c| c.logo()).unwrap_or("other");
+                        items.push(json!({ "at": t["at"], "kind": "external", "author": author, "logo": logo, "text": said, "to": "Agent" }));
+                    }
+                    None => items.push(json!({ "at": t["at"], "kind": kind, "text": text })),
+                }
             }
             Some("assistant") => {
                 let prose: String = text.lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n").trim().to_string();

@@ -287,6 +287,12 @@ fn fix_base(repo: &std::path::Path, incident: &Value) -> String {
             }
         }
     }
+    // Sin esa rama (un repo sin `dev`): la principal de GitHub, no lo que esté abierto en la copia local.
+    for r in ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"] {
+        if let Ok(sha) = git(repo, &["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")]) {
+            return sha;
+        }
+    }
     git(repo, &["rev-parse", "HEAD"]).unwrap_or_else(|_| "HEAD".into())
 }
 
@@ -596,7 +602,11 @@ pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str,
     // El repo del rol, si tiene uno para este pedido (Mayer trabaja en Condx); si no, el del proyecto.
     // Solo lo que pidió la persona (no la conversación que va de contexto) elige el repo.
     let ask = text.rsplit("The developer asks:").next().unwrap_or(text);
-    let repo = crate::roles::repo_for(role, ask).filter(|p| p.join(".git").exists()).unwrap_or_else(|| crate::projects::get(state, project).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir()));
+    // Uno sin repos propios (Fixer) trabaja en el repo que nombra el pedido si es uno que Condx conoce
+    // (los de Mayer: condx, condx-mobile); si no, en el del proyecto.
+    let in_chat = matches!(flow, "chat" | "cloud site");
+    let named = if role.repos.is_empty() && in_chat { crate::roles::repo_named(state, ask) } else { None };
+    let repo = crate::roles::repo_for(role, ask).or(named).filter(|p| p.join(".git").exists()).unwrap_or_else(|| crate::projects::get(state, project).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir()));
     // Un agente que escribe trabaja en su worktree (rama condx/fix-…), como el modo arreglo.
     let write = role.mode == crate::roles::Mode::Write;
     let (cwd, branch, base) = if write {

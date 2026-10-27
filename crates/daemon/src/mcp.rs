@@ -440,7 +440,12 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
         "list_agents" => json!(crate::roles::list(state).into_iter().filter(|r| r.enabled).map(|r| json!({ "id": r.id, "name": r.name, "mode": r.mode, "instructions": r.instructions.chars().take(400).collect::<String>(), "provider": crate::agents::logo_for(state, r.provider.as_deref()) })).collect::<Vec<_>>()),
         "start_chat" => {
             need(Scope::Orchestrate)?;
-            let run = crate::agent_host::start_chat(state, args["text"].as_str().unwrap_or_default(), args["project"].as_str(), by).await?;
+            let text = args["text"].as_str().unwrap_or_default();
+            // `@agente …` al principio: ese agente contesta el hilo (como desde el teléfono).
+            let run = match crate::threads::start_with_role(state, text, args["project"].as_str(), by, &[]).await? {
+                Some(run) => run,
+                None => crate::agent_host::start_chat(state, text, args["project"].as_str(), by).await?,
+            };
             json!({ "thread": run["id"], "status": run["status"] })
         }
         "give_task" => {

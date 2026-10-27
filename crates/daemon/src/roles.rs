@@ -67,6 +67,38 @@ pub fn repo_for(role: &Role, text: &str) -> Option<std::path::PathBuf> {
     (!picked.path.trim().is_empty()).then_some(path)
 }
 
+/// El repo que nombra un pedido, entre los que Condx conoce (los repos propios de los agentes: condx,
+/// condx-mobile). Tiene que nombrar el repo («condx-mobile») o su familia («condx», «la app móvil de
+/// Condx»): las palabras solas («móvil») no alcanzan, porque el proyecto puede tener su propia app
+/// móvil. Con la familia nombrada, gana el repo cuyas palabras aparecen; si no, el que se llama así.
+pub fn repo_named(state: &crate::state::Shared, text: &str) -> Option<std::path::PathBuf> {
+    let repos: Vec<RoleRepo> = list(state).into_iter().flat_map(|r| r.repos).filter(|r| !r.path.trim().is_empty()).collect();
+    pick_repo(&repos, text)
+}
+
+fn pick_repo(repos: &[RoleRepo], text: &str) -> Option<std::path::PathBuf> {
+    let plain = |s: &str| s.to_lowercase().replace(['á', 'à'], "a").replace('é', "e").replace('í', "i").replace('ó', "o").replace('ú', "u");
+    let said = plain(text);
+    let words: Vec<&str> = said.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_')).filter(|w| !w.is_empty()).collect();
+    let name = |r: &RoleRepo| std::path::Path::new(r.path.trim()).file_name().and_then(|n| n.to_str()).map(plain).unwrap_or_default();
+    let r = repos.iter().find(|r| !name(r).is_empty() && words.contains(&name(r).as_str()))?;
+    // El nombre exacto; pero «condx» con palabras de otro repo de la familia («móvil») es ese otro.
+    let family = name(r);
+    let more = repos.iter().filter(|o| name(o) != family && name(o).starts_with(&format!("{family}-"))).find(|o| o.when.iter().any(|w| !w.trim().is_empty() && said.contains(&plain(w.trim()))));
+    Some(std::path::PathBuf::from(more.unwrap_or(r).path.trim()))
+}
+
+#[cfg(test)]
+#[test]
+fn el_repo_que_nombra_el_pedido() {
+    let repos = [RoleRepo { path: "/src/condx".into(), when: vec![], remote: None }, RoleRepo { path: "/src/condx-mobile".into(), when: vec!["móvil".into(), "android".into()], remote: None }];
+    let pick = |text: &str| pick_repo(&repos, text).map(|p| p.display().to_string());
+    assert_eq!(pick("En la app móvil de Condx agrega archivar").as_deref(), Some("/src/condx-mobile"));
+    assert_eq!(pick("en condx-mobile cambia el ícono").as_deref(), Some("/src/condx-mobile"));
+    assert_eq!(pick("en la app de escritorio de Condx").as_deref(), Some("/src/condx"));
+    assert_eq!(pick("en la app móvil del ERP agrega un filtro"), None);
+}
+
 impl Default for Role {
     fn default() -> Self {
         Self {

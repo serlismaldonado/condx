@@ -149,15 +149,19 @@ fn send_about(state: &Shared, kind: &str, m: Message, about: Value) {
 }
 
 /// Donde quedan los avisos recientes entre reinicios (el teléfono los ve en su campana).
-fn recent_path() -> std::path::PathBuf {
-    crate::config::home().join("notifications.json")
+fn recent_path() -> Option<std::path::PathBuf> {
+    // Las pruebas no tocan el archivo de verdad (sus incidentes simulados aparecían en el teléfono).
+    if cfg!(test) {
+        return None;
+    }
+    Some(crate::config::home().join("notifications.json"))
 }
 
 /// Carga los avisos guardados la primera vez (sin volver a mostrarlos como nuevos en la Mac).
 fn load_recent(r: &mut (u64, std::collections::VecDeque<Value>)) {
     static LOADED: std::sync::Once = std::sync::Once::new();
     LOADED.call_once(|| {
-        let saved: Vec<Value> = std::fs::read_to_string(recent_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let saved: Vec<Value> = recent_path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         r.1 = saved.into_iter().map(|mut n| {
             n["id"] = json!(0);
             n
@@ -180,7 +184,9 @@ fn remember(kind: &str, m: &Message, link: &str) {
     while r.1.len() > 50 {
         r.1.pop_front();
     }
-    let _ = std::fs::write(recent_path(), serde_json::to_string(&r.1).unwrap_or_default());
+    if let Some(p) = recent_path() {
+        let _ = std::fs::write(p, serde_json::to_string(&r.1).unwrap_or_default());
+    }
 }
 
 /// Envía si está encendido y el tipo de aviso lo está; los errores van al log (no frenan nada).

@@ -41,7 +41,8 @@ test("con la Mac apagada contesta en sus campos y crea sus hilos; nada más", as
   // Lo de la Mac no se toca: sus campos, sus filas especiales ni otros alcances.
   await expect(site(t, op({ kind: "patch", rowId: "chat-1", set: { items: "[]" } }))).rejects.toThrow(/can't write “items”/);
   await expect(site(t, op({ kind: "patch", rowId: "_mac", set: { siteFor: "x" } }))).rejects.toThrow(/only answers in threads/);
-  await expect(site(t, op({ kind: "create", rowId: "j1", set: { status: "x" } }, `approvals:${A.daemonId}`))).rejects.toThrow(/only writes threads/);
+  await expect(site(t, op({ kind: "create", rowId: "j1", set: { status: "x" } }, `approvals:${A.daemonId}`))).rejects.toThrow(/only writes its own approvals/);
+  await expect(site(t, op({ kind: "create", rowId: "j1", set: { status: "x" } }, `jobs:${A.daemonId}`))).rejects.toThrow(/only writes threads/);
 });
 
 test("con la Mac latiendo no contesta en los hilos de la Mac (los suyos sí)", async () => {
@@ -73,4 +74,14 @@ test("con el interruptor «que conteste la nube», el sitio contesta aunque la M
   await expect(site(t, op({ kind: "patch", rowId: "chat-1", set: { siteFor: "r1" } }))).rejects.toThrow(/The Mac is answering/);
   await t.mutation(api.sync.push, { token: A.token, group: group(op({ kind: "patch", rowId: "_mac", set: { handover: true } })), protocolVersion: PV });
   await expect(site(t, op({ kind: "patch", rowId: "chat-1", set: { siteFor: "r1" } }))).resolves.toMatchObject({ status: "ok" });
+});
+
+test("el sitio publica las aprobaciones de sus trabajos (site-…) y nada más en ese alcance", async () => {
+  const t = await setup(Date.now() - 30_000);
+  const APPROVALS = `approvals:${A.daemonId}`;
+  await expect(site(t, op({ kind: "create", rowId: "site-j1", set: { recipe: "release-mobile", title: "Release", status: "waiting-approval", approval: "simple", createdAt: 1 } }, APPROVALS))).resolves.toMatchObject({ status: "ok" });
+  await expect(site(t, op({ kind: "patch", rowId: "site-j1", set: { phoneResult: "approved", status: "running" } }, APPROVALS))).resolves.toMatchObject({ status: "ok" });
+  await expect(site(t, op({ kind: "patch", rowId: "site-j1", set: { decision: "approve" } }, APPROVALS))).rejects.toThrow(/can't write “decision”/);
+  await expect(site(t, op({ kind: "create", rowId: "j2", set: { status: "x" } }, APPROVALS))).rejects.toThrow(/only writes its own approvals/);
+  await expect(site(t, op({ kind: "delete", rowId: "site-j1" }, APPROVALS))).resolves.toMatchObject({ status: "ok" });
 });

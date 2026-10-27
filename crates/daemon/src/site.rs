@@ -215,6 +215,8 @@ struct Session {
     transport: ConvexHttpTransport,
     keys_scope: String,
     threads_scope: String,
+    /// Las aprobaciones de sus trabajos (`site-<trabajo>` en el alcance de la Mac): el teléfono decide.
+    approvals_scope: String,
     age: age::x25519::Identity,
     bell: crate::bell::Bell,
     rung_at: i64,
@@ -262,9 +264,11 @@ fn open(id: &Identity, rt: tokio::runtime::Handle) -> Result<Session> {
     engine.enable_scope(&keys_scope, None).map_err(|e| anyhow!("{e}"))?;
     let threads_scope = format!("threads:{}", id.daemon_id);
     engine.enable_scope(&threads_scope, None).map_err(|e| anyhow!("{e}"))?;
+    let approvals_scope = format!("approvals:{}", id.daemon_id);
+    engine.enable_scope(&approvals_scope, None).map_err(|e| anyhow!("{e}"))?;
     let age = id.age.parse::<age::x25519::Identity>().map_err(|e| anyhow!("bad encryption identity in site.json: {e}"))?;
-    let bell = crate::bell::Bell::start(&id.url, &id.token, &[keys_scope.clone(), threads_scope.clone()], localfirst_core::PROTOCOL_VERSION);
-    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, age, bell, rung_at: 0, busy_at: now_ms(), stopping: false, rt, answering: IndexMap::new(), taken: Default::default(), runs: (0, IndexMap::new()), cloning: Default::default(), overview_at: 0, service_asked_at: 0, mcp: Default::default() })
+    let bell = crate::bell::Bell::start(&id.url, &id.token, &[keys_scope.clone(), threads_scope.clone(), approvals_scope.clone()], localfirst_core::PROTOCOL_VERSION);
+    Ok(Session { engine, transport: ConvexHttpTransport::new(&id.url, &id.token), keys_scope, threads_scope, approvals_scope, age, bell, rung_at: 0, busy_at: now_ms(), stopping: false, rt, answering: IndexMap::new(), taken: Default::default(), runs: (0, IndexMap::new()), cloning: Default::default(), overview_at: 0, service_asked_at: 0, mcp: Default::default() })
 }
 
 /// Una vuelta: timbre (en vivo o por HTTP) y sincronizar; luego aplicar las claves que cambiaron.
@@ -274,7 +278,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let rung = if due {
         s.bell.take();
         s.rung_at = now;
-        Some(s.transport.doorbell(&[s.keys_scope.clone(), s.threads_scope.clone()], localfirst_core::PROTOCOL_VERSION).map_err(|e| anyhow!("{e}"))?)
+        Some(s.transport.doorbell(&[s.keys_scope.clone(), s.threads_scope.clone(), s.approvals_scope.clone()], localfirst_core::PROTOCOL_VERSION).map_err(|e| anyhow!("{e}"))?)
     } else {
         match s.bell.take() {
             Some(v) if v["status"] == "upgradeRequired" => Some(Doorbell::UpgradeRequired),
@@ -293,6 +297,9 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     let settings = apply_settings(state, s)?;
     if let Err(e) = apply_flows(state, s) {
         tracing::warn!("site: couldn't copy the flows: {e:#}");
+    }
+    if let Err(e) = site_approvals(state, s) {
+        tracing::warn!("site: approvals: {e:#}");
     }
     *SITE_LOGO_NOW.lock().unwrap() = crate::agents::logo_for(state, None);
     let mac_alive_at = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::MAC_ROW).and_then(|r| r.row.values.get("aliveAt").and_then(Value::as_i64));
@@ -1182,6 +1189,76 @@ fn apply_settings(state: &Shared, s: &Session) -> Result<bool> {
         tracing::info!("site: agent settings copied from the Mac");
     }
     Ok(true)
+}
+
+/// Las aprobaciones de los trabajos del sitio (un release pedido por Claude, por ejemplo): se publican
+/// como `site-<trabajo>` en las aprobaciones de la Mac (la Mac no las toca) y el teléfono decide igual
+/// que con las de la Mac, con su firma; aquí se verifica y se aplica.
+fn site_approvals(state: &Shared, s: &mut Session) -> Result<()> {
+    let scope = s.approvals_scope.clone();
+    let daemon_id = s.threads_scope.trim_start_matches("threads:").to_string();
+    let rows: Vec<_> = s.engine.rows(&scope).into_iter().filter(|r| r.row.id.starts_with("site-")).collect();
+    let devices: Vec<crate::cloud::TrustedDevice> = s
+        .engine
+        .rows(&s.threads_scope)
+        .into_iter()
+        .find(|r| r.row.id == crate::cloud::DEVICES_ROW)
+        .and_then(|r| r.row.values.get("devices").and_then(Value::as_str).and_then(|t| serde_json::from_str(t).ok()))
+        .unwrap_or_default();
+    let mut drafts = vec![];
+    // Las decisiones del teléfono.
+    for r in &rows {
+        let Some(sig) = r.row.values.get("signature").and_then(Value::as_str) else { continue };
+        if r.pending || !s.taken.insert(format!("{}:{sig}", r.row.id)) {
+            continue;
+        }
+        let job_id = r.row.id.trim_start_matches("site-");
+        let result = match state.store.job(job_id) {
+            Ok(Some(job)) => crate::cloud::decide_from_phone(state, &daemon_id, &r.row.id, job_id, &job, &r.row.values, &devices),
+            _ => "rejected: job not found".to_string(),
+        };
+        tracing::info!("site: phone decision on {job_id}: {result}");
+        let mut set = Values::new();
+        set.insert("phoneResult".into(), json!(result));
+        drafts.push(OpDraft::patch(&scope, &r.row.id, set));
+    }
+    // Las que esperan, y en qué quedaron las que ya no (se quitan a los 10 minutos).
+    let jobs = state.store.jobs(&[], 40).unwrap_or_default();
+    let now = now_ms();
+    for job in &jobs {
+        let Some(id) = job["id"].as_str() else { continue };
+        let row_id = format!("site-{id}");
+        let have = rows.iter().find(|r| r.row.id == row_id);
+        let waiting = job["status"] == "waiting-approval";
+        if !waiting && have.is_none() {
+            continue;
+        }
+        let mut want = crate::cloud::approval_fields(&crate::cloud::job_row(job));
+        want.shift_remove("phoneResult");
+        match have {
+            None => drafts.push(OpDraft::create(&scope, want).with_row(&row_id)),
+            Some(h) => {
+                let ended = job["endedAt"].as_i64().unwrap_or(0);
+                if !waiting && ended > 0 && now - ended > 10 * 60_000 {
+                    drafts.push(OpDraft { scope: scope.clone(), kind: Some(localfirst_core::OpKind::Delete), row_id: Some(row_id.clone()), ..Default::default() });
+                    continue;
+                }
+                want.retain(|k, v| h.row.values.get(k) != Some(v));
+                if !want.is_empty() && !h.pending {
+                    drafts.push(OpDraft::patch(&scope, &row_id, want));
+                }
+            }
+        }
+    }
+    if !drafts.is_empty() {
+        for d in drafts {
+            if let Err(e) = s.engine.commit(vec![d], now) {
+                tracing::warn!("site: couldn't queue an approval change: {e}");
+            }
+        }
+        let _ = crate::cloud::block_on(sync_once(&mut s.engine, &s.transport, now_ms, 50));
+    }
+    Ok(())
 }
 
 /// Los flujos de la Mac (fila `_flows`): los mismos en el sitio, con el mismo id. Los de un proyecto

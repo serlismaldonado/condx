@@ -542,6 +542,20 @@ pub fn incident_row(inc: &Value, workflows: &[(String, String)]) -> Values {
     }))
 }
 
+/// La fila de un trabajo (sin argumentos: pueden traer datos de funciones; solo el commit).
+pub(crate) fn job_row(job: &Value) -> Values {
+    obj(json!({
+        "recipe": job["recipe"], "title": job["title"], "env": job["env"], "envKind": job["envKind"], "status": job["status"],
+        "approval": job["approval"]["level"].as_str().or(job["approval"].as_str()), "requestedBy": job["requestedBy"],
+        "createdAt": job["createdAt"], "startedAt": job["startedAt"], "endedAt": job["endedAt"], "error": short_error(&job["error"]), "commit": job["commit"],
+    }))
+}
+
+/// Lo que ve el teléfono de una aprobación.
+pub(crate) fn approval_fields(row: &Values) -> Values {
+    APPROVAL_FIELDS.iter().filter_map(|f| row.get(*f).map(|v| (f.to_string(), v.clone()))).collect()
+}
+
 /// Filas por alcance a partir del estado del daemon. Puro dado lo leído: sin red ni reloj.
 pub fn desired(daemon_id: &str, environments: &[devtool_core::Environment], probes: &dyn Fn(&str) -> Option<Value>, jobs: &[Value]) -> Desired {
     let mut out: Desired = IndexMap::new();
@@ -560,13 +574,9 @@ pub fn desired(daemon_id: &str, environments: &[devtool_core::Environment], prob
     for job in jobs.iter().take(RECENT_JOBS) {
         let Some(id) = job["id"].as_str() else { continue };
         // Sin argumentos (pueden traer datos de funciones): solo el commit, que no es secreto.
-        let row = obj(json!({
-            "recipe": job["recipe"], "title": job["title"], "env": job["env"], "envKind": job["envKind"], "status": job["status"],
-            "approval": job["approval"]["level"].as_str().or(job["approval"].as_str()), "requestedBy": job["requestedBy"],
-            "createdAt": job["createdAt"], "startedAt": job["startedAt"], "endedAt": job["endedAt"], "error": short_error(&job["error"]), "commit": job["commit"],
-        }));
+        let row = job_row(job);
         if job["status"] == "waiting-approval" {
-            approvals.insert(id.to_string(), APPROVAL_FIELDS.iter().filter_map(|f| row.get(*f).map(|v| (f.to_string(), v.clone()))).collect());
+            approvals.insert(id.to_string(), approval_fields(&row));
         }
         recent.insert(id.to_string(), row);
     }
@@ -1472,7 +1482,7 @@ fn process_decisions(state: &Shared, s: &mut Session) {
         }
         let job_id = row.row.id.clone();
         let result = match state.store.job(&job_id) {
-            Ok(Some(job)) => decide_from_phone(state, &s.link.daemon_id, &job_id, &job, &row.row.values, &devices),
+            Ok(Some(job)) => decide_from_phone(state, &s.link.daemon_id, &job_id, &job_id, &job, &row.row.values, &devices),
             _ => "rejected: job not found".to_string(),
         };
         tracing::info!("cloud: phone decision on {job_id}: {result}");
@@ -1480,9 +1490,10 @@ fn process_decisions(state: &Shared, s: &mut Session) {
     }
 }
 
-fn decide_from_phone(state: &Shared, daemon_id: &str, job_id: &str, job: &Value, row: &Values, devices: &[TrustedDevice]) -> String {
+/// `signed_id`: la fila que firmó el teléfono (el id del trabajo en la Mac; `site-<id>` en el sitio).
+pub(crate) fn decide_from_phone(state: &Shared, daemon_id: &str, signed_id: &str, job_id: &str, job: &Value, row: &Values, devices: &[TrustedDevice]) -> String {
     let created = job["createdAt"].as_i64().unwrap_or(0);
-    let d = match verify_decision(daemon_id, job_id, created, row, devices, now_ms()) {
+    let d = match verify_decision(daemon_id, signed_id, created, row, devices, now_ms()) {
         Ok(d) => d,
         Err(e) => return format!("rejected: {e}"),
     };

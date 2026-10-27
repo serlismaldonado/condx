@@ -107,6 +107,8 @@ export function writeDenied(principal: Principal, op: Op): string | null {
 const SITE_OWN_FIELDS = ["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "result", "resultFor", "overview"];
 /** En un hilo de la Mac (o en `_new`), aparte de lo de la Mac: sus respuestas y a qué pedido contestó. */
 const SITE_MAC_FIELDS = ["siteItems", "siteFor", "siteResult"];
+/** Lo que escribe el sitio en una aprobación suya (los mismos campos que la Mac en las suyas). */
+const SITE_APPROVAL_FIELDS = ["recipe", "title", "env", "envKind", "status", "approval", "requestedBy", "createdAt", "phoneResult"];
 /** Un latido de la Mac más viejo que esto: la Mac está apagada (late cada minuto; al irse en orden avisa con 0). */
 export const MAC_GONE_MS = 3 * 60_000;
 
@@ -117,6 +119,13 @@ export const MAC_GONE_MS = 3 * 60_000;
 export async function siteWriteDenied(ctx: QueryCtx, principal: Principal, op: Op): Promise<string | null> {
   const parsed = parseScope(op.scope);
   if (!parsed || parsed.daemonId !== principal.daemonId) return "No access to this scope";
+  // Las aprobaciones de sus propios trabajos (`site-<trabajo>`): las crea, las actualiza y las quita.
+  if (parsed.kind === "approvals") {
+    if (!op.rowId.startsWith("site-")) return "A cloud site only writes its own approvals";
+    if (op.kind === "delete") return null;
+    const bad = Object.keys(op.set ?? {}).find((k) => !SITE_APPROVAL_FIELDS.includes(k));
+    return bad ? `A cloud site can't write “${bad}” in an approval` : null;
+  }
   if (parsed.kind !== "threads") return "A cloud site only writes threads";
   if (op.sets && Object.keys(op.sets).length > 0) return "A cloud site doesn't write sets";
   const keys = Object.keys(op.set ?? {});

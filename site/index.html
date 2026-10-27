@@ -48,8 +48,9 @@
     /* El texto baja hacia el centro de la portada (sin lago que tapar, como en boat): el cielo queda arriba. */
     .hero h1 { font-size: clamp(38px, 6vw, 60px); line-height: 1.06; max-width: 640px; margin-top: clamp(28px, 8vh, 90px); }
     /* El símbolo de Convex dentro del título, delante de la palabra. */
-    .nb { white-space: nowrap; }
-    h1 .cvx, h2 .cvx { display: inline-block; height: 0.78em; width: auto; vertical-align: -0.06em; margin: 0 0.06em 0 0; }
+    /* «Convex» con el logotipo de Convex (su símbolo y su letra): el logotipo apoyado en la línea base
+       del texto, a la altura de las minúsculas del título. */
+    .cvx-logo { display: inline-block; height: 0.8em; width: auto; vertical-align: -0.115em; margin: 0 0.04em; }
     .hero .lede { font-size: 17px; max-width: 560px; color: #efe2c0; margin: 18px 0 28px; }
 
     /* La caja de instalar, con pestañas (como boat). */
@@ -233,7 +234,7 @@
           <a class="btn-white" href="#install">Install</a>
         </div>
       </nav>
-      <h1>AI agents and safe deploys for your <span class="nb"><img class="cvx" src="assets/convex/symbol-color.svg" alt="">Convex</span> projects</h1>
+      <h1>AI agents and safe deploys for your <img class="cvx-logo" src="assets/convex/logo-on-dark.svg" alt="Convex" width="282" height="51"> projects</h1>
       <p class="lede">They fix, review and preview changes on their own branches. You steer them from your Mac or your phone, and nothing ships without your approval.</p>
       <div class="term" data-tabs>
         <div class="tabs"><button class="on" data-cmd="curl -fsSL https://condx.vercel.app/install.sh | bash">macOS</button><button data-cmd="claude mcp add condx -- ~/.condx/daemon/bin/condxd mcp">Claude Code</button><button data-cmd="git clone https://github.com/serlismaldonado/condx.git">Source</button></div>
@@ -343,7 +344,7 @@
 
     <section id="desktop">
       <div class="wrap">
-        <h2>Your <span class="nb"><img class="cvx" src="assets/convex/symbol-color.svg" alt="">Convex</span> backend, all in one app</h2>
+        <h2>Your <img class="cvx-logo" src="assets/convex/logo-on-light.svg" alt="Convex" width="282" height="51"> backend, all in one app</h2>
         <p class="sub">Every environment, from your local backend to production, with its data, schema and functions. Take a look, or try the real app right here: it runs in your browser on a sample project.</p>
         <div class="tour" id="tour">
           <div class="ttabs" role="tablist" aria-label="Parts of the app">

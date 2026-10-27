@@ -517,16 +517,16 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
           const zone = Math.round(H * 0.24);
           for (let x = 0; x < W; x++) {
             const col = Math.floor(x / 3);
-            const jag = (Math.sin(col * 0.41 + 0.7) * 0.55 + Math.sin(col * 0.13 + 2.1) * 0.3 + Math.sin(col * 1.31) * 0.15) * zone * 0.14;
+            const jag = (Math.sin(col * 0.41 + 0.7) * 0.55 + Math.sin(col * 0.13 + 2.1) * 0.3 + Math.sin(col * 1.31) * 0.15) * zone * 0.05;
             for (let k = 0; k < zone; k++) {
               const y = opts.fadeBottom ? H - zone + k : zone - 1 - k;
               const p = Math.max(0, Math.min(1, (k + jag) / zone));
               // El tono sube por la paleta (ámbar → crema) y termina en el color de la página; la
               // opacidad, en 6 escalones con tramado.
               const th = bayer[(y % 4) * 4 + (x % 4)] / 16;
-              const a = Math.min(1, Math.floor(Math.pow(p, 0.7) * 1.4 * 8 + th) / 8);
+              const a = Math.min(1, Math.floor(p * p * (3 - 2 * p) * 14 + th) / 14);
               if (a <= 0) continue;
-              const c = color(0.14 + p * 0.86), mix = Math.max(0, (p - 0.6) / 0.4);
+              const c = color(0.16 + p * 0.48), mix = Math.min(1, Math.max(0, (p - 0.2) * 1.3));
               const i = (y * W + x) * 4;
               m.data[i] = c[0] + (end[0] - c[0]) * mix; m.data[i + 1] = c[1] + (end[1] - c[1]) * mix; m.data[i + 2] = c[2] + (end[2] - c[2]) * mix; m.data[i + 3] = Math.round(a * 255);
             }

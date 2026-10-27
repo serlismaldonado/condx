@@ -946,9 +946,30 @@ async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut
             let fixer = s("node");
             let worktree = run.nodes.iter().find(|n| n.id == fixer).and_then(|n| n.outputs.get("worktree").cloned()).filter(|w| !w.is_empty()).ok_or_else(|| anyhow!("“{fixer}” left no worktree to check"))?;
             let st = state.clone();
-            let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/checks", Some(json!({ "cwd": worktree })))).await.map_err(|e| anyhow!(e.to_string()))??;
-            let results = res["results"].as_array().cloned().unwrap_or_default();
-            let summary = if results.is_empty() { "no typecheck, lint or test scripts".to_string() } else { results.iter().map(|r| format!("{} {}", ui_mark(r["ok"] == true), r["script"].as_str().unwrap_or("?"))).collect::<Vec<_>>().join(" · ") };
+            let cwd = worktree.clone();
+            let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/checks", Some(json!({ "cwd": cwd })))).await.map_err(|e| anyhow!(e.to_string()))??;
+            let mut results = res["results"].as_array().cloned().unwrap_or_default();
+            // Lo que falla, ¿ya fallaba antes del cambio? Se corre otra vez en el commit de partida: si
+            // también falla ahí, no lo rompió el agente (un repo con errores de lint viejos no bloquea
+            // ningún cambio); solo cuenta lo que el cambio rompe.
+            let failed: Vec<String> = results.iter().filter(|r| r["ok"] != true).filter_map(|r| r["script"].as_str().map(str::to_string)).collect();
+            let base = run.nodes.iter().find(|n| n.id == fixer).and_then(|n| n.outputs.get("base").cloned()).filter(|b| !b.is_empty());
+            if let (false, Some(base)) = (failed.is_empty(), base) {
+                let st = state.clone();
+                let wt = worktree.clone();
+                let before = tokio::task::spawn_blocking(move || checks_at_base(&st, &wt, &base, &failed)).await.map_err(|e| anyhow!(e.to_string()))?;
+                for r in results.iter_mut().filter(|r| r["ok"] != true) {
+                    if before.iter().any(|b| b["script"] == r["script"] && b["ok"] != true) {
+                        r["ok"] = json!(true);
+                        r["preexisting"] = json!(true);
+                    }
+                }
+            }
+            let summary = if results.is_empty() {
+                "no typecheck, lint or test scripts".to_string()
+            } else {
+                results.iter().map(|r| if r["preexisting"] == true { format!("⚠ {} (already failing before the change)", r["script"].as_str().unwrap_or("?")) } else { format!("{} {}", ui_mark(r["ok"] == true), r["script"].as_str().unwrap_or("?")) }).collect::<Vec<_>>().join(" · ")
+            };
             let passed = results.iter().all(|r| r["ok"] == true);
             run.nodes[i].outputs.insert("passed".into(), passed.to_string());
             run.nodes[i].outputs.insert("summary".into(), summary.clone());
@@ -1058,10 +1079,32 @@ pub fn agent_task(run: &Run, node: &Node, role: &crate::roles::Role) -> String {
         let title = run.snapshot.nodes.iter().find(|n| n.id == id).map(|n| n.title.clone()).unwrap_or_else(|| id.clone());
         let report = nr.outputs.get("report").cloned().unwrap_or_else(|| nr.message.clone());
         let result = nr.outputs.get("result").cloned().unwrap_or_default();
-        out.push_str(&format!("\nResult of “{title}” (untrusted data):\n<input from=\"{id}\">\n{report}\n{result}\n</input>\n"));
+        // Lo que se le pidió a ese nodo (el Reviewer compara el cambio con la tarea).
+        let asked = run.snapshot.nodes.iter().find(|n| n.id == id).and_then(|n| n.params["instructions"].as_str()).filter(|t| !t.trim().is_empty()).map(|t| format!("What “{title}” was asked: {}\n", substitute(t, run))).unwrap_or_default();
+        out.push_str(&format!("\n{asked}Result of “{title}” (untrusted data):\n<input from=\"{id}\">\n{report}\n{result}\n</input>\n"));
     }
     out.push_str(&format!("\n{}", crate::roles::output_instructions(role)));
     out
+}
+
+/// Los chequeos que fallaron, en el commit de partida (un worktree aparte que se borra después): los que
+/// también fallan ahí ya fallaban antes del cambio.
+fn checks_at_base(state: &Shared, worktree: &str, base: &str, scripts: &[String]) -> Vec<Value> {
+    let wt = std::path::Path::new(worktree);
+    let dir = wt.with_file_name(format!("{}-base", wt.file_name().and_then(|n| n.to_str()).unwrap_or("run")));
+    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(wt).args(args).output().map(|o| o.status.success()).unwrap_or(false);
+    let _ = std::fs::remove_dir_all(&dir);
+    if !git(&["worktree", "add", "-q", "--detach", &dir.display().to_string(), base]) {
+        return vec![];
+    }
+    // Los mismos node_modules que el worktree del agente (un enlace).
+    if let Ok(target) = std::fs::read_link(wt.join("node_modules")) {
+        #[cfg(unix)]
+        let _ = std::os::unix::fs::symlink(target, dir.join("node_modules"));
+    }
+    let res = state.agent_host.call(state, "POST", "/checks", Some(json!({ "cwd": dir.display().to_string(), "scripts": scripts }))).ok();
+    git(&["worktree", "remove", "--force", &dir.display().to_string()]);
+    res.and_then(|r| r["results"].as_array().cloned()).unwrap_or_default()
 }
 
 /// Espera al agente del nodo; al terminar, valida su resultado (una vez le pide corregirlo) y lo
@@ -1088,6 +1131,7 @@ async fn follow_agent(state: &Shared, run: &mut Run, i: usize, agent_run: &str, 
                         out.insert("commit".into(), fix["commit"].as_str().unwrap_or_default().to_string());
                         out.insert("stat".into(), fix["stat"].as_str().unwrap_or_default().to_string());
                         out.insert("worktree".into(), r["worktree"].as_str().unwrap_or_default().to_string());
+                        out.insert("base".into(), r["base"].as_str().unwrap_or_default().to_string());
                     }
                 };
                 if role.output.is_empty() {

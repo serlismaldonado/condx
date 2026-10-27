@@ -1170,7 +1170,7 @@ async fn follow_agent(state: &Shared, run: &mut Run, i: usize, agent_run: &str, 
     }
 }
 
-fn first_line(text: &str) -> String {
+pub(crate) fn first_line(text: &str) -> String {
     text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).unwrap_or("").chars().take(160).collect()
 }
 

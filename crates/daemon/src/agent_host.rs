@@ -317,7 +317,18 @@ fn commit_fix(run: &Value, incident: &Value) -> Value {
             return Ok(json!({ "changes": changed, "commit": changed.then_some(head) }));
         }
         let cause = run["answer"].as_str().and_then(|a| a.split("## Cause").nth(1)).map(|s| s.split("##").next().unwrap_or("").trim().to_string()).unwrap_or_default();
-        let message = format!("fix: {} (Condx agent)\n\n{cause}\n\nIncident: {}\nRun: {}", incident["title"].as_str().unwrap_or("incident"), incident["id"].as_str().unwrap_or("?"), run["id"].as_str().unwrap_or("?"));
+        let message = if run["kind"] == "flow" {
+            // Un agente de flujo no atiende un incidente: el commit lleva el título de su nodo y lo que hizo.
+            let node = run["title"].as_str().unwrap_or("agent").split(" · ").next().unwrap_or("agent");
+            let answer = run["answer"].as_str().unwrap_or_default();
+            let done = Some(crate::workflows::first_line(answer.split("```json").next().unwrap_or(answer)))
+                .filter(|l| !l.is_empty())
+                .or_else(|| crate::roles::extract_json(answer).and_then(|v| v["change"].as_str().map(crate::workflows::first_line)))
+                .unwrap_or_default();
+            format!("fix: {node} (Condx agent)\n\n{done}")
+        } else {
+            format!("fix: {} (Condx agent)\n\n{cause}\n\nIncident: {}\nRun: {}", incident["title"].as_str().unwrap_or("incident"), incident["id"].as_str().unwrap_or("?"), run["id"].as_str().unwrap_or("?"))
+        };
         git(&dir, &["-c", "user.name=Condx agent", "-c", "user.email=agent@condx.local", "-c", "commit.gpgsign=false", "commit", "-q", "-m", &message])?;
         let commit = git(&dir, &["rev-parse", "HEAD"])?;
         let base = run["base"].as_str().unwrap_or("HEAD~1");
@@ -333,6 +344,24 @@ fn commit_fix(run: &Value, incident: &Value) -> Value {
     attempt().unwrap_or_else(|e| json!({ "error": format!("{e:#}") }))
 }
 
+/// Borra el worktree y la rama de un arreglo y lo marca descartado. El repo es el del que salió el
+/// worktree (el de un rol puede no ser el del proyecto).
+fn remove_fix(state: &Shared, run: &mut Value, incident: &Value) {
+    let dir = run["worktree"].as_str().map(PathBuf::from);
+    let repo = dir
+        .as_ref()
+        .and_then(|d| git(d, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok())
+        .and_then(|common| PathBuf::from(common).parent().map(PathBuf::from))
+        .unwrap_or_else(|| repo_for(state, incident));
+    if let Some(dir) = &dir {
+        let _ = git(&repo, &["worktree", "remove", "--force", &dir.display().to_string()]);
+    }
+    if let Some(branch) = run["branch"].as_str() {
+        let _ = git(&repo, &["branch", "-D", branch]);
+    }
+    run["fix"]["discarded"] = json!(true);
+}
+
 /// Descarta un arreglo: borra su worktree y su rama.
 pub fn discard(state: &Shared, id: &str) -> Result<Value> {
     let mut run = state.store.agent_run(id)?.with_context(|| format!("there's no run “{id}”"))?;
@@ -340,14 +369,7 @@ pub fn discard(state: &Shared, id: &str) -> Result<Value> {
         bail!("stop the agent first");
     }
     let incident = state.store.incident(run["incident"].as_str().unwrap_or_default())?.unwrap_or(Value::Null);
-    let repo = repo_for(state, &incident);
-    if let Some(dir) = run["worktree"].as_str() {
-        let _ = git(&repo, &["worktree", "remove", "--force", dir]);
-    }
-    if let Some(branch) = run["branch"].as_str() {
-        let _ = git(&repo, &["branch", "-D", branch]);
-    }
-    run["fix"]["discarded"] = json!(true);
+    remove_fix(state, &mut run, &incident);
     state.store.save_agent_run(&run)?;
     if let Some(inc) = run["incident"].as_str() {
         set_incident_agent(state, inc, &run);
@@ -682,10 +704,19 @@ fn finish(state: &Shared, mut run: Value, status: &str, answer: Option<String>, 
     run["endedAt"] = json!(now_ms());
     run["answer"] = json!(answer);
     run["error"] = json!(error.filter(|_| status != "done"));
+    if run["mode"] == "fix" && status == "failed" {
+        // Falló: no queda nada que guardar, su worktree y su rama sobran.
+        let incident = run["incident"].as_str().and_then(|i| state.store.incident(i).ok().flatten()).unwrap_or(Value::Null);
+        remove_fix(state, &mut run, &incident);
+    }
     if run["mode"] == "fix" && matches!(status, "done" | "stopped" | "aborted") {
         // Un agente de flujo no tiene incidente: el commit lleva el nombre de su flujo.
         let incident = run["incident"].as_str().and_then(|i| state.store.incident(i).ok().flatten()).unwrap_or_else(|| json!({ "title": run["title"], "id": run["id"] }));
         run["fix"] = commit_fix(&run, &incident);
+        // Sin cambios: tampoco hay nada que conservar.
+        if run["fix"]["changes"] == false {
+            remove_fix(state, &mut run, &incident);
+        }
         // Respaldo: la rama del arreglo sube a GitHub en cuanto queda el commit.
         if run["fix"]["changes"] == true {
             if let (Some(dir), Some(branch)) = (run["worktree"].as_str(), run["branch"].as_str()) {
@@ -855,6 +886,32 @@ mod tests {
         let fix = commit_fix(&run, &incident);
         assert_eq!(fix["changes"], true, "{fix}");
         assert_eq!(git(repo.path(), &["show", "--name-only", "--format=", &branch]).unwrap(), "sum.js");
+    }
+
+    #[test]
+    fn el_commit_de_un_agente_de_flujo_lleva_el_titulo_del_nodo_y_lo_que_hizo() {
+        let repo = repo();
+        let worktrees = tempfile::tempdir().unwrap();
+        let (dir, branch, base) = prepare_worktree(repo.path(), worktrees.path(), "run-f-1", &json!({ "evidence": {} })).unwrap();
+        std::fs::write(dir.join("sum.js"), "export const sum = (a, b) => a + b;\n").unwrap();
+        let run = json!({ "id": "run-f-1", "kind": "flow", "title": "Fixer · Tarea", "worktree": dir.display().to_string(), "base": base, "answer": "Set lang to es.\n\n```json\n{}\n```" });
+        let fix = commit_fix(&run, &json!({ "title": "Fixer · Tarea", "id": "run-f-1" }));
+        assert_eq!(fix["changes"], true, "{fix}");
+        let log = git(repo.path(), &["log", "-1", "--format=%s|%b", &branch]).unwrap();
+        assert_eq!(log, "fix: Fixer (Condx agent)|Set lang to es.");
+    }
+
+    #[test]
+    fn un_arreglo_sin_cambios_borra_su_worktree_y_su_rama() {
+        let repo = repo();
+        let worktrees = tempfile::tempdir().unwrap();
+        let (dir, branch, _) = prepare_worktree(repo.path(), worktrees.path(), "run-f-2", &json!({ "evidence": {} })).unwrap();
+        let st = crate::state::test_state();
+        let mut run = json!({ "worktree": dir.display().to_string(), "branch": branch });
+        remove_fix(&st, &mut run, &Value::Null);
+        assert!(!dir.exists());
+        assert!(git(repo.path(), &["branch", "--list", &branch]).unwrap().is_empty());
+        assert_eq!(run["fix"]["discarded"], true);
     }
 
     #[test]

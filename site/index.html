@@ -117,11 +117,16 @@
     .btn { display: inline-flex; align-items: center; gap: 8px; font: 500 15px/1 "IBM Plex Sans"; padding: 12px 20px; border: 1px solid var(--ink); background: var(--ink); color: #fff; text-decoration: none; cursor: pointer; }
     .btn.amber { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
-    pre { background: #fff; border: 1px solid #d9cfb4; padding: 16px 70px 16px 16px; overflow-x: auto; font-size: 13.5px; line-height: 1.75; margin: 0; }
-    pre .c { color: var(--subtle); }
-    .code { position: relative; min-width: 0; }
-    .code .copy { position: absolute; top: 10px; right: 10px; background: none; border: 0; color: var(--subtle); font: 13px "IBM Plex Mono"; cursor: pointer; }
-    .code .copy.done { color: #a87400; }
+    /* Los comandos: una terminal como la de la portada (barra con copiar arriba, «$» en cada línea). */
+    .code { position: relative; min-width: 0; background: #241b0c; border: 2px solid #1f1503; box-shadow: 4px 4px 0 rgba(31, 21, 3, 0.28); }
+    .code .bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; background: #1b1508; border-bottom: 1px solid rgba(243, 176, 28, 0.18); font: 12px "IBM Plex Mono", monospace; color: #8e7f5d; }
+    .code .copy { background: none; border: 0; color: #b9a982; font: 12px "IBM Plex Mono", monospace; cursor: pointer; padding: 0; }
+    .code .copy:hover, .code .copy.done { color: var(--accent); }
+    pre { margin: 0; padding: 14px; font-size: 13.5px; line-height: 1.8; color: #fff1cf; background: transparent; white-space: pre-wrap; overflow-wrap: anywhere; }
+    /* Una línea larga baja con sangría (debajo del «$»), sin barra de desplazamiento. */
+    pre .ln, pre .c { display: block; padding-left: 2ch; text-indent: -2ch; }
+    pre .ln::before { content: "$ "; color: #8e7f5d; }
+    pre .c { color: #8e7f5d; }
     .steps { display: grid; gap: 28px; }
     .steps h3 { margin-top: 0; font-size: 20px; }
     .steps p { color: var(--muted); margin: 4px 0 12px; }
@@ -336,17 +341,29 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
     }));
     term.querySelector(".copy").addEventListener("click", async (e) => { try { await navigator.clipboard.writeText(termCode.textContent); flash(e.target); } catch {} });
     document.querySelectorAll("pre").forEach((pre) => {
+      // Cada línea de comando con su «$» (los comentarios, atenuados y sin él).
+      const lines = pre.textContent.split("\n").filter((l) => l.trim());
+      pre.innerHTML = "";
+      for (const l of lines) {
+        const span = document.createElement("span");
+        span.className = l.trim().startsWith("#") ? "c" : "ln";
+        span.textContent = l;
+        pre.appendChild(span);
+      }
       const box = document.createElement("div");
       box.className = "code";
-      pre.replaceWith(box);
-      box.appendChild(pre);
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      bar.innerHTML = "<span>terminal</span>";
       const b = document.createElement("button");
       b.type = "button"; b.className = "copy"; b.textContent = "copy";
       b.addEventListener("click", async () => {
-        const text = pre.innerText.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#")).join("\n");
+        const text = lines.filter((l) => !l.trim().startsWith("#")).join("\n");
         try { await navigator.clipboard.writeText(text); flash(b); } catch {}
       });
-      box.appendChild(b);
+      bar.appendChild(b);
+      pre.replaceWith(box);
+      box.append(bar, pre);
     });
 
     // La demo es la app real compilada a WebAssembly (~6 MB): se carga solo al pedirla.

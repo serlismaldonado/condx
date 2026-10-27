@@ -804,13 +804,38 @@ pub async fn import_site_items(state: &Shared, id: &str, title: &str, project: O
                 _ => return None,
             };
             let text = it["text"].as_str()?.trim().to_string();
-            (!text.is_empty()).then(|| json!({ "role": role, "text": text, "at": it["at"], "author": it["author"] }))
+            // Con lo que hizo el agente del sitio antes de responder (sus pasos y cuánto tardó).
+            let mut x = json!({ "role": role, "text": text, "at": it["at"], "author": it["author"] });
+            for k in ["steps", "took"] {
+                if !it[k].is_null() {
+                    x[k] = it[k].clone();
+                }
+            }
+            (!text.is_empty()).then_some(x)
         })
-        .filter(|x| !have.contains(&(x["role"].as_str().unwrap_or("").to_string(), x["text"].as_str().unwrap_or("").chars().take(300).collect())))
         .collect();
+    let key = |x: &Value| -> (String, String) { (x["role"].as_str().unwrap_or("").to_string(), x["text"].as_str().unwrap_or("").trim().chars().take(300).collect()) };
+    // Los pasos que llegan de respuestas ya importadas sin ellos (importadas antes de que el sitio los mandara).
+    let mut filled = false;
+    if let Some(mut run) = existing.clone() {
+        if let Some(site) = run["siteItems"].as_array_mut() {
+            for old in site.iter_mut().filter(|o| o["steps"].is_null()) {
+                if let Some(src) = new.iter().find(|n| !n["steps"].is_null() && key(n) == key(old)) {
+                    old["steps"] = src["steps"].clone();
+                    old["took"] = src["took"].clone();
+                    filled = true;
+                }
+            }
+        }
+        if filled {
+            state.store.save_agent_run(&run)?;
+        }
+    }
+    let new: Vec<Value> = new.into_iter().filter(|x| !have.contains(&key(x))).collect();
     if new.is_empty() {
         return Ok(0);
     }
+    let existing = if filled { state.store.agent_run(id)? } else { existing };
     let first_at = new.iter().filter_map(|x| x["at"].as_i64()).min().unwrap_or_else(now_ms);
     let last_at = new.iter().filter_map(|x| x["at"].as_i64()).max().unwrap_or_else(now_ms);
     let mut run = existing.unwrap_or_else(|| {

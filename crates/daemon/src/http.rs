@@ -612,11 +612,21 @@ async fn post_notify(AxState(state): AxState<Shared>, Extension(client): Extensi
 }
 
 /// Una notificación de prueba, ahora (y el error si no llega).
+/// Los avisos recientes (para las notificaciones del sistema de la app): `?after=<id>`.
+async fn get_notifications(Extension(client): Extension<Client>, Query(q): Query<std::collections::HashMap<String, String>>) -> Response {
+    if let Some(r) = deny(&client, Scope::Read) {
+        return r;
+    }
+    Json(crate::notify::recent(q.get("after").and_then(|a| a.parse().ok()).unwrap_or(0))).into_response()
+}
+
 async fn post_notify_test(AxState(state): AxState<Shared>, Extension(client): Extension<Client>) -> Response {
     if let Some(r) = deny(&client, Scope::JobsApprove) {
         return r;
     }
     let s = crate::notify::settings(&state);
+    // También en esta Mac (la notificación del sistema de la app, con sonido).
+    crate::notify::local_test();
     let res = tokio::task::spawn_blocking(move || {
         let token = crate::secrets::get(crate::notify::TOKEN_ACCOUNT).ok().flatten();
         crate::notify::send_to(&s, token.as_deref(), &crate::notify::Message { title: "Condx: test notification".into(), body: "Notifications from this Mac reach this phone.".into(), tags: "white_check_mark", priority: 3 })
@@ -1372,6 +1382,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agent-chats", post(post_agent_chat))
         .route("/api/agent-runs/{id}", get(get_agent_run))
         .route("/api/notify", get(get_notify).post(post_notify))
+        .route("/api/notifications", get(get_notifications))
         .route("/api/mail", get(get_mail).post(post_mail))
         .route("/api/mail/test", post(post_mail_test))
         .route("/api/update", get(get_update))

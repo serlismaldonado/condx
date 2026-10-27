@@ -353,6 +353,10 @@ pub struct DevtoolApp {
     /// Configuración → Notificaciones (`/api/notify`) y el resultado de guardar o probar.
     pub notify_cfg: Option<Value>,
     pub notify_result: Option<Result<String, String>>,
+    /// El último aviso del daemon que se mostró como notificación del sistema (`None` al abrir: lo de
+    /// antes no suena) y a dónde lleva cada una al tocarla.
+    notif_after: Option<u64>,
+    notif_links: HashMap<String, String>,
     pub live_json_open: bool,
     /// Pestaña y modo del esquema de cada entorno (los de `env_tab`/`schema_mode` son del abierto).
     pub env_tabs: HashMap<String, EnvTab>,
@@ -562,6 +566,8 @@ impl DevtoolApp {
             template_edit: None,
             notify_cfg: None,
             notify_result: None,
+            notif_after: None,
+            notif_links: HashMap::new(),
             live_json_open: false,
             env_tabs: HashMap::new(),
             schema_modes: HashMap::new(),
@@ -570,6 +576,7 @@ impl DevtoolApp {
             saved_view: String::new(),
         };
         app.start_polling(window, cx);
+        app.start_notifications(window, cx);
         app.load_policy(cx);
         app
     }
@@ -612,6 +619,61 @@ impl DevtoolApp {
             }
             Load::Loading => {}
         }, cx);
+    }
+
+    /// Los avisos del daemon como notificaciones del sistema, con sonido: lo que espera tu aprobación,
+    /// incidentes, agentes que contestan o terminan y avisos de los flujos. Tocar una abre su página.
+    fn start_notifications(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(daemon) = self.daemon.clone() else { return };
+        let me = cx.entity().downgrade();
+        let handle = window.window_handle();
+        cx.on_system_notification_response(move |resp, cx| {
+            let Some(app) = me.upgrade() else { return };
+            cx.activate(true);
+            let _ = handle.update(cx, |_, window, cx| {
+                app.update(cx, |app, cx| {
+                    let page = match app.notif_links.get(resp.tag.as_ref()).map(String::as_str) {
+                        Some("approvals") => Page::Approvals,
+                        Some("incidents") => Page::Incidents,
+                        Some("workflows") => Page::Workflows,
+                        _ => Page::Agents,
+                    };
+                    window.activate_window();
+                    app.open_page(page, window, cx);
+                });
+            });
+        });
+        cx.spawn_in(window, async move |this, cx| loop {
+            let Ok(after) = this.update(cx, |app, _| app.notif_after) else { break };
+            let d = daemon.clone();
+            let path = format!("/api/notifications?after={}", after.unwrap_or(0));
+            if let Ok(v) = cx.background_executor().spawn(async move { d.get(&path) }).await {
+                let _ = this.update(cx, |app, cx| {
+                    let items = v["items"].as_array().cloned().unwrap_or_default();
+                    if app.notif_after.is_some() && !items.is_empty() {
+                        let mut urgent = false;
+                        for n in &items {
+                            let tag = format!("condx-{}", n["id"]);
+                            app.notif_links.insert(tag.clone(), n["link"].as_str().unwrap_or("").to_string());
+                            urgent |= n["priority"].as_u64().unwrap_or(3) >= 4;
+                            cx.show_system_notification(SystemNotification { tag: tag.into(), title: n["title"].as_str().unwrap_or("Condx").to_string().into(), body: n["body"].as_str().unwrap_or("").to_string().into(), actions: vec![] });
+                        }
+                        // El sonido (la notificación de GPUI no trae): más notorio si espera algo de ti.
+                        let sound = if urgent { "/System/Library/Sounds/Glass.aiff" } else { "/System/Library/Sounds/Pop.aiff" };
+                        #[cfg(target_os = "macos")]
+                        let _ = std::process::Command::new("afplay").arg(sound).spawn();
+                        #[cfg(not(target_os = "macos"))]
+                        let _ = sound;
+                    }
+                    app.notif_after = Some(v["last"].as_u64().unwrap_or(0));
+                    if app.notif_links.len() > 200 {
+                        app.notif_links.clear();
+                    }
+                });
+            }
+            cx.background_executor().timer(Duration::from_secs(3)).await;
+        })
+        .detach();
     }
 
     fn start_polling(&self, window: &mut Window, cx: &mut Context<Self>) {

@@ -1663,6 +1663,8 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     trows.insert(AGENTS_ROW.into(), obj(json!({ "title": "agents", "participants": serde_json::to_string(&agents).unwrap_or_default() })));
     let mut settings_v = serde_json::to_value(&settings).unwrap_or_default();
     settings_v["defaultModels"] = json!(crate::agents::models_of(&provider_of(None)));
+    // Los avisos al teléfono (ntfy, sin el token): con la Mac apagada también avisa el sitio.
+    settings_v["notify"] = serde_json::to_value(crate::notify::settings(state)).unwrap_or_default();
     trows.insert(SETTINGS_ROW.into(), obj(json!({ "title": "settings", "settings": settings_v.to_string() })));
     trows.insert(DEVICES_ROW.into(), obj(json!({ "title": "devices", "devices": serde_json::to_string(&trusted_devices()).unwrap_or_default() })));
     if now_ms() - s.catalog_built.0 > 60_000 {

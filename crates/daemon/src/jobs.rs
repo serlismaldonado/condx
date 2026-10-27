@@ -351,6 +351,9 @@ pub async fn request(state: &Shared, recipe_name: &str, env_name: &str, args: &V
     };
     log_line(&job.id, &format!("Requested by {requested_by}: {} on {} {:?}", recipe.name, job.env, job.args));
     save(state, &job);
+    if job.status == Status::WaitingApproval {
+        crate::notify::approval_waiting(state, &job.title, &job.env, requested_by);
+    }
     state.runner.wake.notify_one();
     Ok(job)
 }
@@ -440,6 +443,9 @@ pub fn retry(state: &Shared, id: &str, by: &str) -> Result<Job> {
     job.created_at = if job.status == Status::WaitingApproval { now_ms() } else { job.created_at };
     log_line(id, &format!("— Retry requested by {by}, from “{}” —", job.steps.get(from).map(|s| s.name.as_str()).unwrap_or("?")));
     save(state, &job);
+    if job.status == Status::WaitingApproval {
+        crate::notify::approval_waiting(state, &job.title, &job.env, by);
+    }
     state.runner.wake.notify_one();
     Ok(job)
 }

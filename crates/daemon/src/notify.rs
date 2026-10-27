@@ -114,8 +114,38 @@ pub fn send_to(s: &Settings, token: Option<&str>, m: &Message) -> Result<()> {
     }
 }
 
+/// Los avisos recientes, para la app de la Mac (notificaciones del sistema, con sonido): los lee con
+/// `recent` desde el último que mostró. Solo en memoria.
+static RECENT: Mutex<(u64, std::collections::VecDeque<Value>)> = Mutex::new((0, std::collections::VecDeque::new()));
+
+/// Los avisos después de `after` (y el último id, para seguir desde ahí).
+pub fn recent(after: u64) -> Value {
+    let r = RECENT.lock().unwrap();
+    json!({ "last": r.0, "items": r.1.iter().filter(|n| n["id"].as_u64().unwrap_or(0) > after).cloned().collect::<Vec<_>>() })
+}
+
+/// La prueba de «Enviar una prueba» en la app de la Mac.
+pub fn local_test() {
+    remember("test", &Message { title: "Condx: test notification".into(), body: "Notifications on this Mac work.".into(), tags: "white_check_mark", priority: 4 }, "approvals");
+}
+
+fn remember(kind: &str, m: &Message, link: &str) {
+    let mut r = RECENT.lock().unwrap();
+    r.0 += 1;
+    let item = json!({ "id": r.0, "kind": kind, "title": clip(&m.title, 120), "body": clip(&m.body, 300), "priority": m.priority, "link": link, "at": crate::store::now_ms() });
+    r.1.push_back(item);
+    while r.1.len() > 50 {
+        r.1.pop_front();
+    }
+}
+
 /// Envía si está encendido y el tipo de aviso lo está; los errores van al log (no frenan nada).
 pub fn send(state: &Shared, kind: &str, m: Message) {
+    send_linked(state, kind, m, "");
+}
+
+/// Como `send`, con a dónde lleva tocarla en la app (`approvals`, `incidents`, `agents`, `workflows`).
+pub fn send_linked(state: &Shared, kind: &str, m: Message, link: &str) {
     let s = settings(state);
     let wanted = match kind {
         "incident" => s.incidents,
@@ -127,6 +157,7 @@ pub fn send(state: &Shared, kind: &str, m: Message) {
     if !wanted {
         return;
     }
+    remember(kind, &m, if link.is_empty() { default_link(kind) } else { link });
     // Por correo también: siempre, o cuando ntfy está apagado o falla (`mail.rs`).
     if !s.enabled {
         if crate::mail::wants(state, false) {
@@ -148,6 +179,20 @@ pub fn send(state: &Shared, kind: &str, m: Message) {
             crate::mail::notify(&st, &m.title, &m.body);
         }
     });
+}
+
+fn default_link(kind: &str) -> &'static str {
+    match kind {
+        "incident" => "incidents",
+        "approval" => "approvals",
+        "flow" => "workflows",
+        _ => "agents",
+    }
+}
+
+/// Algo espera la aprobación de la persona (un trabajo, también el de un nodo de aprobación de un flujo).
+pub fn approval_waiting(state: &Shared, title: &str, env: &str, by: &str) {
+    send(state, "approval", Message { title: format!("Waiting for your approval: {title}"), body: format!("On {env} · asked by {by}"), tags: "lock", priority: 4 });
 }
 
 pub fn incident_opened(state: &Shared, inc: &Value) {

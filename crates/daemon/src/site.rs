@@ -499,6 +499,12 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
             Ok(req) => req,
             Err(e) => {
                 tracing::warn!("site: phone message on {id} rejected: {e}");
+                // Como la Mac: el teléfono ve por qué (si no, el mensaje queda esperando para siempre).
+                let why = if e.contains("stale") { "rejected: it arrived too late (the cloud site was restarting); send it again".to_string() } else { format!("rejected: {e}") };
+                let mut set = Values::new();
+                set.insert("result".into(), json!(why));
+                set.insert("resultFor".into(), json!(request_id));
+                let _ = s.engine.commit(vec![OpDraft::patch(&s.threads_scope, id, set)], now_ms());
                 continue;
             }
         };

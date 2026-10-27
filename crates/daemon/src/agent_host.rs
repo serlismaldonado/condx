@@ -316,6 +316,7 @@ fn review_worktree(repo: &std::path::Path, worktrees: &std::path::Path, run_id: 
     if !out.status.success() {
         bail!("couldn't check out {sha} to review it: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
+    link_siblings(repo, worktrees);
     Ok(dir)
 }
 
@@ -334,7 +335,27 @@ fn prepare_worktree(repo: &std::path::Path, worktrees: &std::path::Path, run_id:
         #[cfg(unix)]
         let _ = std::os::unix::fs::symlink(&modules, dir.join("node_modules"));
     }
+    link_siblings(repo, worktrees);
     Ok((dir, branch, base))
+}
+
+/// Las dependencias vecinas del repo (`path = "../localfirst/…"` en su Cargo.toml, como condx-mobile):
+/// un enlace al lado de los worktrees, para que compilen igual que en la copia del proyecto.
+fn link_siblings(repo: &std::path::Path, worktrees: &std::path::Path) {
+    let Ok(manifest) = std::fs::read_to_string(repo.join("Cargo.toml")) else { return };
+    let Some(parent) = repo.parent() else { return };
+    for line in manifest.lines() {
+        let Some(rest) = line.split("path = \"../").nth(1) else { continue };
+        let name = rest.split(['/', '"']).next().unwrap_or_default();
+        if name.is_empty() || name.contains("..") {
+            continue;
+        }
+        let (from, to) = (parent.join(name), worktrees.join(name));
+        if from.is_dir() && !to.exists() {
+            #[cfg(unix)]
+            let _ = std::os::unix::fs::symlink(&from, &to);
+        }
+    }
 }
 
 /// Al terminar un arreglo, el daemon (no el agente) hace el commit en su rama y guarda el diff.

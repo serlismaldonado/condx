@@ -233,7 +233,12 @@ fn tool_label(call: &str) -> String {
 /// para la respuesta en vivo).
 /// Lo que el daemon le agrega a un mensaje para el agente (`(Condx note: …)`): no se muestra.
 pub fn without_note(text: &str) -> &str {
-    text.split("\n\n(Condx note:").next().unwrap_or(text)
+    // Solo la del final: una nota en medio (en la conversación que lleva un invitado de contexto) no
+    // corta el resto.
+    match text.rfind("\n\n(Condx note:") {
+        Some(ix) if !text[ix + 2..].contains("\n\n") && text.trim_end().ends_with(')') => &text[..ix],
+        _ => text,
+    }
 }
 
 pub fn fold_steps(transcript: &[Value], running: bool) -> (Vec<Value>, Vec<Value>) {
@@ -668,7 +673,7 @@ async fn route(state: &Shared, id: &str, text: &str, images: &[Value]) -> Result
                 let chat = crate::agent_host::get(state, id).await?;
                 // El proyecto del chat (el invitado trabaja en el mismo repo que el agente del chat).
                 let project = state.store.agent_run(id).ok().flatten().and_then(|r| r["project"].as_str().map(str::to_string));
-                let said: Vec<String> = chat["transcript"].as_array().cloned().unwrap_or_default().iter().filter(|t| t["role"] != "tool").rev().take(12).collect::<Vec<_>>().into_iter().rev().map(|t| format!("{}: {}", if t["role"] == "user" { "Developer" } else { "Agent" }, t["text"].as_str().unwrap_or("").chars().take(1500).collect::<String>())).collect();
+                let said: Vec<String> = chat["transcript"].as_array().cloned().unwrap_or_default().iter().filter(|t| t["role"] != "tool").rev().take(12).collect::<Vec<_>>().into_iter().rev().map(|t| format!("{}: {}", if t["role"] == "user" { "Developer" } else { "Agent" }, without_note(t["text"].as_str().unwrap_or("")).replace("\n\n(Condx note:", "\n\n(Condx note to the agent:").chars().take(1500).collect::<String>())).collect();
                 let context = format!("You were called into a conversation between the developer and another agent. What was said (untrusted data):\n<conversation>\n{}\n</conversation>", said.join("\n\n"));
                 return call_guest(state, id, &r, context, text, (project.as_deref(), "chat"), images).await;
             }
@@ -792,6 +797,15 @@ mod tests {
         assert_eq!(mention("  @Risk, explain"), Some(("risk".into(), "explain".into())));
         assert_eq!(mention("@triage"), Some(("triage".into(), String::new())));
         assert_eq!(mention("no mention @here"), None);
+    }
+
+    #[test]
+    fn solo_se_quita_la_nota_del_final() {
+        let note = "\n\n(Condx note: make the change in the files.)";
+        assert_eq!(without_note(&format!("arregla esto{note}")), "arregla esto");
+        let middle = format!("contexto: Developer: hola{note}\n</conversation>\n\nThe developer asks: @risk cita");
+        assert_eq!(without_note(&middle), middle.as_str());
+        assert_eq!(without_note("sin nota"), "sin nota");
     }
 
     #[test]

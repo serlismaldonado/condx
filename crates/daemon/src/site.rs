@@ -1197,6 +1197,12 @@ fn apply_settings(state: &Shared, s: &Session) -> Result<bool> {
     Ok(true)
 }
 
+/// Las carpetas vecinas que usa un repo de Rust (`path = "../localfirst/…"` en su Cargo.toml).
+fn sibling_deps(repo: &std::path::Path) -> Vec<String> {
+    let Ok(manifest) = std::fs::read_to_string(repo.join("Cargo.toml")) else { return vec![] };
+    manifest.lines().filter_map(|l| l.split("path = \"../").nth(1)).filter_map(|r| r.split(['/', '"']).next()).filter(|n| !n.is_empty() && !n.contains("..")).map(str::to_string).collect()
+}
+
 /// Los cambios que el agente de un chat del sitio pasó a otro (`hand_off`): arrancan cuando ese chat
 /// terminó de contestar, en el mismo hilo del teléfono y después de su respuesta.
 static HAND_OFFS: std::sync::Mutex<Vec<(String, String, String)>> = std::sync::Mutex::new(Vec::new());
@@ -1365,6 +1371,20 @@ fn apply_flows(state: &Shared, s: &Session) -> Result<()> {
                         Err(e) => {
                             tracing::warn!("site: couldn't clone {name} for the agent {}: {e:#}", r.name);
                             continue;
+                        }
+                    }
+                }
+                // Sus dependencias vecinas (`path = "../localfirst/…"`): del mismo dueño, al lado (una
+                // vez por arranque).
+                static SIBLINGS: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+                let owner = remote.trim_start_matches("https://github.com/").split('/').next().unwrap_or_default().to_string();
+                for dep in sibling_deps(&dir) {
+                    let to = dir.with_file_name(&dep);
+                    let first = SIBLINGS.lock().unwrap().get_or_insert_with(Default::default).insert(dep.clone());
+                    if first && !to.join(".git").exists() {
+                        match clone_repo(&format!("https://github.com/{owner}/{dep}.git"), None, &to) {
+                            Ok(()) => tracing::info!("site: cloned {dep} next to {name}"),
+                            Err(e) => tracing::warn!("site: couldn't clone {dep} next to {name}: {e:#}"),
                         }
                     }
                 }

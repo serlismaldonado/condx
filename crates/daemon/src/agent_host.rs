@@ -369,10 +369,29 @@ fn commit_fix(run: &Value, incident: &Value) -> Value {
         // en la orden falla si el .gitignore del repo ya lo ignora («paths are ignored»).
         git(&dir, &["add", "-A", "--", "."])?;
         git(&dir, &["rm", "--cached", "-q", "--ignore-unmatch", "--", "node_modules"])?;
+        // El cambio entero de la rama desde la base (todos sus commits): resumen, archivos y diff.
+        let summary = |dir: &std::path::Path, commit: String| -> Result<Value> {
+            let base = run["base"].as_str().unwrap_or("HEAD~1");
+            let stat = git(dir, &["diff", "--stat", base, "HEAD"])?;
+            let files: Vec<String> = git(dir, &["diff", "--name-only", base, "HEAD"])?.lines().map(str::to_string).collect();
+            let mut patch = devtool_core::redact(&git(dir, &["diff", base, "HEAD"])?);
+            if patch.len() > 80_000 {
+                let mut cut = 80_000;
+                while !patch.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                patch.truncate(cut);
+                patch.push_str("\n[… cut]");
+            }
+            Ok(json!({ "changes": true, "commit": commit, "files": files, "stat": stat, "patch": patch }))
+        };
         if git(&dir, &["diff", "--cached", "--name-only"])?.is_empty() {
+            // Nada nuevo en esta vuelta: lo que la rama ya tenía sigue siendo su cambio.
             let head = git(&dir, &["rev-parse", "HEAD"])?;
-            let changed = head != run["base"].as_str().unwrap_or_default();
-            return Ok(json!({ "changes": changed, "commit": changed.then_some(head) }));
+            if head == run["base"].as_str().unwrap_or_default() {
+                return Ok(json!({ "changes": false, "commit": null }));
+            }
+            return summary(&dir, head);
         }
         let cause = run["answer"].as_str().and_then(|a| a.split("## Cause").nth(1)).map(|s| s.split("##").next().unwrap_or("").trim().to_string()).unwrap_or_default();
         let message = if run["kind"] == "flow" {
@@ -389,15 +408,7 @@ fn commit_fix(run: &Value, incident: &Value) -> Value {
         };
         git(&dir, &["-c", "user.name=Condx agent", "-c", "user.email=agent@condx.local", "-c", "commit.gpgsign=false", "commit", "-q", "-m", &message])?;
         let commit = git(&dir, &["rev-parse", "HEAD"])?;
-        let base = run["base"].as_str().unwrap_or("HEAD~1");
-        let stat = git(&dir, &["diff", "--stat", base, "HEAD"])?;
-        let files: Vec<String> = git(&dir, &["diff", "--name-only", base, "HEAD"])?.lines().map(str::to_string).collect();
-        let mut patch = devtool_core::redact(&git(&dir, &["diff", base, "HEAD"])?);
-        if patch.len() > 80_000 {
-            patch.truncate(80_000);
-            patch.push_str("\n[… cut]");
-        }
-        Ok(json!({ "changes": true, "commit": commit, "files": files, "stat": stat, "patch": patch }))
+        summary(&dir, commit)
     };
     attempt().unwrap_or_else(|e| json!({ "error": format!("{e:#}") }))
 }

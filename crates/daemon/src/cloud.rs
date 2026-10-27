@@ -1229,7 +1229,7 @@ pub(crate) async fn thread_rows(state: &Shared, prev: &IndexMap<String, Values>)
         };
         let cut = |s: &str, n: usize| -> String { if s.chars().count() > n { format!("{}…", s.chars().take(n).collect::<String>()) } else { s.to_string() } };
         let items: Vec<Value> = if th["thread"] == true {
-            th["items"].as_array().cloned().unwrap_or_default().iter().rev().take(300).rev().map(|it| {
+            let mut items = th["items"].as_array().cloned().unwrap_or_default().iter().rev().take(300).rev().map(|it| {
                 let mut text = devtool_core::redact(it["text"].as_str().unwrap_or_default());
                 if let Some(ev) = it["event"].as_object() {
                     let title = ev.get("title").and_then(Value::as_str).unwrap_or("");
@@ -1242,8 +1242,19 @@ pub(crate) async fn thread_rows(state: &Shared, prev: &IndexMap<String, Values>)
                     let fields: Vec<String> = res.iter().map(|(k, v)| format!("{k}: {}", v.as_str().unwrap_or_default())).collect();
                     text = format!("{text}\n{}", fields.join("\n"));
                 }
-                json!({ "kind": it["kind"], "author": it["author"], "logo": it["logo"], "to": it["to"], "at": it["at"], "status": it["status"], "job": it["job"], "source": it["event"]["source"], "answered": it["answered"], "live": it["live"], "activity": it["activity"], "steps": it["steps"], "took": it["took"], "since": it["since"], "text": cut(text.trim(), ITEM_CHARS) })
-            }).collect()
+                json!({ "kind": it["kind"], "author": it["author"], "logo": it["logo"], "to": it["to"], "at": it["at"], "status": it["status"], "job": it["job"], "source": it["event"]["source"], "answered": it["answered"], "live": it["live"], "activity": it["activity"], "steps": it["steps"], "took": it["took"], "since": it["since"], "change": it["change"], "text": cut(text.trim(), ITEM_CHARS) })
+            }).collect::<Vec<Value>>();
+            // El diff va solo en los últimos tres cambios del hilo (la fila no crece sin tope).
+            let mut seen = 0;
+            for it in items.iter_mut().rev() {
+                if it["change"].is_object() {
+                    seen += 1;
+                    if seen > 3 {
+                        it["change"]["patch"] = Value::Null;
+                    }
+                }
+            }
+            items
         } else {
             let (msgs, _) = crate::threads::fold_steps(th["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), th["status"] == "running");
             // Un chat abierto sobre un incidente: su primer mensaje es el contexto que armó el daemon.

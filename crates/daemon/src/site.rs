@@ -509,9 +509,12 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
                 tracing::warn!("site: phone message on {id} rejected: {e}");
                 // Como la Mac: el teléfono ve por qué (si no, el mensaje queda esperando para siempre).
                 let why = if e.contains("stale") { "rejected: it arrived too late (the cloud site was restarting); send it again".to_string() } else { format!("rejected: {e}") };
+                // En sus hilos (`site-…`) escribe como la Mac; en los de la Mac, solo sus campos aparte
+                // (Condx Cloud rechaza el resto, y un envío rechazado traba los siguientes).
+                let (res, res_for) = if id.starts_with("site-") { ("result", "resultFor") } else { ("siteResult", "siteFor") };
                 let mut set = Values::new();
-                set.insert("result".into(), json!(why));
-                set.insert("resultFor".into(), json!(request_id));
+                set.insert(res.into(), json!(why));
+                set.insert(res_for.into(), json!(request_id));
                 match s.engine.commit(vec![OpDraft::patch(&s.threads_scope, id, set)], now_ms()) {
                     Ok(_) => {
                         if let Err(e) = crate::cloud::block_on(sync_once(&mut s.engine, &s.transport, now_ms, 50)) {
@@ -630,6 +633,10 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
                     _ => String::new(),
                 };
                 let mut reply = json!({ "kind": "reply", "author": author, "logo": site_logo(), "at": now_ms(), "text": format!("{}{saved}", run["answer"].as_str().unwrap_or("").trim()) });
+                // Su cambio (rama, archivos y diff): «Ver cambios» en el teléfono.
+                if let Some(c) = crate::threads::change_of(&run) {
+                    reply["change"] = c;
+                }
                 let (folded, _) = crate::threads::fold_steps(run["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), false);
                 if let Some(last) = folded.last().filter(|t| t["role"] == "assistant") {
                     reply["steps"] = last["steps"].clone();

@@ -231,6 +231,38 @@ fn tool_label(call: &str) -> String {
 /// resultado) y en `took` cuánto tardó (ms); los resultados de herramientas no van sueltos. Mientras
 /// trabaja, nada de la vuelta en curso es respuesta todavía: va en los pasos en curso (el segundo valor,
 /// para la respuesta en vivo).
+/// El cambio de un agente que escribe (su rama desde la base: todos sus commits), para «Ver cambios»
+/// en el teléfono: commit, rama, resumen y el diff (cortado: entero está en la rama).
+pub fn change_of(run: &Value) -> Option<Value> {
+    let fix = &run["fix"];
+    if fix["changes"] != true || fix["commit"].as_str().is_none() {
+        return None;
+    }
+    let patch = fix["patch"].as_str().unwrap_or_default();
+    let patch = if patch.chars().count() > PATCH_CHARS { format!("{}\n[… cut: the whole change is on the branch]", patch.chars().take(PATCH_CHARS).collect::<String>()) } else { patch.to_string() };
+    Some(json!({
+        "commit": fix["commit"].as_str().map(|c| c.chars().take(8).collect::<String>()),
+        "branch": fix["branch"].as_str().or(run["branch"].as_str()),
+        "stat": fix["stat"],
+        "files": fix["files"].as_array().map(Vec::len),
+        "patch": patch,
+    }))
+}
+
+const PATCH_CHARS: usize = 12_000;
+
+/// Pone el cambio en la última respuesta de ese agente (desde `from`); devuelve si la encontró.
+fn attach_change(items: &mut [Value], from: usize, change: Option<Value>) -> bool {
+    let Some(change) = change else { return false };
+    match items.iter_mut().skip(from).rev().find(|i| matches!(i["kind"].as_str(), Some("reply" | "agent")) && i["live"] != true) {
+        Some(i) => {
+            i["change"] = change;
+            true
+        }
+        None => false,
+    }
+}
+
 /// Lo que el daemon le agrega a un mensaje para el agente (`(Condx note: …)`): no se muestra.
 pub fn without_note(text: &str) -> &str {
     // Solo las del final (puede haber varias seguidas): una nota en medio (en la conversación que lleva
@@ -405,7 +437,12 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
                     // En orden fijo: el hilo (y lo que sube al teléfono) no cambia si nada cambió.
                     let ordered: std::collections::BTreeMap<&String, &String> = nr.outputs.iter().filter(|(k, _)| !matches!(k.as_str(), "report" | "result" | "_retried" | "worktree")).collect();
                     let result: serde_json::Map<String, Value> = ordered.into_iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-                    items.push(json!({ "at": nr.ended_at.unwrap_or(at), "kind": "agent", "author": role_name(state, role), "logo": role_logo(state, role), "node": node.id, "text": nr.outputs.get("report").cloned().unwrap_or_default(), "result": result }));
+                    let mut card = json!({ "at": nr.ended_at.unwrap_or(at), "kind": "agent", "author": role_name(state, role), "logo": role_logo(state, role), "node": node.id, "text": nr.outputs.get("report").cloned().unwrap_or_default(), "result": result });
+                    // Uno que escribe: su cambio, para verlo antes de subirlo.
+                    if let Some(c) = state.store.agent_run(&format!("{}-{}", run.id, node.id)).ok().flatten().as_ref().and_then(change_of) {
+                        card["change"] = c;
+                    }
+                    items.push(card);
                 } else if st == NodeStatus::Failed {
                     items.push(json!({ "at": nr.ended_at.unwrap_or(at), "kind": "system", "status": "failed", "text": format!("{} failed: {}", node.title, nr.message) }));
                 } else {
@@ -433,6 +470,7 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
         let name = if node == "explainer" || node.starts_with("g-") || title.eq_ignore_ascii_case(&rname) { rname } else { format!("{rname} ({title})") };
         participants.push(json!({ "node": node, "role": role, "name": name, "run": agent_run, "status": live["status"], "logo": role_logo(state, &role) }));
         let (transcript, _) = fold_steps(live["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), live["status"] == "running");
+        let start = items.len();
         // El Explicador y los invitados empiezan con «The developer asks: …».
         let explainer = node == "explainer" || node.starts_with("g-");
         // En un agente de flujo, la conversación con la persona empieza en el segundo mensaje suyo.
@@ -442,7 +480,7 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
         for mut t in transcript {
             last_at = last_at.max(t["at"].as_i64().unwrap_or(last_at));
             t["at"] = json!(last_at);
-            let text = t["text"].as_str().unwrap_or_default().to_string();
+            let text = without_note(t["text"].as_str().unwrap_or_default()).to_string();
             let text = text.as_str();
             match t["role"].as_str() {
                 Some("user") => {
@@ -468,6 +506,14 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
                     }
                 }
                 _ => {}
+            }
+        }
+        // Lo cambió después de su tarea (un mensaje a @Fixer): el cambio va con su última respuesta, no
+        // también en su tarjeta (lo que sube al teléfono no lo lleva dos veces).
+        let change = state.store.agent_run(&agent_run).ok().flatten().as_ref().and_then(change_of);
+        if attach_change(&mut items[..], start, change) {
+            if let Some(card) = items.iter_mut().find(|i| i["kind"] == "agent" && i["node"] == node.as_str()) {
+                card.as_object_mut().map(|o| o.remove("change"));
             }
         }
         items.extend(live_item(&live, &name, role_logo(state, &role), last_at));
@@ -522,6 +568,8 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
             _ => {}
         }
     }
+    // El agente del hilo escribe (un hilo que empezó con @Fixer): su cambio con su última respuesta.
+    attach_change(&mut items[..], 0, change_of(run));
     let last_at = |run: &Value| run["transcript"].as_array().and_then(|t| t.iter().filter_map(|x| x["at"].as_i64()).max()).unwrap_or(0);
     items.extend(live_item(&chat, who, chat["logo"].as_str().unwrap_or(""), last_at(&chat)));
     items.extend(stopped_item(&chat, who, last_at(&chat)));
@@ -532,6 +580,7 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
         items.extend(stopped_item(&live, &name, last_at(&live)));
         participants.push(json!({ "node": format!("g-{role}"), "role": role, "name": name, "logo": role_logo(state, &role) }));
         let mut users = 0;
+        let start = items.len();
         let (folded, _) = fold_steps(live["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), live["status"] == "running");
         for t in folded {
             let text = without_note(t["text"].as_str().unwrap_or(""));
@@ -553,6 +602,8 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
                 _ => {}
             }
         }
+        // Un invitado que escribe (Fixer, Mayer): su cambio con su última respuesta.
+        attach_change(&mut items[..], start, state.store.agent_run(&run_id).ok().flatten().as_ref().and_then(change_of));
     }
     let (notes, outsiders) = note_items(state, id);
     items.extend(notes);

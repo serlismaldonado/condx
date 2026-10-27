@@ -142,6 +142,15 @@ cargo install wasm-bindgen-cli --version 0.2.129   # the version in Cargo.lock
 scripts/build-web-demo.sh                          # writes site/demo/pkg
 ```
 
+## Phone and cloud (optional)
+
+- **Phone app (Android):** threads with the agents, approvals, voice notes and notifications.
+  Download the APK from [condx-mobile's releases](https://github.com/serlismaldonado/condx-mobile/releases/latest);
+  how to install and pair it: [`docs/guide/15-phone.md`](docs/guide/15-phone.md).
+- **Condx Cloud and the cloud site:** Condx Cloud runs in your own Convex account and connects the
+  phone; an optional cloud site on [boat](https://boat.dev) keeps the agents working with the Mac
+  off. Setup: [`docs/guide/16-cloud.md`](docs/guide/16-cloud.md).
+
 ## Documentation
 
 The in-app guide follows the app's language: English in [`docs/guide`](docs/guide), Spanish in [`docs/guia`](docs/guia).

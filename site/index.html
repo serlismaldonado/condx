@@ -155,6 +155,12 @@
     }
     .tour .caption { display: none; margin: 0 0 4px; color: var(--muted); font-size: 15px; }
     .btn { display: inline-flex; align-items: center; gap: 8px; font: 500 15px/1 "IBM Plex Sans"; padding: 12px 20px; border: 1px solid var(--ink); background: var(--ink); color: #fff; text-decoration: none; cursor: pointer; }
+    /* Los enlaces de una sección: descargar, la guía. */
+    .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin: -8px 0 28px; }
+    .wrap > .sub + .actions { margin-top: -26px; }
+    .actions .link { color: var(--ink); font-weight: 500; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 4px; text-decoration-thickness: 2px; }
+    .actions .link:hover { text-decoration-color: var(--ink); }
+    .sub a { color: inherit; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
     .btn.amber { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
     /* Los comandos: una terminal como la de la portada (barra con copiar arriba, «$» en cada línea). */
@@ -282,6 +288,7 @@
         <div class="aside">
           <h2>Your agents in your pocket</h2>
           <p class="sub">The Android app talks to your Mac, or to the cloud when the Mac is off. Every message and approval is signed with a key that never leaves the phone.</p>
+          <div class="actions"><a class="btn" href="https://github.com/serlismaldonado/condx-mobile/releases/latest">Download for Android</a><a class="link" href="https://github.com/serlismaldonado/condx/blob/main/docs/guide/15-phone.md">Install and pair →</a></div>
           <div class="cap">your phone · away from the Mac</div>
           <div class="frame"><canvas class="art" data-art="phone" aria-hidden="true"></canvas><div class="mini top"><div class="row"><span class="dot"></span>Fixer replied · see changes</div></div><div class="mini"><div class="row" style="justify-self:end" data-status><span class="dot y"></span>Deploy to cloud dev?</div><button class="slide" type="button" style="justify-self:end" data-approve>Approve</button></div></div>
         </div>
@@ -298,7 +305,8 @@
     <section id="cloud">
       <div class="wrap">
         <h2>Close the laptop, the work keeps going</h2>
-        <p class="sub">Condx Cloud runs on your own Convex deployment and mirrors your Mac. When the Mac is off, a cloud worker answers instead.</p>
+        <p class="sub">Optional. Condx Cloud runs on your own Convex deployment and mirrors your Mac. When the Mac is off, a cloud site on <a href="https://boat.dev">boat</a> answers instead.</p>
+        <div class="actions"><a class="link" href="https://github.com/serlismaldonado/condx/blob/main/docs/guide/16-cloud.md">Set up Condx Cloud and the cloud site →</a></div>
         <div class="trio">
           <div>
             <div class="cap">mac off → cloud worker</div>

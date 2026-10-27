@@ -25,6 +25,8 @@ pub const CHAPTERS: &[(&str, &str, &str)] = &[
     ("Data", include_str!("../../../../docs/guide/13-data.md"), include_str!("../../../../docs/guia/13-datos.md")),
     ("When something goes wrong", include_str!("../../../../docs/guide/07-troubleshooting.md"), include_str!("../../../../docs/guia/07-problemas.md")),
     ("AI agents", include_str!("../../../../docs/guide/08-agents.md"), include_str!("../../../../docs/guia/08-agentes.md")),
+    ("The phone app", include_str!("../../../../docs/guide/15-phone.md"), include_str!("../../../../docs/guia/15-telefono.md")),
+    ("Condx Cloud and the cloud site", include_str!("../../../../docs/guide/16-cloud.md"), include_str!("../../../../docs/guia/16-nube.md")),
     ("Maintenance", include_str!("../../../../docs/guide/09-maintenance.md"), include_str!("../../../../docs/guia/09-mantenimiento.md")),
 ];
 

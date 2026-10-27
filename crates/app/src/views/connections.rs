@@ -144,6 +144,7 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
                 .border_color(crate::theme::Tokens::current(cx).accent_ink)
                 .child(ui::status_tag(Health::Warn, t!("Copy it now: the token isn't shown again.").to_string()))
                 .child(snippet("claude", t!("Claude Code"), ui::txt(&new["claudeCode"]).to_string(), cx))
+                .child(snippet("desktop", t!("Claude Desktop (claude_desktop_config.json, then restart it)"), serde_json::to_string_pretty(&new["claudeDesktop"]).unwrap_or_default(), cx))
                 .child(snippet("json", t!("Other clients (mcp.json)"), serde_json::to_string_pretty(&new["mcpJson"]).unwrap_or_default(), cx))
                 .child(ui::muted(t!("Mention it in a thread with @{h}; it sees it with the wait_for_mention tool.", h = ui::txt(&new["handle"])), cx).text_xs())
                 .child(h_flex().child(Button::new("conn-done").xsmall().ghost().label(t!("Done, I copied it")).on_click(cx.listener(|this, _, _, cx| {

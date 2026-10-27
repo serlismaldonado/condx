@@ -950,5 +950,6 @@
   "tools": "herramientas",
   "Thinking…": "Pensando…",
   "Thought for": "Pensó",
-  "Worked for": "Trabajó"
+  "Worked for": "Trabajó",
+  "Claude Desktop (claude_desktop_config.json, then restart it)": "Claude Desktop (claude_desktop_config.json; después reinícialo)"
 }

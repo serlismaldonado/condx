@@ -264,10 +264,15 @@ fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(150)).build()
 }
 
-/// MCP por stdio: una línea JSON-RPC por mensaje, reenviada a POST /mcp.
+/// MCP por stdio: una línea JSON-RPC por mensaje, reenviada a POST /mcp. Con `CONDX_MCP_TOKEN` (el
+/// token de una conexión, Configuración → Conexiones) entra como ese agente, con su nombre y su nivel:
+/// así se conecta Claude Desktop, que solo lanza servidores por stdio. Sin él, con el token local.
 fn mcp_stdio() -> Result<()> {
     let url = daemon_url("/mcp")?;
-    let token = config::token()?;
+    let token = match std::env::var("CONDX_MCP_TOKEN").ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+        Some(t) => t,
+        None => config::token()?,
+    };
     let agent = agent();
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();

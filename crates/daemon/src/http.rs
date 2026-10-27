@@ -669,6 +669,9 @@ async fn post_connection(AxState(state): AxState<Shared>, Extension(client): Ext
             v["url"] = json!(url);
             v["claudeCode"] = json!(format!("claude mcp add --transport http condx {url} --header \"Authorization: Bearer {token}\""));
             v["mcpJson"] = json!({ "mcpServers": { "condx": { "type": "http", "url": url, "headers": { "Authorization": format!("Bearer {token}") } } } });
+            // Claude Desktop solo lanza servidores por stdio: el puente `condxd mcp` con el token de la conexión.
+            let bin = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "condxd".into());
+            v["claudeDesktop"] = json!({ "mcpServers": { "condx": { "command": bin, "args": ["mcp"], "env": { "CONDX_MCP_TOKEN": token } } } });
             Json(v).into_response()
         }
         Err(e) => fail(StatusCode::BAD_REQUEST, e),

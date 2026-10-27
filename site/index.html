@@ -111,15 +111,42 @@
     .spec b { font: 500 12px "IBM Plex Mono"; padding: 2px 8px; white-space: nowrap; }
     .yes { color: var(--ok); background: #e9f7ee; } .no { color: var(--bad); background: #fdecec; } .you { color: var(--on-accent); background: var(--accent); }
 
-    .dark { background: var(--night); color: #fff1cf; }
-    .dark .sub, .dark .trio p { color: #c9b98f; }
-    .dark .cap { color: #b9a982; }
-    .dark .frame { border-color: #3a2e16; background: #1c170d; }
-    .dark .demo { border-color: #3a2e16; }
-    .demo { border: 1px solid #d9cfb4; background: var(--tint); position: relative; aspect-ratio: 16 / 10; overflow: hidden; }
+    /* El recorrido de la app de escritorio: pestañas a la izquierda, la ventana de la app a la derecha
+       (las capturas se turnan solas hasta que eliges una) y la app real en vivo dentro de la ventana. */
+    .tour { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 32px; align-items: start; }
+    .ttabs { display: grid; gap: 2px; }
+    .ttabs button { all: unset; cursor: pointer; display: grid; gap: 4px; padding: 14px 16px 14px 18px; position: relative; border-left: 2px solid var(--line); }
+    .ttabs button b { font: 500 17px/1.2 "Funnel Display"; color: var(--ink); }
+    .ttabs button span { font: 14px/1.45 "IBM Plex Sans", sans-serif; color: var(--muted); display: none; }
+    .ttabs button:hover b { color: #000; }
+    .ttabs button[aria-selected="true"] { border-left-color: var(--accent); background: var(--tint); }
+    .ttabs button[aria-selected="true"] span { display: block; }
+    .ttabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .ttabs .bar { position: absolute; left: -2px; top: 0; width: 2px; height: 0; background: #b07a06; }
+    .window { border: 1px solid #2b2620; background: #1b1b1b; box-shadow: 0 1px 0 #fff inset, 0 24px 48px -24px rgba(40, 28, 6, 0.45), 0 2px 6px rgba(40, 28, 6, 0.12); }
+    .window .chrome { display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 10px 0 14px; background: #242424; border-bottom: 1px solid #333; color: #bdbdbd; font: 12px "IBM Plex Mono"; }
+    .window .lights { display: flex; gap: 7px; } .window .lights i { width: 11px; height: 11px; border-radius: 50%; background: #4a4a4a; }
+    .window .lights i:nth-child(1) { background: #ec6a5e; } .window .lights i:nth-child(2) { background: #f4bf4f; } .window .lights i:nth-child(3) { background: #61c554; }
+    .window .title { flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .window .live { all: unset; cursor: pointer; font: 500 13px/1 "IBM Plex Sans"; padding: 7px 12px; background: var(--accent); color: var(--on-accent); white-space: nowrap; }
+    .window .live:hover { background: #ffc53d; } .window .live:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+    .demo { position: relative; aspect-ratio: 16 / 10; overflow: hidden; background: #1b1b1b; }
     .demo img, .demo iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; object-fit: cover; object-position: top left; }
-    .demo .veil { position: absolute; inset: 0; display: grid; place-items: center; background: linear-gradient(180deg, transparent 40%, rgba(21,18,11,0.75)); }
-    .demo .veil div { display: grid; gap: 8px; justify-items: center; text-align: center; color: #fff8e6; padding: 16px; font-size: 14px; }
+    .demo img { opacity: 0; transition: opacity 0.45s ease; } .demo img.on { opacity: 1; }
+    .demo .loading { position: absolute; inset: 0; display: grid; place-items: center; color: #bdbdbd; font: 13px "IBM Plex Mono"; background: rgba(27, 27, 27, 0.7); }
+    .tour .note { margin-top: 12px; font-size: 13px; color: var(--subtle); }
+    .tour.is-live .ttabs { opacity: 0.45; pointer-events: none; }
+    @media (max-width: 900px) {
+      .tour { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+      .ttabs { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border-bottom: 1px solid var(--line); }
+      .ttabs button { border-left: 0; border-bottom: 2px solid transparent; padding: 10px 6px; text-align: center; }
+      .ttabs button b { font-size: 15px; }
+      .ttabs button[aria-selected="true"] { border-bottom-color: var(--accent); background: none; }
+      .ttabs button[aria-selected="true"] span { display: none; }
+      .ttabs .bar { display: none; }
+      .tour .caption { display: block !important; }
+    }
+    .tour .caption { display: none; margin: 0 0 4px; color: var(--muted); font-size: 15px; }
     .btn { display: inline-flex; align-items: center; gap: 8px; font: 500 15px/1 "IBM Plex Sans"; padding: 12px 20px; border: 1px solid var(--ink); background: var(--ink); color: #fff; text-decoration: none; cursor: pointer; }
     .btn.amber { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
@@ -307,18 +334,34 @@
       </div>
     </section>
 
-    <section id="desktop" class="dark">
+    <section id="desktop">
       <div class="wrap">
         <h2>Everything around your backend, in one app</h2>
-        <p class="sub">Every environment, from your local backend to production, with its data, schema and functions. Try the real app: it runs in your browser on a sample project.</p>
-        <div class="demo" id="stage">
-          <img src="shots/overview.jpg" alt="Condx showing the environments of a sample project" width="1800" height="1125">
-          <div class="veil"><div><button class="btn amber" id="launch" type="button">▶ Launch the live demo</button>The real app in WebAssembly · about 6 MB</div></div>
-        </div>
-        <div class="trio" style="margin-top:44px">
-          <div><div class="cap">my-app · schema</div><div class="frame"><img src="shots/schema-diff.jpg" alt="Comparing the local schema with cloud dev" loading="lazy" style="width:100%;height:100%;object-fit:cover;object-position:top left"></div><h3>Schema, checked</h3><p>Compare local with cloud before you deploy.</p></div>
-          <div><div class="cap">my-app · functions</div><div class="frame"><img src="shots/insights.jpg" alt="Calls, errors and latency per function" loading="lazy" style="width:100%;height:100%;object-fit:cover;object-position:top left"></div><h3>Slow functions</h3><p>Calls, errors and p95 per function.</p></div>
-          <div><div class="cap">my-app · data</div><div class="frame"><img src="shots/data.jpg" alt="Browsing a table with its documents" loading="lazy" style="width:100%;height:100%;object-fit:cover;object-position:top left"></div><h3>Data everywhere</h3><p>Tables in every environment, read-only. Local backend without Docker.</p></div>
+        <p class="sub">Every environment, from your local backend to production, with its data, schema and functions. Take a look, or try the real app right here: it runs in your browser on a sample project.</p>
+        <div class="tour" id="tour">
+          <div class="ttabs" role="tablist" aria-label="Parts of the app">
+            <button role="tab" aria-selected="true" data-shot="0"><i class="bar"></i><b>Overview</b><span>Local, rehearsal, cloud dev and prod at a glance.</span></button>
+            <button role="tab" aria-selected="false" data-shot="1"><i class="bar"></i><b>Workflows</b><span>Chain checks, approvals and deploys.</span></button>
+            <button role="tab" aria-selected="false" data-shot="2"><i class="bar"></i><b>Jobs</b><span>What the agents ask for waits for your OK.</span></button>
+            <button role="tab" aria-selected="false" data-shot="3"><i class="bar"></i><b>Schema</b><span>Tables and relations, and what changed.</span></button>
+            <button role="tab" aria-selected="false" data-shot="4"><i class="bar"></i><b>Functions</b><span>Calls, errors and p95 per function.</span></button>
+            <button role="tab" aria-selected="false" data-shot="5"><i class="bar"></i><b>Data</b><span>Every table, in every environment.</span></button>
+          </div>
+          <div>
+            <p class="caption" id="caption">Local, rehearsal, cloud dev and prod at a glance.</p>
+            <div class="window">
+              <div class="chrome"><span class="lights"><i></i><i></i><i></i></span><span class="title" id="wtitle">Condx — my-app · Overview</span><button class="live" id="launch" type="button">▶ Try it live</button></div>
+              <div class="demo" id="stage">
+                <img class="on" src="shots/overview.jpg" alt="Condx showing the environments of a sample project" width="1800" height="1125">
+                <img src="shots/workflows.jpg" alt="A workflow: CI is green, cloud dev responds, approve the deploy" width="1800" height="1125" loading="lazy">
+                <img src="shots/jobs.jpg" alt="Jobs, one waiting for approval" width="1800" height="1125" loading="lazy">
+                <img src="shots/schema.jpg" alt="The schema as a diagram of tables and relations" width="1800" height="1125" loading="lazy">
+                <img src="shots/insights.jpg" alt="Calls, errors and latency per function" width="1800" height="1125" loading="lazy">
+                <img src="shots/data.jpg" alt="Browsing a table with its documents" width="1800" height="1125" loading="lazy">
+              </div>
+            </div>
+            <p class="note" id="note">The live demo is the real app in WebAssembly (about 6 MB), on sample data. Best on a computer.</p>
+          </div>
         </div>
       </div>
     </section>
@@ -403,14 +446,56 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
       box.append(bar, pre);
     });
 
-    // La demo es la app real compilada a WebAssembly (~6 MB): se carga solo al pedirla.
-    document.getElementById("launch").addEventListener("click", () => {
-      const stage = document.getElementById("stage");
-      const frame = document.createElement("iframe");
-      frame.src = "demo/"; frame.title = "Condx live demo";
-      frame.addEventListener("load", () => setTimeout(() => { stage.querySelector(".veil")?.remove(); stage.querySelector("img")?.remove(); }, 1200));
-      stage.appendChild(frame);
-    });
+    // El recorrido: las capturas se turnan solas (mientras se ve la sección) hasta que eliges una.
+    // «Try it live» carga la app real en WebAssembly (~6 MB) dentro de la ventana; en el teléfono se abre aparte.
+    (() => {
+      const tour = document.getElementById("tour"), stage = document.getElementById("stage");
+      const tabs = [...tour.querySelectorAll("[role=tab]")], shots = [...stage.querySelectorAll("img")];
+      const title = document.getElementById("wtitle"), caption = document.getElementById("caption"), launch = document.getElementById("launch");
+      const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const EVERY = 5500;
+      let cur = 0, auto = !still, visible = false, since = performance.now(), live = false;
+      const show = (n) => {
+        cur = (n + tabs.length) % tabs.length; since = performance.now();
+        tabs.forEach((b, k) => { b.setAttribute("aria-selected", String(k === cur)); b.tabIndex = k === cur ? 0 : -1; b.querySelector(".bar").style.height = "0"; });
+        shots.forEach((s, k) => s.classList.toggle("on", k === cur));
+        const name = tabs[cur].querySelector("b").textContent;
+        title.textContent = `Condx — my-app · ${name}`;
+        caption.textContent = tabs[cur].querySelector("span").textContent;
+      };
+      tabs.forEach((b, k) => b.addEventListener("click", () => { auto = false; show(k); }));
+      tour.querySelector(".ttabs").addEventListener("keydown", (e) => {
+        const d = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+        if (!d) return; e.preventDefault(); auto = false; show(cur + d); tabs[cur].focus();
+      });
+      new IntersectionObserver(([e]) => { visible = e.isIntersecting; since = performance.now(); }, { threshold: 0.35 }).observe(tour);
+      const tick = () => {
+        if (auto && visible && !live) {
+          const p = Math.min(1, (performance.now() - since) / EVERY);
+          tabs[cur].querySelector(".bar").style.height = p * 100 + "%";
+          if (p >= 1) show(cur + 1);
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+      launch.addEventListener("click", () => {
+        if (window.innerWidth < 760) { window.open("demo/", "_blank", "noopener"); return; }
+        if (live) {
+          live = false; tour.classList.remove("is-live");
+          stage.querySelector("iframe")?.remove(); stage.querySelector(".loading")?.remove();
+          launch.textContent = "▶ Try it live"; show(cur); return;
+        }
+        live = true; tour.classList.add("is-live");
+        tabs[cur].querySelector(".bar").style.height = "0";
+        launch.textContent = "✕ Close demo";
+        title.textContent = "Condx — my-app · live demo";
+        const wait = document.createElement("div"); wait.className = "loading"; wait.textContent = "Loading the app…";
+        const frame = document.createElement("iframe");
+        frame.src = "demo/"; frame.title = "Condx live demo";
+        frame.addEventListener("load", () => setTimeout(() => wait.remove(), 1200));
+        stage.append(frame, wait);
+      });
+    })();
 
     // La ilustración de píxeles: un grupo de ingenieros (los agentes) mira desde una plataforma el
     // lanzamiento de un cohete a lo lejos, como la revisión de un despliegue. El cielo y el suelo se

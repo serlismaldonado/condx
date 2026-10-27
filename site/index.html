@@ -73,20 +73,23 @@
     .cmd { font: 12.5px "IBM Plex Mono", monospace; color: var(--muted); margin-top: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .trio p { color: var(--muted); }
 
-    /* Cuadros: miniaturas de la app (los mismos elementos que el teléfono). */
-    .mini { position: absolute; inset: 14px; display: grid; gap: 8px; align-content: start; font-size: 12px; }
-    .bub { justify-self: end; max-width: 82%; background: #fdf4dc; border: 1px solid #f0dda8; padding: 6px 9px; }
-    .rep { max-width: 88%; background: #fff; border: 1px solid var(--line); padding: 6px 9px; }
-    .who { font: 500 11.5px "IBM Plex Sans"; display: flex; gap: 6px; align-items: center; }
-    .who i { width: 14px; height: 14px; border: 1px solid var(--line); background: #fff; display: grid; place-items: center; font-style: normal; color: var(--accent); font-size: 9px; }
-    .chg { color: #a87400; font-weight: 500; font-size: 11.5px; }
-    .diff { font: 10.5px/1.5 "IBM Plex Mono", monospace; background: #fff; border: 1px solid var(--line); padding: 6px 8px; white-space: pre; overflow: hidden; }
-    .diff .a { color: var(--ok); } .diff .r { color: var(--bad); }
-    .row { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--line); padding: 7px 9px; }
-    .dot { width: 8px; height: 8px; background: var(--ok); flex: none; }
+    /* Cuadros: una escena de píxeles y, encima, cajas de la app en estilo pixel (como boat). */
+    .art { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+    .mini { position: absolute; left: 12px; right: 12px; bottom: 12px; justify-items: start; display: grid; gap: 6px; font: 11px/1.45 "IBM Plex Mono", monospace; }
+    .mini.top { bottom: auto; top: 12px; }
+    .bub, .rep, .row, .diff, .slide { box-shadow: 3px 3px 0 rgba(31, 21, 3, 0.35); }
+    .bub { justify-self: end; max-width: 84%; background: #fff4d6; color: #1f1503; border: 2px solid #1f1503; padding: 5px 8px; }
+    .rep { max-width: 88%; background: #241b0c; color: #fff1cf; border: 2px solid #241b0c; padding: 5px 8px; }
+    .who { font: 500 10.5px "IBM Plex Mono"; display: flex; gap: 6px; align-items: center; color: #1f1503; background: #fff4d6; justify-self: start; padding: 1px 6px; border: 2px solid #1f1503; }
+    .who i { display: none; }
+    .chg { color: #1f1503; background: var(--accent); justify-self: start; padding: 2px 8px; font-weight: 500; border: 2px solid #1f1503; }
+    .diff { font: 10px/1.5 "IBM Plex Mono", monospace; background: #241b0c; color: #e9dcbc; border: 2px solid #241b0c; padding: 5px 8px; white-space: pre; overflow: hidden; }
+    .diff .a { color: #7ee2a0; } .diff .r { color: #ff9a8a; }
+    .row { display: flex; align-items: center; gap: 8px; background: #241b0c; color: #fff1cf; border: 2px solid #241b0c; padding: 4px 8px; }
+    .dot { width: 7px; height: 7px; background: #4ade80; flex: none; }
     .dot.y { background: var(--accent); }
-    .row small { margin-left: auto; font: 10.5px "IBM Plex Mono"; color: var(--subtle); }
-    .slide { background: var(--accent); color: var(--on-accent); font-weight: 500; padding: 7px 10px; text-align: center; }
+    .row small { margin-left: auto; font: 10px "IBM Plex Mono"; color: #b9a982; }
+    .slide { background: var(--accent); color: var(--on-accent); font-weight: 500; padding: 5px 10px; text-align: center; border: 2px solid #1f1503; }
 
     /* Bandas alternadas (como las secciones de boat). */
     .band { background: var(--tint); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
@@ -102,6 +105,11 @@
     .spec b { font: 500 12px "IBM Plex Mono"; padding: 2px 8px; white-space: nowrap; }
     .yes { color: var(--ok); background: #e9f7ee; } .no { color: var(--bad); background: #fdecec; } .you { color: var(--on-accent); background: var(--accent); }
 
+    .dark { background: var(--night); color: #fff1cf; }
+    .dark .sub, .dark .trio p { color: #c9b98f; }
+    .dark .cap { color: #b9a982; }
+    .dark .frame { border-color: #3a2e16; background: #1c170d; }
+    .dark .demo { border-color: #3a2e16; }
     .demo { border: 1px solid #d9cfb4; background: var(--tint); position: relative; aspect-ratio: 16 / 10; overflow: hidden; }
     .demo img, .demo iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; object-fit: cover; object-position: top left; }
     .demo .veil { position: absolute; inset: 0; display: grid; place-items: center; background: linear-gradient(180deg, transparent 40%, rgba(21,18,11,0.75)); }
@@ -176,39 +184,22 @@
         <div class="trio">
           <div>
             <div class="cap">your phone → my-app</div>
-            <div class="frame"><div class="mini">
-              <div class="bub">@fixer the invoices list is blank when empty. Show "No invoices yet".</div>
-              <div class="who"><i>✳</i>Fixer · worked 41 s</div>
-              <div class="rep">Added the empty state and a test. Checks pass.</div>
-              <div class="chg">› See changes · 2 files</div>
-            </div></div>
+            <div class="frame"><canvas class="art" data-art="crew" aria-hidden="true"></canvas><div class="mini top"><div class="bub">@fixer show "No invoices yet"</div></div><div class="mini"><div class="chg" style="justify-self:end">› See changes · 2 files</div></div></div>
             <div class="cmd">$ @fixer fix the empty state</div>
             <h3>Fixer makes the change</h3>
             <p>On its own branch from the latest dev, with your checks run before it says it's done.</p>
           </div>
           <div>
             <div class="cap">my-app · do a task</div>
-            <div class="frame"><div class="mini">
-              <div class="row"><span class="dot"></span>Fixer<small>branch</small></div>
-              <div class="row"><span class="dot"></span>Reviewer · approve<small>diff</small></div>
-              <div class="row"><span class="dot"></span>Checks · lint, test<small>ci</small></div>
-              <div class="row"><span class="dot"></span>Preview on cloud dev<small>url</small></div>
-              <div class="slide">Slide to merge into dev →</div>
-            </div></div>
+            <div class="frame"><canvas class="art" data-art="pad" aria-hidden="true"></canvas><div class="mini top"><div class="row"><span class="dot"></span>review · checks · preview</div></div><div class="mini"><div class="slide">Slide to merge into dev →</div></div></div>
             <div class="cmd">$ give_task "show an empty state on invoices"</div>
             <h3>A flow, end to end</h3>
             <p>Review, checks and a preview URL to try it. You slide to merge; production waits for you.</p>
           </div>
           <div>
             <div class="cap">thread → see changes</div>
-            <div class="frame"><div class="mini">
-              <div class="diff"><span>@@ InvoicesTable.tsx @@</span>
-<span class="r">-  if (!rows.length) return null;</span>
-<span class="a">+  if (!rows.length)</span>
-<span class="a">+    return &lt;Empty title="No invoices yet" /&gt;;</span></div>
-              <div class="who"><i>✳</i>Reviewer</div>
-              <div class="rep">Approve: one file, the test covers it.</div>
-            </div></div>
+            <div class="frame"><canvas class="art" data-art="review" aria-hidden="true"></canvas><div class="mini top"><div class="diff"><span class="r">-  return null;</span>
+<span class="a">+  return &lt;Empty /&gt;;</span></div></div><div class="mini"><div class="who" style="justify-self:end">Reviewer · approve</div></div></div>
             <div class="cmd">$ git diff dev..condx/fix-invoices</div>
             <h3>See exactly what changed</h3>
             <p>The files and the diff sit under the agent's reply, so you can read it before you merge.</p>
@@ -240,33 +231,21 @@
         <div class="trio">
           <div>
             <div class="cap">mac off → cloud worker</div>
-            <div class="frame"><div class="mini">
-              <div class="row"><span class="dot" style="background:#9a9a9a"></span>Your Mac<small>asleep</small></div>
-              <div class="row"><span class="dot"></span>Cloud worker<small>answering</small></div>
-              <div class="rep">Preview ready: my-app-dev.example.dev</div>
-            </div></div>
+            <div class="frame"><canvas class="art" data-art="night" aria-hidden="true"></canvas><div class="mini top"><div class="row"><span class="dot" style="background:#8a8a8a"></span>Mac asleep</div></div><div class="mini"><div class="row" style="justify-self:end"><span class="dot"></span>cloud answering</div></div></div>
             <div class="cmd">$ scripts/cloud-deploy.sh</div>
             <h3>Threads, tasks, previews</h3>
             <p>The same agents and flows, against each project's cloud dev.</p>
           </div>
           <div>
             <div class="cap">claude.ai → condx</div>
-            <div class="frame"><div class="mini">
-              <div class="bub">Give my-app a task: add CSV export to invoices.</div>
-              <div class="who"><i>✳</i>Claude · via Condx</div>
-              <div class="rep">Started "Do a task". I'll share the preview URL when it's ready.</div>
-            </div></div>
+            <div class="frame"><canvas class="art" data-art="dish" aria-hidden="true"></canvas><div class="mini top"><div class="bub">Give my-app a task: CSV export</div></div><div class="mini"><div class="who">Claude · via Condx</div></div></div>
             <div class="cmd">$ connect with a code from your phone</div>
             <h3>Claude, from anywhere</h3>
             <p>A remote MCP server: connect Claude once, then give tasks with your Mac off.</p>
           </div>
           <div>
             <div class="cap">github actions → your devices</div>
-            <div class="frame"><div class="mini">
-              <div class="row"><span class="dot"></span>Condx for macOS 0.2.5<small>released</small></div>
-              <div class="row"><span class="dot"></span>Condx for Android 0.1.10<small>released</small></div>
-              <div class="slide">Install</div>
-            </div></div>
+            <div class="frame"><canvas class="art" data-art="launch" aria-hidden="true"></canvas><div class="mini top"><div class="row" style="justify-self:end"><span class="dot"></span>macOS 0.2.5</div><div class="row" style="justify-self:end"><span class="dot"></span>Android 0.1.10</div></div></div>
             <div class="cmd">$ request_release --app phone</div>
             <h3>Releases without the Mac</h3>
             <p>Both apps build on GitHub Actions and offer the update themselves.</p>
@@ -293,7 +272,7 @@
       </div>
     </section>
 
-    <section id="desktop">
+    <section id="desktop" class="dark">
       <div class="wrap">
         <h2>Everything around your backend, in one app</h2>
         <p class="sub">Every environment, from your local backend to production, with its data, schema and functions. Try the real app: it runs in your browser on a sample project.</p>
@@ -569,6 +548,129 @@ cd condx &amp;&amp; scripts/cloud-deploy.sh</pre></div>
         requestAnimationFrame(tick);
       }
     }
+    // Las escenas de las tarjetas: paisajes claros de píxeles (la de la nube, de noche) con un motivo
+    // cada una; luces que parpadean y un cohete en vuelo, a pocos cuadros por segundo.
+    function vignette(canvas) {
+      const kind = canvas.dataset.art;
+      const ctx = canvas.getContext("2d");
+      const stops = [[0, [24, 19, 11]], [0.3, [70, 50, 20]], [0.5, [150, 104, 32]], [0.66, [222, 160, 52]], [0.8, [244, 205, 120]], [0.92, [250, 236, 200]], [1, [255, 250, 236]]];
+      const color = (v) => {
+        v = Math.max(0, Math.min(1, v));
+        for (let i = 1; i < stops.length; i++) {
+          const [p1, c1] = stops[i], [p0, c0] = stops[i - 1];
+          if (v <= p1) { const f = (v - p0) / (p1 - p0); return c0.map((c, k) => Math.round(c + (c1[k] - c) * f)); }
+        }
+        return stops[stops.length - 1][1];
+      };
+      const fill = (v) => { const c = color(v); return `rgb(${c[0]},${c[1]},${c[2]})`; };
+      const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+      const night = kind === "night";
+      let W, H, bg, hz;
+      const rect = (g, v, x, y, w, h) => { g.fillStyle = fill(v); g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); };
+      // Una persona de perfil (silueta), con audífonos.
+      const person = (g, x, foot, h, v, extra) => {
+        const head = Math.max(2, Math.round(h * 0.16)), bw = Math.max(3, Math.round(h * 0.28));
+        const top = foot - h;
+        rect(g, v, x - head / 2, top, head, head + 1);
+        rect(g, v, x - bw / 2, top + head + 1, bw, h * 0.42);
+        rect(g, v, x - bw / 2 + 1, top + head + 1 + h * 0.42, Math.max(1, bw / 2 - 1), h * 0.4);
+        rect(g, v, x + 1, top + head + 1 + h * 0.42, Math.max(1, bw / 2 - 1), h * 0.4);
+        rect(g, v, x - head / 2 - 1, top + 1, 1, head - 1);
+        if (extra === "point") for (let k = 0; k < h * 0.35; k++) rect(g, v, x + bw / 2 + k * 0.6, top + head + 2 - k, 1, 1);
+        if (extra === "tablet") rect(g, 0.97, x + bw / 2, top + head + 2, 3, 2);
+        if (extra === "bino") rect(g, v, x + head / 2, top + 1, 2, 2);
+      };
+      const tower = (g, x, base, h) => {
+        rect(g, 0.28, x - 3, base - h, 2, h);
+        for (let k = 0; k < h; k += 3) rect(g, 0.28, x - 4, base - k, 4, 1);
+        rect(g, 0.3, x - 6, base, 13, 1);
+      };
+      const rocket = (g, x, y, h) => {
+        rect(g, 0.98, x - 1, y + 1, 3, h - 1); rect(g, 0.82, x - 1, y + 1, 1, h - 1);
+        rect(g, 0.98, x, y, 1, 1); rect(g, 0.4, x - 2, y + h - 2, 1, 2); rect(g, 0.4, x + 2, y + h - 2, 1, 2);
+      };
+      const setup = () => {
+        const px = 3;
+        W = Math.ceil(canvas.clientWidth / px); H = Math.ceil(canvas.clientHeight / px);
+        if (!W || !H) return;
+        canvas.width = W; canvas.height = H;
+        hz = Math.round(H * 0.6);
+        bg = document.createElement("canvas"); bg.width = W; bg.height = H;
+        const g = bg.getContext("2d"); const img = g.createImageData(W, H);
+        const hills = [], near = [];
+        const seed = kind.length * 1.7;
+        for (let x = 0; x < W; x++) {
+          const u = x / W;
+          hills.push(hz - H * (0.06 + 0.05 * Math.sin(u * 6 + seed) + 0.02 * Math.sin(u * 17 + seed * 2)));
+          near.push(hz - H * (0.015 + 0.02 * Math.sin(u * 9 + seed * 3)));
+        }
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+          let v;
+          if (y < hz) {
+            v = night ? 0.12 + (y / hz) * 0.32 : 0.98 - (1 - y / hz) * 0.1 - Math.pow(y / hz, 3) * 0.12;
+            if (y > near[x]) v = night ? 0.22 : 0.7; else if (y > hills[x]) v = night ? 0.17 : 0.8;
+          } else {
+            const d = (y - hz) / (H - hz);
+            v = night ? 0.2 - d * 0.1 : 0.66 - d * 0.12;
+            if (!night && Math.sin(y * 1.5 + Math.sin(x * 0.07) * 2) > 0.85) v += 0.06;
+          }
+          const dither = (bayer[(y % 4) * 4 + (x % 4)] / 16 - 0.5) / 20;
+          const c = color(Math.round((v + dither) * 20) / 20), i = (y * W + x) * 4;
+          img.data[i] = c[0]; img.data[i + 1] = c[1]; img.data[i + 2] = c[2]; img.data[i + 3] = 255;
+        }
+        g.putImageData(img, 0, 0);
+        // El motivo de cada tarjeta.
+        const h = Math.round(H * 0.32);
+        if (kind === "crew") {                       // un ingeniero en su consola, la torre a lo lejos
+          tower(g, W * 0.8, hz - 2, Math.round(H * 0.2)); rocket(g, W * 0.8 + 2, hz - 2 - Math.round(H * 0.08), Math.round(H * 0.08));
+          rect(g, 0.3, W * 0.12, hz - 4, W * 0.22, 4); rect(g, 0.92, W * 0.15, hz - 7, 6, 3);
+          person(g, W * 0.4, hz, h, 0.22, "tablet");
+        } else if (kind === "pad") {                  // la torre con el cohete y luces de verificación
+          tower(g, W * 0.5, hz - 1, Math.round(H * 0.34)); rocket(g, W * 0.5 + 2, hz - 1 - Math.round(H * 0.14), Math.round(H * 0.14));
+          for (const k of [0.18, 0.3, 0.7, 0.82]) rect(g, 0.3, W * k, hz - 9, 1, 9);
+        } else if (kind === "review") {               // dos ingenieros revisan con binoculares
+          tower(g, W * 0.82, hz - 2, Math.round(H * 0.18)); rocket(g, W * 0.82 + 2, hz - 2 - Math.round(H * 0.07), Math.round(H * 0.07));
+          person(g, W * 0.38, hz + 2, h, 0.2, "bino"); person(g, W * 0.52, hz + 2, Math.round(h * 0.95), 0.2, "point");
+        } else if (kind === "night") {                // de noche: una casa a oscuras y el centro de la nube encendido
+          for (let i = 0; i < 26; i++) { const r1 = Math.sin(i * 12.9898) * 43758.5453, r2 = Math.sin(i * 78.233) * 12543.21; rect(g, 0.6 + (i % 3) * 0.15, (r1 - Math.floor(r1)) * W, (r2 - Math.floor(r2)) * hz * 0.7, 1, 1); }
+          rect(g, 0.1, W * 0.14, hz - 8, 12, 8); rect(g, 0.1, W * 0.14 + 2, hz - 11, 8, 3);
+          rect(g, 0.16, W * 0.62, hz - 18, 24, 18);
+          for (let k = 0; k < 4; k++) for (let j = 0; j < 3; j++) rect(g, 0.82, W * 0.62 + 3 + k * 5, hz - 15 + j * 5, 2, 2);
+        } else if (kind === "dish") {                 // una antena que recibe la señal desde lejos
+          const cx = W * 0.62, cy = hz - Math.round(H * 0.2);
+          rect(g, 0.25, cx - 1, cy, 2, hz - cy);
+          for (let k = -8; k <= 8; k++) rect(g, 0.3, cx + k - 4, cy - 6 + Math.round((k * k) / 12) - 2, 1, 2);
+          rect(g, 0.3, cx - 4, cy - 10, 1, 6);
+        } else if (kind === "launch") {               // el lanzamiento: la torre y la estela
+          tower(g, W * 0.3, hz - 1, Math.round(H * 0.22));
+        }
+        draw(0);
+      };
+      // Lo que se mueve: luces que parpadean y, en «launch», el cohete que sube con su estela.
+      const draw = (time) => {
+        if (!bg) return;
+        ctx.drawImage(bg, 0, 0);
+        const blink = Math.sin(time * 3) > 0;
+        if (kind === "pad") for (const k of [0.18, 0.3, 0.7, 0.82]) { ctx.fillStyle = fill(blink ? 0.95 : 0.5); ctx.fillRect(Math.round(W * k), hz - 10, 1, 1); }
+        if (kind === "dish") { ctx.fillStyle = fill(blink ? 0.97 : 0.5); ctx.fillRect(Math.round(W * 0.62) - 4, hz - Math.round(H * 0.2) - 11, 1, 1);
+          for (let r = 0; r < 3; r++) { const k = ((time * 0.6 + r / 3) % 1); ctx.fillStyle = fill(0.5 + (1 - k) * 0.3); ctx.fillRect(Math.round(W * 0.62) - 6 - Math.round(k * W * 0.4), hz - Math.round(H * 0.2) - 12 - Math.round(k * H * 0.25), 2, 1); } }
+        if (kind === "launch") {
+          const k = (time % 6) / 6, rh = Math.round(H * 0.12);
+          const x = Math.round(W * 0.3) + 2, y = Math.round(hz - 1 - rh - k * k * H * 0.9);
+          for (let s = 0; s < 14; s++) { ctx.fillStyle = fill(0.92 - s * 0.012); ctx.fillRect(x - 1 - (s % 3 === 0 ? 1 : 0), y + rh + s * 2, 3 + (s > 6 ? 1 : 0), 2); }
+          rocket(ctx, x, y, rh); ctx.fillStyle = fill(1); ctx.fillRect(x, y + rh, 1, 2 + (blink ? 1 : 0));
+        }
+        if (kind === "night") { ctx.fillStyle = fill(blink ? 0.97 : 0.6); ctx.fillRect(Math.round(W * 0.62) + 11, hz - 21, 2, 2); }
+      };
+      setup();
+      let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(setup, 150); });
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      let visible = false, last = 0;
+      new IntersectionObserver(([e]) => { visible = e.isIntersecting; if (visible) requestAnimationFrame(tick); }).observe(canvas);
+      function tick(now) { if (!visible) return; if (now - last > 110) { last = now; draw(now / 1000); } requestAnimationFrame(tick); }
+    }
+    document.querySelectorAll("canvas.art").forEach(vignette);
+
     const phone = window.innerWidth < 640;
     scene(document.getElementById("scene"), { horizon: phone ? 0.9 : 0.84, pad: phone ? 0.86 : 0.9, people: phone ? 0.12 : 0.22, crew: phone ? 4 : 5, crewAt: phone ? 0.08 : 0.5, crewSpan: phone ? 0.6 : 0.28, offset: 1 });
     scene(document.getElementById("scene2"), { horizon: 0.84, pad: phone ? 0.84 : 0.76, people: 0.3, crew: phone ? 4 : 6, crewAt: phone ? 0.06 : 0.08, crewSpan: phone ? 0.28 : 0.26, offset: 7 });

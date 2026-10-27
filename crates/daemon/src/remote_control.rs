@@ -98,6 +98,11 @@ fn stop() {
 /// El vigilante: cada 30 s, con sesión iniciada, copias al día y remote-control vivo; sin sesión, nada.
 pub fn spawn(state: Shared) {
     let _ = std::thread::Builder::new().name("remote-control".into()).spawn(move || loop {
+        // remote-control redibuja su estado en la terminal: el log crece; se vacía pasado 2 MB.
+        let log = home().join("remote-control.log");
+        if std::fs::metadata(&log).is_ok_and(|m| m.len() > 2 * 1024 * 1024) {
+            let _ = std::fs::write(&log, "");
+        }
         if logged_in() {
             for p in state.store.projects().unwrap_or_default() {
                 if let Err(e) = ensure_workspace(&p.repo, &p.name) {

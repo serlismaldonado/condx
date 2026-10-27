@@ -7,10 +7,9 @@
   </defs>
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
   <rect x="100.5" y="100.5" width="823" height="823" rx="184.5" fill="none" stroke="#2e2e2e" stroke-width="1"/>
-  <g transform="translate(536 512) scale(2.6) translate(-110 -110)" fill="none" stroke="#f3b01c" stroke-width="7" stroke-linecap="round">
-    <path d="M176 44A93 93 0 1 0 176 176"/>
-    <path d="M160 62A70 70 0 1 0 160 158"/>
-    <path d="M144 80A47 47 0 1 0 144 140"/>
-    <path d="M128 98A24 24 0 1 0 128 122"/>
+  <!-- La marca de la landing (assets/brand/mark.svg), centrada por su forma (x 1.9–18.6, y 1.9–22.1). -->
+  <g transform="translate(512 512) scale(23) translate(-10.25 -12)" fill="none" stroke="#f3b01c" stroke-width="2.2">
+    <path d="M18 5.5A9 9 0 1 0 18 18.5"/>
+    <path d="M15 9a4.5 4.5 0 1 0 0 6"/>
   </g>
 </svg>

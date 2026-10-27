@@ -139,12 +139,12 @@ export const gitShowTool = defineTool({
 });
 
 /** Las herramientas de lectura de Condx que el agente puede usar (el daemon también lo limita). */
-export const CONDX_TOOLS = ["get_overview", "list_environments", "get_environment", "get_env_var_names", "get_git", "get_deployer", "get_vercel", "get_frontend", "list_incidents", "list_recipes", "list_jobs", "get_job", "get_job_log", "list_workflows", "get_workflow_run", "get_errors"] as const;
+export const CONDX_TOOLS = ["get_overview", "list_environments", "get_environment", "get_env_var_names", "get_git", "get_deployer", "get_vercel", "get_frontend", "list_incidents", "list_recipes", "list_jobs", "get_job", "get_job_log", "list_workflows", "get_workflow_run", "get_errors", "hand_off"] as const;
 
 export function condxTool(daemonUrl: string, token: string) {
   return defineTool({
     name: "condx",
-    description: `Read from Condx (the developer daemon watching this project): ${CONDX_TOOLS.join(", ")}. Pass the tool name and its arguments.`,
+    description: `Condx (the developer daemon watching this project): ${CONDX_TOOLS.join(", ")}. All read, except hand_off (a chat hands a change to an agent that writes). Pass the tool name and its arguments.`,
     parameters: Type.Object({ tool: Type.String(), args: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),
     replay: "safe",
     execute: async (args) => {

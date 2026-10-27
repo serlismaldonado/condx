@@ -1431,7 +1431,14 @@ fn process_thread_requests(state: &Shared, s: &mut Session) {
                             let (project, text) = crate::agents::take_project(&text);
                             let project = project.filter(|n| state.store.projects().unwrap_or_default().iter().any(|p| &p.name == n));
                             let (model, text) = crate::agents::take_model(&text);
-                            match s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model, crate::agent_host::start_chat_with(state, &text, project.as_deref(), &by, &p.images))) {
+                            // `@agente …` al principio: ese agente contesta el hilo (Fixer, Mayer…).
+                            let started = s.rt.block_on(crate::agents::MODEL_OVERRIDE.scope(model.clone(), async {
+                                match crate::threads::start_with_role(state, &text, project.as_deref(), &by, &p.images).await? {
+                                    Some(run) => Ok(run),
+                                    None => crate::agent_host::start_chat_with(state, &text, project.as_deref(), &by, &p.images).await,
+                                }
+                            }));
+                            match started {
                                 Ok(run) => format!("thread {}", run["id"].as_str().unwrap_or("?")),
                                 Err(e) => format!("rejected: {e:#}"),
                             }

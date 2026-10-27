@@ -72,6 +72,12 @@ pub fn tools() -> Vec<Value> {
             json!({ "version": { "type": "string", "description": "X.Y.Z; omit for the next patch" }, "app": { "type": "string", "enum": ["desktop", "phone"], "description": "desktop (default: app, daemon and agent host) or phone (the Android app)" } }),
             &[],
         ),
+        tool(
+            "hand_off",
+            "For the agent of a chat: hands a change the developer asked for to an agent that writes (fixer for the project's code; mayer for Condx itself: daemon, desktop app, agent host, Condx Cloud and the phone app condx-mobile). It answers in the same thread, works on its own branch and the commit goes to GitHub; deploying still needs the developer's approval. Use your thread id (given in your instructions) and write the whole task.",
+            json!({ "thread": { "type": "string", "description": "Your chat's thread id" }, "agent": { "type": "string", "description": "fixer, mayer or another agent (list_agents)" }, "task": { "type": "string", "description": "The complete task: what to change and where, with what the developer said" } }),
+            &["thread", "agent", "task"],
+        ),
         // Trabajos (F2). Aprobar no está: solo desde la app.
         tool("list_recipes", "Available recipes: what they do, which environments they run on, what approval they need, which arguments they take and whether they run on other projects' environments (projects).", json!({}), &[]),
         tool(
@@ -308,6 +314,14 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
                 "steps": r.steps.iter().map(|s| &s.name).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>()),
+        "hand_off" => {
+            let (thread, agent, task) = (args["thread"].as_str().unwrap_or_default(), args["agent"].as_str().unwrap_or_default(), args["task"].as_str().unwrap_or_default());
+            if crate::site::is_cloud() {
+                crate::site::queue_hand_off(state, thread, agent, task)?
+            } else {
+                crate::threads::hand_off(state, thread, agent, task).await?
+            }
+        }
         "request_release" => json!(crate::update::request_release(state, args["version"].as_str().filter(|v| !v.trim().is_empty()), args["app"] == "phone", by).await?),
         "request_job" => {
             need(Scope::JobsRequest)?;

@@ -63,6 +63,8 @@ pub const AGENT_TOOLS: &[&str] = &[
     "list_incidents", "list_recipes", "list_jobs", "get_job", "get_job_log", "list_workflows", "get_workflow_run", "get_errors",
     // Pedir un release de Condx: espera la aprobación de la persona (Mayer).
     "request_release",
+    // El agente de un chat le pasa un cambio a uno que escribe (Fixer, Mayer), en el mismo hilo.
+    "hand_off",
 ];
 
 /// Lee o crea un token aleatorio en `file`, que queda en 0600: se crea así desde el principio

@@ -132,9 +132,8 @@ fn role_logo(state: &Shared, role: &str) -> &'static str {
 }
 
 /// Llama a un invitado: si ya está en el hilo, le escribe; si no, lo arranca con lo que pasó hasta
-/// ahora. Solo lee aunque su rol escriba (llega con la conversación de contexto), salvo un rol con
-/// repos propios (Mayer, que mantiene Condx): ése trabaja en su worktree como un arreglo; desplegar
-/// sigue pidiendo la aprobación.
+/// ahora. Uno que escribe trabaja en su worktree como un arreglo (Mayer en sus repos; los demás en el
+/// del proyecto, en una rama nueva desde `dev`); desplegar sigue pidiendo la aprobación.
 /// `place`: el proyecto (si hay) y el flujo o «chat» donde trabaja.
 async fn call_guest(state: &Shared, thread: &str, role: &crate::roles::Role, context: String, text: &str, place: (Option<&str>, &str), images: &[Value]) -> Result<Value> {
     let (project, flow) = place;
@@ -142,13 +141,13 @@ async fn call_guest(state: &Shared, thread: &str, role: &crate::roles::Role, con
     if state.store.agent_run(&run_id)?.is_some() {
         crate::agent_host::message(state, &run_id, text, images).await?;
     } else {
-        let mut r = role.clone();
-        if r.repos.is_empty() {
-            r.mode = crate::roles::Mode::Read;
-        }
+        let r = role.clone();
+        // Uno que escribe (Fixer, Mayer) trabaja en su worktree, en una rama nueva desde `dev`: su
+        // cambio se commitea y sube a esa rama (desplegar sigue pidiendo la aprobación).
+        let base = (r.mode == crate::roles::Mode::Write && r.repos.is_empty()).then_some("dev");
         // Su rol también en un hilo (no solo en un flujo): sin él contesta como el agente genérico.
         let task = format!("{}\n\n{context}\n\nThe developer asks: {text}", crate::roles::guest_brief(&r));
-        crate::agent_host::start_role(state, &r, &run_id, &task, project, flow, None).await?;
+        crate::agent_host::start_role(state, &r, &run_id, &task, project, flow, base).await?;
         if !images.is_empty() {
             crate::agent_host::message(state, &run_id, "These are the images I attached.", images).await?;
         }
@@ -361,7 +360,9 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
         let run = state.store.agent_run(id)?.unwrap_or_default();
         r["logo"] = json!(crate::agents::logo_for(state, run["provider"].as_str()));
         let gs = guests(state, id);
-        if gs.is_empty() && state.store.notes(id).unwrap_or_default().is_empty() {
+        // Un hilo que empezó con `@agente` se arma como uno con invitados (con el nombre del agente).
+        let own_role = run["kind"] == "chat" && run["role"].is_string();
+        if gs.is_empty() && !own_role && state.store.notes(id).unwrap_or_default().is_empty() {
             // La conversación con los pasos plegados en cada respuesta (la app de la Mac la muestra así).
             let (folded, _) = fold_steps(r["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), r["status"] == "running");
             r["folded"] = json!(folded);
@@ -482,7 +483,11 @@ pub async fn get(state: &Shared, id: &str) -> Result<Value> {
 async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs: Vec<(String, String)>) -> Result<Value> {
     let mut items = vec![];
     let about = run["about"].is_string();
-    let mut participants = vec![json!({ "node": "agent", "name": "Agent", "logo": chat["logo"] })];
+    // Un hilo que empezó con `@agente` (start_with_role): lo contesta ese agente, con su nombre.
+    let own_role = run["role"].as_str().filter(|_| run["kind"] == "chat").map(str::to_string);
+    let who = own_role.as_deref().map(|r| role_name(state, r)).unwrap_or_else(|| "Agent".to_string());
+    let who = who.as_str();
+    let mut participants = vec![json!({ "node": "agent", "name": who, "logo": chat["logo"] })];
     let mut first_user = true;
     let (folded, _) = fold_steps(chat["transcript"].as_array().map(Vec::as_slice).unwrap_or_default(), chat["status"] == "running");
     for t in folded {
@@ -490,6 +495,8 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
         match t["role"].as_str() {
             Some("user") => {
                 let kind = if about && first_user { "context" } else { "user" };
+                // Lo que arma Condx para el agente (su rol) no se muestra: solo lo que pidió la persona.
+                let text = if own_role.is_some() && first_user { text.rsplit("The developer asks:").next().unwrap_or(text).trim() } else { text };
                 first_user = false;
                 // Lo que pidió un agente de fuera (por el MCP, con «@agent»): con su nombre, no como de la persona.
                 match external_of(text) {
@@ -503,15 +510,15 @@ async fn chat_with_guests(state: &Shared, id: &str, chat: Value, run: &Value, gs
             Some("assistant") => {
                 let prose: String = text.lines().filter(|l| !l.starts_with("→ ")).collect::<Vec<_>>().join("\n").trim().to_string();
                 if !prose.is_empty() {
-                    items.push(with_steps(json!({ "at": t["at"], "kind": "reply", "author": "Agent", "text": prose }), &t));
+                    items.push(with_steps(json!({ "at": t["at"], "kind": "reply", "author": who, "text": prose }), &t));
                 }
             }
             _ => {}
         }
     }
     let last_at = |run: &Value| run["transcript"].as_array().and_then(|t| t.iter().filter_map(|x| x["at"].as_i64()).max()).unwrap_or(0);
-    items.extend(live_item(&chat, "Agent", chat["logo"].as_str().unwrap_or(""), last_at(&chat)));
-    items.extend(stopped_item(&chat, "Agent", last_at(&chat)));
+    items.extend(live_item(&chat, who, chat["logo"].as_str().unwrap_or(""), last_at(&chat)));
+    items.extend(stopped_item(&chat, who, last_at(&chat)));
     for (role, run_id) in gs {
         let Ok(live) = crate::agent_host::get(state, &run_id).await else { continue };
         let name = role_name(state, &role);
@@ -735,6 +742,44 @@ fn context(run: &Run) -> String {
     }
     out.push_str("\nAnswer in the developer's language, in plain text.");
     out
+}
+
+/// Un hilo nuevo que empieza con `@agente …` (del catálogo): ese agente lo contesta desde el principio,
+/// como en el sitio en la nube. Uno que escribe trabaja en una rama nueva desde `dev`. None si el
+/// mensaje no nombra a un agente del catálogo.
+pub async fn start_with_role(state: &Shared, text: &str, project: Option<&str>, by: &str, images: &[Value]) -> Result<Option<Value>> {
+    let Some((name, rest)) = mention(text) else { return Ok(None) };
+    let Some(role) = catalog_role(state, &name).filter(|_| !rest.is_empty()) else { return Ok(None) };
+    let project = project.map(str::to_string).or_else(|| crate::agent_host::mentioned_project(state, text));
+    let run_id = format!("chat-{:x}-{}", crate::store::now_ms(), role.id);
+    let base = (role.mode == crate::roles::Mode::Write && role.repos.is_empty()).then_some("dev");
+    let task = format!("{}\n\nThe developer asks: {rest}", crate::roles::guest_brief(&role));
+    let mut run = crate::agent_host::start_role(state, &role, &run_id, &task, project.as_deref(), "chat", base).await?;
+    // Un hilo como cualquier chat (título, quién lo pidió, aviso al teléfono).
+    run["kind"] = json!("chat");
+    run["title"] = json!(text.lines().next().unwrap_or(text).chars().take(80).collect::<String>());
+    run["by"] = json!(by);
+    run["replyNotice"] = json!(true);
+    state.store.save_agent_run(&run)?;
+    if !images.is_empty() {
+        crate::agent_host::message(state, &run_id, "These are the images I attached.", images).await?;
+    }
+    Ok(Some(run))
+}
+
+/// El agente de un chat le pasa una tarea a otro (`hand_off`): como si el desarrollador lo llamara
+/// con `@agente` en ese hilo. Solo desde un chat (no desde un incidente, cuya evidencia es de afuera).
+pub async fn hand_off(state: &Shared, thread: &str, agent: &str, task: &str) -> Result<Value> {
+    let run = state.store.agent_run(thread)?.ok_or_else(|| anyhow!("there's no thread {thread}"))?;
+    if run["kind"] != "chat" || run["incident"].is_string() {
+        bail!("hand_off only works from a chat with the developer");
+    }
+    let role = catalog_role(state, &agent.trim().trim_start_matches('@').to_lowercase()).ok_or_else(|| anyhow!("there's no agent called {agent} (see list_agents)"))?;
+    let task = task.trim();
+    if task.is_empty() {
+        bail!("write the task for {}", role.name);
+    }
+    message_with(state, thread, &format!("@{} [Handed off by the chat agent, at the developer's request] {task}", role.id), &[]).await
 }
 
 #[cfg(test)]

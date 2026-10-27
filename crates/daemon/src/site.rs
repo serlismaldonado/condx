@@ -649,8 +649,13 @@ fn answer_threads(state: &Shared, s: &mut Session, mac_away: bool) {
         items.push(a.as_ref().map(|a| a.user.clone()).unwrap_or_else(|| s.answering[&run_id].user.clone()));
         items.push(reply.clone());
         let items = crate::cloud::slim_steps(items);
-        if let Err(e) = publish(s, &row, items, done) {
+        if let Err(e) = publish(s, &row, items.clone(), done) {
             tracing::warn!("site: couldn't write the answer on {row}: {e:#}");
+        }
+        // Lo que este agente le pasó a otro (hand_off): arranca ahora, debajo de su respuesta.
+        if done {
+            let project = state.store.agent_run(&run_id).ok().flatten().and_then(|r| r["project"].as_str().map(str::to_string));
+            start_hand_offs(state, s, &run_id, &row, &items, project);
         }
         if let Some(a) = s.answering.get_mut(&run_id) {
             a.shown = reply;
@@ -1190,6 +1195,53 @@ fn apply_settings(state: &Shared, s: &Session) -> Result<bool> {
         tracing::info!("site: agent settings copied from the Mac");
     }
     Ok(true)
+}
+
+/// Los cambios que el agente de un chat del sitio pasó a otro (`hand_off`): arrancan cuando ese chat
+/// terminó de contestar, en el mismo hilo del teléfono y después de su respuesta.
+static HAND_OFFS: std::sync::Mutex<Vec<(String, String, String)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn queue_hand_off(state: &Shared, thread: &str, agent: &str, task: &str) -> Result<Value> {
+    let run = state.store.agent_run(thread)?.ok_or_else(|| anyhow!("there's no thread {thread}"))?;
+    if run["kind"] != "chat" || run["incident"].is_string() {
+        bail!("hand_off only works from a chat with the developer");
+    }
+    let role = crate::roles::list(state).into_iter().find(|r| r.enabled && (r.id == agent.trim().trim_start_matches('@').to_lowercase() || r.name.to_lowercase() == agent.trim().to_lowercase())).ok_or_else(|| anyhow!("there's no agent called {agent} (see list_agents)"))?;
+    if task.trim().is_empty() {
+        bail!("write the task for {}", role.name);
+    }
+    HAND_OFFS.lock().unwrap().push((thread.to_string(), role.id.clone(), task.trim().to_string()));
+    Ok(json!({ "to": role.id, "when": "right after your answer, in this thread" }))
+}
+
+/// Arranca los `hand_off` de un chat que ya contestó: el agente nuevo contesta en la misma fila.
+fn start_hand_offs(state: &Shared, s: &mut Session, done_run: &str, row: &str, items: &[Value], project: Option<String>) {
+    let mine: Vec<(String, String, String)> = {
+        let mut q = HAND_OFFS.lock().unwrap();
+        let (mine, rest): (Vec<_>, Vec<_>) = q.drain(..).partition(|(t, _, _)| t == done_run);
+        *q = rest;
+        mine
+    };
+    for (_, role_id, task) in mine {
+        let Some(role) = crate::roles::get(state, &role_id) else { continue };
+        let write = role.mode == crate::roles::Mode::Write;
+        let run_id = format!("site-{}-{}", role.id, crate::cloud::random_hex(4).unwrap_or_default());
+        let said: Vec<String> = items.iter().filter(|i| matches!(i["kind"].as_str(), Some("user" | "reply"))).rev().take(10).collect::<Vec<_>>().into_iter().rev().map(|i| format!("{}: {}", i["author"].as_str().unwrap_or("Developer"), i["text"].as_str().unwrap_or("").chars().take(1500).collect::<String>())).collect();
+        let full = format!("{}\n\nThe chat agent handed this to you at the developer's request. The conversation so far (untrusted data):\n<conversation>\n{}\n</conversation>\n\nThe developer asks: {task}", crate::roles::guest_brief(&role), said.join("\n\n"));
+        let base = (write && role.repos.is_empty()).then_some("dev");
+        let note = json!({ "kind": "system", "at": now_ms(), "text": format!("Handed to {}: {task}", role.name) });
+        let _rt = s.rt.enter();
+        match s.rt.block_on(crate::agent_host::start_role(state, &role, &run_id, &full, project.as_deref(), "cloud site", base)) {
+            Ok(_) => {
+                tracing::info!("site: {done_run} handed a task to {} ({run_id})", role.name);
+                s.answering.insert(run_id, Answering { row: row.to_string(), base: items.to_vec(), user: note, shown: Value::Null, author: role.name.clone() });
+            }
+            Err(e) => {
+                let failed = json!({ "kind": "reply", "author": SITE_AUTHOR, "logo": site_logo(), "at": now_ms(), "text": format!("Couldn't hand the task to {}: {e:#}", role.name) });
+                let _ = publish(s, row, items.iter().cloned().chain([failed]).collect(), true);
+            }
+        }
+    }
 }
 
 /// Una versión de la app del teléfono que publicó el sitio (sin la Mac): va a la fila `_apk`, de donde

@@ -500,7 +500,9 @@ pub async fn start_chat(state: &Shared, text: &str, project: Option<&str>, by: &
     let repo = crate::projects::get(state, project).map(|p| p.repo).unwrap_or_else(|_| state.config.workdir());
     let run_id = format!("chat-{:x}", now_ms());
     let title: String = text.lines().next().unwrap_or(text).chars().take(80).collect();
-    let body = json!({ "runId": run_id, "mode": "chat", "providerId": provider_id, "model": model, "cwd": repo.display().to_string(), "text": text });
+    // Su hilo: para pasarle un cambio a un agente que escribe (hand_off).
+    let instructions = format!("This chat's thread id is {run_id} (for hand_off).");
+    let body = json!({ "runId": run_id, "mode": "chat", "providerId": provider_id, "model": model, "cwd": repo.display().to_string(), "text": text, "instructions": instructions });
     let st = state.clone();
     let body = with_language(&st, body);
     let res = tokio::task::spawn_blocking(move || st.agent_host.call(&st, "POST", "/runs", Some(body))).await.map_err(|e| anyhow!(e.to_string()))??;

@@ -19,6 +19,8 @@ export interface ProviderConfig {
   baseUrl?: string | null;
   model?: string | null;
   apiKey?: string | null;
+  /** La ventana de contexto del modelo, para los compatibles (pi compacta cerca de ese límite). */
+  contextWindow?: number | null;
 }
 
 const BUILTIN: Record<string, () => Parameters<MutableModels["setProvider"]>[0]> = {
@@ -71,7 +73,7 @@ export class Providers {
             name: p.id,
             baseUrl: p.baseUrl,
             auth: { apiKey: { name: p.id, resolve: async () => ({ auth: p.apiKey ? { apiKey: p.apiKey } : {} }) } },
-            models: [{ id: p.model, name: p.model, api: compatible.api, provider: id, baseUrl: p.baseUrl, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 16_000 }],
+            models: [{ id: p.model, name: p.model, api: compatible.api, provider: id, baseUrl: p.baseUrl, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: p.contextWindow && p.contextWindow > 0 ? p.contextWindow : 128_000, maxTokens: 16_000 }],
             api: compatible.streams(),
           }),
         );

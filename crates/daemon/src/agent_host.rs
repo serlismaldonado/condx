@@ -165,7 +165,7 @@ fn providers(state: &Shared) -> Result<Vec<Value>> {
     for p in state.store.agent_providers()? {
         let id = p["id"].as_str().unwrap_or_default();
         let key = crate::agents::api_key(state, id)?;
-        out.push(json!({ "id": id, "kind": p["kind"], "baseUrl": p["baseUrl"], "model": p["model"], "apiKey": key }));
+        out.push(json!({ "id": id, "kind": p["kind"], "baseUrl": p["baseUrl"], "model": p["model"], "apiKey": key, "contextWindow": p["contextWindow"] }));
     }
     Ok(out)
 }

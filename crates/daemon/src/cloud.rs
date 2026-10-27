@@ -69,7 +69,7 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects", "catalog", "overview"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects", "catalog", "overview", "context"];
 /// Lo más largo de un mensaje de un hilo en el teléfono (antes 700: las respuestas se cortaban).
 const ITEM_CHARS: usize = 12_000;
 /// Lo que ocupan los mensajes de un hilo en su fila: si se pasa, se dejan afuera los más viejos.
@@ -1183,6 +1183,11 @@ async fn thread_rows(state: &Shared) -> IndexMap<String, Values> {
         row.insert("env".into(), json!(env));
         row.insert("title".into(), json!(t["title"]));
         row.insert("kind".into(), json!(t["kind"]));
+        // Cuánto contexto usa el agente del hilo (su última llamada) y la ventana de su modelo: el anillo
+        // del teléfono. Solo el agente principal: los invitados llevan su propia cuenta.
+        if let Some(r) = state.store.agent_run(&id).ok().flatten().filter(|r| r["usage"]["context"].is_number()) {
+            row.insert("context".into(), json!(json!({ "used": r["usage"]["context"], "window": r["usage"]["window"], "model": r["model"] }).to_string()));
+        }
         row.insert("status".into(), json!(th["status"]));
         row.insert("updatedAt".into(), json!(items.last().and_then(|i| i["at"].as_i64()).unwrap_or(t["startedAt"].as_i64().unwrap_or(0))));
         row.insert("items".into(), json!(serde_json::to_string(&items).unwrap_or_default()));

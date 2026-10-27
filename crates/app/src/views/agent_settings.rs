@@ -47,12 +47,13 @@ impl DevtoolApp {
             "baseUrl": value(self, "agent-url", cx),
             "model": value(self, "agent-model", cx),
             "apiKey": value(self, "agent-key", cx),
+            "contextWindow": value(self, "agent-window", cx).and_then(|w| w.replace(['_', '.', ','], "").parse::<u64>().ok()),
         });
         self.post("/api/agents/providers".into(), body, |app, res, cx| match res {
             Load::Ready(_) => {
                 app.agents_error = None;
                 // Campos nuevos (vacíos) la próxima vez: la clave no se queda en la pantalla.
-                for k in ["agent-label", "agent-url", "agent-model", "agent-key"] {
+                for k in ["agent-label", "agent-url", "agent-model", "agent-key", "agent-window"] {
                     app.inputs.remove(k);
                 }
                 app.agent_editing = None;
@@ -432,6 +433,9 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
     let key = input(app, "agent-key", key_hint, true, window, cx);
     let needs_url = kind["needsBaseUrl"] == true;
     let url = needs_url.then(|| input_with(app, "agent-url", "http://127.0.0.1:11434/v1".into(), prefill("baseUrl"), false, window, cx));
+    // Los compatibles no dicen su ventana: la pone la persona (128k si no); pi compacta cerca de ese límite.
+    let window_text = editing.as_ref().and_then(|p| p["contextWindow"].as_u64()).map(|w| w.to_string()).unwrap_or_default();
+    let ctx_window = needs_url.then(|| input_with(app, "agent-window", "128000".into(), window_text, false, window, cx));
     let title = match &editing {
         Some(p) => t!("Edit {a}", a = ui::txt(&p["label"])).to_string(),
         None => t!("Add a provider").to_string(),
@@ -442,6 +446,7 @@ pub fn card(app: &mut DevtoolApp, window: &mut Window, cx: &mut Context<DevtoolA
         .when(editing.is_none(), |c| c.child(kind_buttons))
         .child(ui::kv(t!("Name"), Input::new(&label).small(), cx))
         .when_some(url, |c, url| c.child(ui::kv(t!("Base URL"), Input::new(&url).small(), cx)))
+        .when_some(ctx_window, |c, w| c.child(ui::kv(t!("Context window"), Input::new(&w).small(), cx)))
         .child(ui::kv(t!("Models"), Input::new(&model).small(), cx))
         .child(ui::muted(t!("Several at once, separated by commas: the first one is the default; each agent can use another."), cx).text_xs())
         .when(kind["needsKey"] != false, |c| c.child(ui::kv(if needs_url { t!("API key (optional)") } else { t!("API key") }, Input::new(&key).small(), cx)))

@@ -27,7 +27,9 @@ interface ClaudeRun {
   transcript: TranscriptItem[];
   status: "running" | "done" | "failed" | "aborted";
   reason?: string;
-  usage: { input: number; output: number; total: number; cost: number };
+  /** `total`: tokens nuevos (entrada sin caché + salida: lo que cuenta para el presupuesto; el plan no
+   * cobra por token). `context`: lo que ocupó la última llamada; `window`: la ventana del modelo. */
+  usage: { input: number; output: number; total: number; cost: number; cacheRead?: number; context?: number; window?: number };
   createdAt: number;
 }
 
@@ -214,6 +216,9 @@ export class ClaudeCode {
       if (e?.type === "content_block_start" && e.content_block?.type === "tool_use") live.tools = [String(e.content_block.name ?? "").replace(/^mcp__condx__/, "condx.")];
       if (e?.type === "message_start") live.text = "";
     } else if (ev.type === "assistant") {
+      // El contexto en uso: lo que ocupó esta llamada (entrada, con lo que se leyó y escribió en caché).
+      const u = ev.message?.usage;
+      if (u) r.usage.context = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
       const parts = (ev.message?.content ?? []) as { type: string; text?: string; name?: string; input?: unknown }[];
       const said = parts.map((p) => (p.type === "text" ? p.text ?? "" : p.type === "tool_use" ? toolLine(p.name ?? "", p.input) : "")).filter(Boolean).join("\n");
       if (said) r.transcript.push({ role: "assistant", text: said, at: Date.now() });
@@ -227,9 +232,14 @@ export class ClaudeCode {
       live.tools = [];
     } else if (ev.type === "result") {
       const u = ev.usage ?? {};
-      r.usage.input += (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+      // Nuevos: la entrada sin caché y la que se escribió en caché, más la salida. Lo que se relee de la
+      // caché (el prompt de Claude Code y la conversación) no se suma: si no, cada vuelta «gasta» 100k.
+      r.usage.input += (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+      r.usage.cacheRead = (r.usage.cacheRead ?? 0) + (u.cache_read_input_tokens ?? 0);
       r.usage.output += u.output_tokens ?? 0;
       r.usage.total = r.usage.input + r.usage.output;
+      const windows = Object.values((ev.modelUsage ?? {}) as Record<string, { contextWindow?: number }>).map((m) => m.contextWindow ?? 0).filter((w) => w > 0);
+      if (windows.length) r.usage.window = Math.max(...windows);
       // Con el plan no hay cobro por corrida: el costo que informa Claude Code es una estimación.
       r.usage.cost += Number(ev.total_cost_usd ?? 0);
       const failed = ev.is_error || (ev.subtype && ev.subtype !== "success");

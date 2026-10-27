@@ -792,7 +792,7 @@ fn apply_keys(state: &Shared, s: &Session) -> Result<usize> {
             tracing::info!("site: cloud dev deploy key received ({name})");
             continue;
         }
-        let body = crate::agents::ProviderBody { id: Some(r.row.id.clone()), kind: text("kind").unwrap_or_default(), label: text("label"), base_url: text("baseUrl"), model: text("model"), api_key: Some(key).filter(|k| !k.is_empty()) };
+        let body = crate::agents::ProviderBody { id: Some(r.row.id.clone()), kind: text("kind").unwrap_or_default(), label: text("label"), base_url: text("baseUrl"), model: text("model"), api_key: Some(key).filter(|k| !k.is_empty()), context_window: None };
         crate::agents::upsert_provider(state, body, &crate::agents::seal_for_mac)?;
         applied.insert(r.row.id.clone(), stamp);
         changed = true;

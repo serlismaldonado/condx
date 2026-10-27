@@ -216,7 +216,7 @@ export class Host {
     );
     const sub = await conversation.submit({ type: "input", content: first, requestId: req.runId }, ctx);
     await this.#harness.commit(async (tx) => {
-      (await tx.doc(Runs)).runs[req.runId] = { conversationId: conversation.id as number, submissionId: sub.id as number, mode: req.mode, createdAt: Date.now() };
+      (await tx.doc(Runs)).runs[req.runId] = { conversationId: conversation.id as number, submissionId: sub.id as number, mode: req.mode, createdAt: Date.now(), piProvider: model.provider, piModel: model.modelId };
     }, ctx);
     void this.#follow(req.runId, sub.id as number);
     return { conversationId: conversation.id as number };
@@ -252,7 +252,13 @@ export class Host {
       : "";
     const tools = ((live.tools ?? []) as { name: string; status: string }[]).filter((t) => t.status !== "done").map((t) => t.name);
     const now = busy ? { text: partial, tools } : null;
-    return { runId, status, reason: settled?.reason ?? null, answer, transcript, live: now, usage: totals(value.docs["pi.usage"]), conversationId: found.record.conversationId };
+    // El contexto en uso: la última respuesta del modelo (su entrada, con caché, y su salida); la ventana,
+    // la del modelo (pi compacta solo cerca de ese límite).
+    const lastUsage = [...value.entries].reverse().map((e) => e.model?.[0] as { role?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } } | undefined).find((m) => m?.role === "assistant" && m.usage)?.usage;
+    const context = lastUsage ? (lastUsage.input ?? 0) + (lastUsage.cacheRead ?? 0) + (lastUsage.cacheWrite ?? 0) + (lastUsage.output ?? 0) : undefined;
+    const rec = found.record as RunRecord & { piProvider?: string; piModel?: string };
+    const window = rec.piProvider && rec.piModel ? this.providers.models.getModel(String(rec.piProvider), String(rec.piModel))?.contextWindow : undefined;
+    return { runId, status, reason: settled?.reason ?? null, answer, transcript, live: now, usage: { ...totals(value.docs["pi.usage"]), context, window }, conversationId: found.record.conversationId };
   }
 
   /** Un mensaje de la persona: si está trabajando, lo redirige; si no, sigue la conversación. */

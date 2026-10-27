@@ -275,6 +275,9 @@ pub struct ProviderBody {
     pub model: Option<String>,
     /// Solo al crear o al cambiarla; nunca vuelve.
     pub api_key: Option<String>,
+    /// La ventana de contexto del modelo (los compatibles: pi compacta cerca de ese límite).
+    #[serde(default)]
+    pub context_window: Option<u64>,
 }
 
 /// Crea o cambia un proveedor. `seal_to` cifra la clave (la identidad de la Mac fuera de las pruebas).
@@ -313,6 +316,7 @@ pub fn upsert_provider(state: &Shared, body: ProviderBody, seal_to: &dyn Fn(&str
         // Varios modelos a la vez (separados por coma o renglón): el primero es el predeterminado.
         "model": models.first().cloned().unwrap_or_else(|| k.model.to_string()),
         "models": if models.is_empty() { json!([k.model]) } else { json!(models) },
+        "contextWindow": body.context_window.filter(|w| *w >= 8_000).map(Value::from).or_else(|| existing.as_ref().map(|e| e["contextWindow"].clone())).unwrap_or(Value::Null),
         "sealedKey": sealed,
         "keyHint": key_hint,
         "createdAt": existing.as_ref().map(|e| e["createdAt"].clone()).unwrap_or(json!(now)),
@@ -436,7 +440,7 @@ pub fn import_from_pi(state: &Shared, dir: &std::path::Path, seal_to: &dyn Fn(&s
             skipped.push(json!({ "name": name, "reason": why }));
             continue;
         }
-        let body = ProviderBody { id: None, kind: kind.into(), label: Some(name.clone()), base_url: p["baseUrl"].as_str().map(str::to_string), model, api_key: key };
+        let body = ProviderBody { id: None, kind: kind.into(), label: Some(name.clone()), base_url: p["baseUrl"].as_str().map(str::to_string), model, api_key: key, context_window: None };
         add(&slug(&name), body, &mut imported, &mut skipped);
     }
     for (name, cred) in auth.as_object().cloned().unwrap_or_default() {
@@ -446,7 +450,7 @@ pub fn import_from_pi(state: &Shared, dir: &std::path::Path, seal_to: &dyn Fn(&s
         match cred["type"].as_str() {
             Some("oauth") => skipped.push(json!({ "name": name, "reason": "OAuth login: not copied (it would break pi's session); add an API key instead" })),
             Some("api_key") if kind(&name).is_some_and(|k| !k.needs_base_url) => {
-                let body = ProviderBody { id: None, kind: name.clone(), label: None, base_url: None, model: None, api_key: cred["key"].as_str().map(str::to_string) };
+                let body = ProviderBody { id: None, kind: name.clone(), label: None, base_url: None, model: None, api_key: cred["key"].as_str().map(str::to_string), context_window: None };
                 add(&slug(kind(&name).map(|k| k.label).unwrap_or(&name)), body, &mut imported, &mut skipped);
             }
             Some("api_key") => skipped.push(json!({ "name": name, "reason": "not a model provider Condx knows" })),
@@ -513,7 +517,7 @@ mod tests {
         let mac = age::x25519::Identity::generate();
         let to = mac.to_public();
         let seal_to = move |k: &str| seal(k, std::slice::from_ref(&to));
-        let p = upsert_provider(&st, ProviderBody { id: None, kind: "anthropic".into(), label: None, base_url: None, model: None, api_key: Some("sk-ant-secret-1234".into()) }, &seal_to).unwrap();
+        let p = upsert_provider(&st, ProviderBody { id: None, kind: "anthropic".into(), label: None, base_url: None, model: None, api_key: Some("sk-ant-secret-1234".into()), context_window: None }, &seal_to).unwrap();
         assert_eq!(p["id"], "anthropic");
         assert_eq!(p["keyHint"], "…1234");
         assert_eq!(p["model"], "claude-sonnet-5-5");
@@ -535,8 +539,8 @@ mod tests {
         let mac = age::x25519::Identity::generate();
         let to = mac.to_public();
         let seal_to = move |k: &str| seal(k, std::slice::from_ref(&to));
-        upsert_provider(&st, ProviderBody { id: None, kind: "openai".into(), label: None, base_url: None, model: None, api_key: Some("sk-abc9999".into()) }, &seal_to).unwrap();
-        let p = upsert_provider(&st, ProviderBody { id: Some("openai".into()), kind: "openai".into(), label: None, base_url: None, model: Some("gpt-5-mini".into()), api_key: None }, &seal_to).unwrap();
+        upsert_provider(&st, ProviderBody { id: None, kind: "openai".into(), label: None, base_url: None, model: None, api_key: Some("sk-abc9999".into()), context_window: None }, &seal_to).unwrap();
+        let p = upsert_provider(&st, ProviderBody { id: Some("openai".into()), kind: "openai".into(), label: None, base_url: None, model: Some("gpt-5-mini".into()), api_key: None, context_window: None }, &seal_to).unwrap();
         assert_eq!(p["model"], "gpt-5-mini");
         assert_eq!(p["keyHint"], "…9999");
         let sealed = st.store.agent_providers().unwrap()[0]["sealedKey"].as_str().unwrap().to_string();
@@ -557,11 +561,11 @@ mod tests {
         let st = state();
         let seal_to = |k: &str| Ok(format!("sealed:{k}"));
         let err = |b: ProviderBody| upsert_provider(&st, b, &seal_to).unwrap_err().to_string();
-        assert!(err(ProviderBody { id: None, kind: "nope".into(), label: None, base_url: None, model: None, api_key: Some("k".into()) }).contains("unknown"));
-        assert!(err(ProviderBody { id: None, kind: "anthropic".into(), label: None, base_url: None, model: None, api_key: None }).contains("API key"));
-        assert!(err(ProviderBody { id: None, kind: "openai-compatible".into(), label: None, base_url: None, model: None, api_key: None }).contains("base URL"));
+        assert!(err(ProviderBody { id: None, kind: "nope".into(), label: None, base_url: None, model: None, api_key: Some("k".into()), context_window: None }).contains("unknown"));
+        assert!(err(ProviderBody { id: None, kind: "anthropic".into(), label: None, base_url: None, model: None, api_key: None, context_window: None }).contains("API key"));
+        assert!(err(ProviderBody { id: None, kind: "openai-compatible".into(), label: None, base_url: None, model: None, api_key: None, context_window: None }).contains("base URL"));
         // Un endpoint local sin clave sí.
-        let p = upsert_provider(&st, ProviderBody { id: None, kind: "openai-compatible".into(), label: Some("Ollama".into()), base_url: Some("http://127.0.0.1:11434/v1/".into()), model: Some("qwen3".into()), api_key: None }, &seal_to).unwrap();
+        let p = upsert_provider(&st, ProviderBody { id: None, kind: "openai-compatible".into(), label: Some("Ollama".into()), base_url: Some("http://127.0.0.1:11434/v1/".into()), model: Some("qwen3".into()), api_key: None, context_window: None }, &seal_to).unwrap();
         assert_eq!(p["id"], "ollama");
         assert_eq!(p["baseUrl"], "http://127.0.0.1:11434/v1");
         assert!(p["keyHint"].is_null());

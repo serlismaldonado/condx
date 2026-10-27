@@ -128,6 +128,12 @@
     pre .ln::before { content: "$ "; color: #8e7f5d; }
     pre .c { color: #8e7f5d; }
     .steps { display: grid; gap: 28px; }
+    /* La columna de la izquierda acompaña los pasos (fija al bajar en escritorio). */
+    .aside { position: sticky; top: 32px; }
+    .aside .sub { margin-bottom: 28px; }
+    .reqs { display: grid; gap: 8px; margin-top: 20px; }
+    .reqs div { display: flex; gap: 10px; align-items: center; background: #fff; border: 2px solid #1f1503; box-shadow: 3px 3px 0 rgba(31, 21, 3, 0.2); padding: 8px 12px; font: 13px "IBM Plex Mono", monospace; }
+    @media (max-width: 900px) { .aside { position: static; } }
     .steps h3 { margin-top: 0; font-size: 20px; }
     .steps p { color: var(--muted); margin: 4px 0 12px; }
     .grid > *, .split > *, .trio > *, .steps > * { min-width: 0; }
@@ -295,9 +301,16 @@
 
     <section id="install" class="band">
       <div class="wrap split">
-        <div>
+        <div class="aside">
           <h2>Up and running in a few minutes</h2>
-          <p class="sub">macOS 15+ on Apple Silicon, with Node.js and the Convex CLI in your projects. The app walks you through the first launch.</p>
+          <p class="sub">The app walks you through the first launch: it checks your Mac and fetches what's missing.</p>
+          <div class="cap">launch pad · ready</div>
+          <div class="frame"><canvas class="art" data-art="pad" aria-hidden="true"></canvas><div class="mini top"><div class="row"><span class="dot"></span>preflight · all green</div></div><div class="mini"><div class="slide">Ready for liftoff</div></div></div>
+          <div class="reqs">
+            <div><span class="dot"></span>macOS 15+ on Apple Silicon</div>
+            <div><span class="dot"></span>Node.js and the Convex CLI in your projects</div>
+            <div><span class="dot y"></span>Optional: an Android phone and a Convex project for Condx Cloud</div>
+          </div>
         </div>
         <div class="steps">
           <div><h3>1 · Install the app and the daemon</h3><p>Condx.app plus <code>condxd</code>, which runs in the background.</p>

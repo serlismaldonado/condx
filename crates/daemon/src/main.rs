@@ -33,6 +33,7 @@ mod projects;
 mod promote;
 mod frontend;
 mod functions;
+mod gh_actions;
 mod gitflow;
 mod gitinfo;
 mod mail;

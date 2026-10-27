@@ -37,13 +37,13 @@ impl Default for Policy {
     }
 }
 
-fn api() -> String {
+pub(crate) fn api() -> String {
     std::env::var("CONDX_GITHUB_API").unwrap_or_else(|_| "https://api.github.com".into())
 }
 
 /// El token para el repo de `dir`: primero el de su dueño (`github-token:<dueño>`, como en el sitio en
 /// la nube, que tiene uno por organización), después el general y los demás.
-fn token_for(dir: &Path) -> Option<String> {
+pub(crate) fn token_for(dir: &Path) -> Option<String> {
     let owner = origin(dir).and_then(|u| github_slug(&u)).map(|(o, _)| o);
     let mut accounts: Vec<String> = owner.iter().map(|o| format!("{TOKEN_ACCOUNT}:{o}")).collect();
     accounts.push(TOKEN_ACCOUNT.to_string());
@@ -73,7 +73,7 @@ pub fn github_slug(url: &str) -> Option<(String, String)> {
     (!owner.is_empty() && !repo.is_empty() && !repo.contains('/')).then(|| (owner.to_string(), repo.to_string()))
 }
 
-fn origin(dir: &Path) -> Option<String> {
+pub(crate) fn origin(dir: &Path) -> Option<String> {
     git(dir, &["remote", "get-url", "origin"], None).ok().filter(|u| !u.is_empty())
 }
 

@@ -411,11 +411,16 @@ fn set_vars(cli: &Path, dir: &Path, key: &str, vars: &[(&str, &str)]) -> Result<
 
 /// Publica un release: compila en esta Mac o, si no hay, lanza el del CI. Devuelve dónde y qué pasó.
 pub fn release(repo: &Path, version: &str) -> Result<String> {
-    let token = crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT)?.ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?;
     let (script, why) = match place(repo) {
         Place::Local => ("scripts/release.sh", "built on this Mac".to_string()),
-        Place::Cloud(reason) => ("scripts/release-cloud.sh", format!("no Mac available ({reason}): built in the cloud")),
+        // Sin Mac (p. ej. el sitio en la nube, sin cargo ni gh): todo lo hace el workflow de GitHub.
+        Place::Cloud(reason) => {
+            let run = crate::gh_actions::dispatch(repo, "release.yml", json!({ "version": version.trim() }))?;
+            crate::gh_actions::wait(repo, &run, std::time::Duration::from_secs(50 * 60))?;
+            return Ok(format!("no Mac available ({reason}): built and published on GitHub Actions. Daemons offer it as an update now.\n{}", run.url));
+        }
     };
+    let token = crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT)?.ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?;
     let mut cmd = Command::new("bash");
     cmd.arg(script).current_dir(repo).env("GH_TOKEN", token.trim());
     if !version.trim().is_empty() {
@@ -455,7 +460,7 @@ pub fn latest_apk(state: &Shared) -> Option<Value> {
 pub fn release_mobile(state: &Shared, repo: &Path, version: &str) -> Result<String> {
     let home = home();
     if !cfg!(target_os = "macos") || !home.join("Library/Android/sdk").exists() || !home.join(".android/debug.keystore").exists() {
-        bail!("no Mac with the Android SDK and the signing key: the phone app can't be built in the cloud yet (its signing key isn't a CI secret)");
+        return release_mobile_cloud(state, repo, version);
     }
     let token = crate::secrets::get(crate::gitflow::TOKEN_ACCOUNT)?.ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?;
     let mut cmd = Command::new("bash");
@@ -474,6 +479,28 @@ pub fn release_mobile(state: &Shared, repo: &Path, version: &str) -> Result<Stri
     state.store.save_probe(APK_KEY, &json!({ "version": v, "versionCode": code, "url": url, "publishedAt": crate::store::now_ms() }))?;
     crate::notify::send(state, "agent", crate::notify::Message { title: format!("Condx for the phone {v} is ready"), body: format!("Open Condx on the phone and tap Install, or download it: {url}"), tags: "iphone", priority: 3 });
     Ok(format!("built on this Mac: condx-mobile {v} ({code}), published to Condx Cloud.\n{url}"))
+}
+
+/// Sin una Mac con el SDK y la llave: GitHub Actions compila y firma la APK (workflow release-apk.yml
+/// de condx-mobile, con la llave como secreto), y aquí se baja, se sube a Condx Cloud y se avisa.
+fn release_mobile_cloud(state: &Shared, repo: &Path, version: &str) -> Result<String> {
+    let run = crate::gh_actions::dispatch(repo, "release-apk.yml", json!({ "version": version.trim() }))?;
+    crate::gh_actions::wait(repo, &run, std::time::Duration::from_secs(45 * 60))?;
+    let dir = std::env::temp_dir().join(format!("condx-apk-{}", crate::cloud::random_hex(6)?));
+    std::fs::create_dir_all(&dir)?;
+    let apk = dir.join("condx-mobile-arm64.apk");
+    let res = (|| -> Result<String> {
+        let tag = crate::gh_actions::download_latest_asset(repo, "-arm64.apk", &apk)?;
+        let v = tag.trim_start_matches('v').to_string();
+        let mut parts = v.split('.').map(|x| x.parse::<i64>().unwrap_or(0));
+        let code = parts.next().unwrap_or(0) * 10_000 + parts.next().unwrap_or(0) * 100 + parts.next().unwrap_or(0);
+        let url = crate::cloud::publish_apk(&apk, &v, code)?;
+        state.store.save_probe(APK_KEY, &json!({ "version": v, "versionCode": code, "url": url, "publishedAt": crate::store::now_ms() }))?;
+        crate::notify::send(state, "agent", crate::notify::Message { title: format!("Condx for the phone {v} is ready"), body: format!("Open Condx on the phone and tap Install, or download it: {url}"), tags: "iphone", priority: 3 });
+        Ok(format!("built on GitHub Actions (no Mac with the Android SDK here): condx-mobile {v} ({code}), published to Condx Cloud.\n{url}\n{}", run.url))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    res
 }
 
 /// Revisa al arrancar y cada 6 horas.

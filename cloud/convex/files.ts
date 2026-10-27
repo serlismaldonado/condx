@@ -16,7 +16,7 @@ export const whoIs = internalQuery({
   handler: async (ctx, { token }) => {
     try {
       const p = await principalFromToken(ctx, token);
-      return p.kind === "device" ? { kind: "device" as const, daemonId: p.daemonId, deviceId: p.deviceId } : { kind: "daemon" as const, daemonId: p.daemonId, deviceId: null };
+      return p.kind === "device" ? { kind: "device" as const, daemonId: p.daemonId, deviceId: p.deviceId, site: p.site === true } : { kind: "daemon" as const, daemonId: p.daemonId, deviceId: null, site: false };
     } catch {
       return null;
     }

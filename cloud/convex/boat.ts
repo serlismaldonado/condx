@@ -24,9 +24,10 @@ function configured(): { key: string; sandbox: string } | null {
 export async function wakeIfMacGone(ctx: MutationCtx, daemonId: string): Promise<void> {
   if (!configured()) return;
   const mac = await ctx.db.query("lf_rows").withIndex("by_scope_and_rowId", (q) => q.eq("scope", `threads:${daemonId}`).eq("rowId", "_mac")).unique();
-  const aliveAt = (mac?.values as { aliveAt?: unknown } | undefined)?.aliveAt;
+  const values = mac?.values as { aliveAt?: unknown; handover?: unknown } | undefined;
   const now = Date.now();
-  if (typeof aliveAt === "number" && now - aliveAt < MAC_GONE_MS) return;
+  // Con la Mac viva no hace falta, salvo que el teléfono haya elegido que conteste la nube.
+  if (typeof values?.aliveAt === "number" && now - values.aliveAt < MAC_GONE_MS && values.handover !== true) return;
   const last = await ctx.db.query("siteWakes").withIndex("by_daemonId", (q) => q.eq("daemonId", daemonId)).unique();
   if (last && now - last.at < WAKE_EVERY_MS) return;
   if (last) await ctx.db.patch("siteWakes", last._id, { at: now, result: "pending" });

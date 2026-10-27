@@ -166,7 +166,8 @@ http.route({ pathPrefix: "/files/", method: "DELETE", handler: daemonFile("DELET
 async function daemonOf(ctx: Parameters<Parameters<typeof httpAction>[0]>[0], req: Request) {
   const token = bearerOf(req);
   const who = token ? await ctx.runQuery(internal.files.whoIs, { token }) : null;
-  return who && who.kind === "daemon" ? who : null;
+  // La Mac, o el sitio en la nube de esa Mac (publica la APK que compiló GitHub cuando la Mac no está).
+  return who && (who.kind === "daemon" || who.site) ? who : null;
 }
 
 /** Una URL para subir la APK directo al storage (sin el tope de las rutas HTTP). */

@@ -8,8 +8,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build (it must exist)"
-        required: true
+        description: "Tag to build (it must exist). Empty: a new version is made here (below)"
+        required: false
+        default: ""
+      version:
+        description: "Without a tag: the new version (X.Y.Z); empty for the next patch"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -24,8 +29,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
       - name: Toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
+      # Sin tag (lo pide un daemon sin Mac, p. ej. el sitio en la nube): la versión nueva se hace aquí,
+      # como scripts/release-cloud.sh: Cargo.toml, Cargo.lock, commit, tag y push.
+      - name: New version
+        if: ${{ inputs.tag == '' }}
+        run: |
+          CURRENT="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          VERSION="${{ inputs.version }}"; VERSION="${VERSION#v}"
+          if [ -z "$VERSION" ]; then IFS=. read -r MA MI PA <<<"$CURRENT"; VERSION="$MA.$MI.$((PA + 1))"; fi
+          TAG="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then echo "::error::tag $TAG already exists"; exit 1; fi
+          sed -i '' "s/^version = \"$CURRENT\"/version = \"$VERSION\"/" Cargo.toml
+          cargo update -w -q
+          git config user.name "Condx release"
+          git config user.email "release@condx.local"
+          git add Cargo.toml Cargo.lock
+          git commit -q -m "release: $TAG"
+          git tag -a "$TAG" -m "Condx $TAG"
+          git push -q origin HEAD "$TAG"
+          echo "NEW_TAG=$TAG" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
           key: release
@@ -35,7 +60,7 @@ jobs:
         run: cargo build --release -p devtool-app -p devtool-daemon
       - name: Package
         run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
+          TAG="${{ inputs.tag }}"; TAG="${TAG:-${NEW_TAG:-${{ github.ref_name }}}}"
           NAME="condx-${TAG}-macos-arm64"
           mkdir -p dist
           APP_DIR="$PWD/dist" SKIP_BUILD=1 scripts/bundle-app.sh release

@@ -207,6 +207,11 @@ impl Recipe {
                 Some(serde_json::Value::Null) | None => None,
                 Some(other) => Some(other.to_string()),
             };
+            // Un vacío por defecto (p. ej. la versión de un release: «la siguiente») vale tal cual.
+            if raw.is_none() && arg.default.as_deref() == Some("") {
+                out.insert(arg.name.clone(), String::new());
+                continue;
+            }
             let value = raw.or_else(|| arg.default.clone()).ok_or_else(|| anyhow!("missing argument “{}”", arg.name))?;
             out.insert(arg.name.clone(), validate(arg.kind, &value, backups).with_context(|| format!("argument “{}”", arg.name))?);
         }

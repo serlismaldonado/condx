@@ -465,7 +465,7 @@ fn git_in(project: &Project, args: &[&str]) -> Option<String> {
 /// cambiar de rama. Devuelve si el clon quedó limpio.
 fn discard_generated(project: &Project) -> bool {
     let generated = |path: &str| path.starts_with("convex/_generated/") || path.ends_with(".gen.ts") || matches!(path, "bun.lock" | "bun.lockb" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock");
-    let changed: Vec<String> = git_in(project, &["status", "--porcelain"]).unwrap_or_default().lines().map(|l| l.get(3..).unwrap_or("").to_string()).collect();
+    let changed = changed_paths(&git_in(project, &["status", "--porcelain"]).unwrap_or_default());
     let tool_made: Vec<&str> = changed.iter().map(String::as_str).filter(|p| generated(p)).collect();
     if !tool_made.is_empty() {
         let mut args = vec!["checkout", "--"];
@@ -473,6 +473,12 @@ fn discard_generated(project: &Project) -> bool {
         let _ = git_in(project, &args);
     }
     git_in(project, &["status", "--porcelain"]).is_some_and(|s| s.is_empty())
+}
+
+/// Las rutas de `git status --porcelain` («XY ruta»). La ruta es lo último de cada línea: la salida
+/// llega recortada y la primera línea pierde su espacio inicial, así que no sirve contar columnas.
+fn changed_paths(status: &str) -> Vec<String> {
+    status.lines().filter_map(|l| l.split_whitespace().last().map(str::to_string)).collect()
 }
 
 /// El clon del sitio en un commit (el de un agente: su rama vive en este mismo repo, en su worktree),
@@ -636,4 +642,13 @@ pub async fn logs(state: &Shared, project: &Project, name: &str, tail: usize) ->
     static ANSI: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let ansi = ANSI.get_or_init(|| regex::Regex::new(r"\x1b\[[0-9;?]*[A-Za-z]").unwrap());
     Ok(redact(&ansi.replace_all(&lines[skip..].join("\n"), "")))
+}
+
+#[cfg(test)]
+mod status_tests {
+    #[test]
+    fn la_primera_linea_recortada_no_pierde_la_ruta() {
+        // Así llega de `git_in` (recortada): « M» perdió el espacio de la primera línea.
+        assert_eq!(super::changed_paths("M convex/_generated/server.d.ts\n M convex/_generated/server.js\n?? app/routeTree.gen.ts"), ["convex/_generated/server.d.ts", "convex/_generated/server.js", "app/routeTree.gen.ts"]);
+    }
 }

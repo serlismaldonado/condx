@@ -38,9 +38,10 @@ fn menu(lines: &[String]) -> Menu {
 /// del teléfono) en blanco y negro con alfa: macOS la usa de plantilla y la tiñe según la barra.
 fn mark() -> Option<Icon> {
     const SIZE: u32 = 36;
-    let scale = SIZE as f32 / 24.0;
-    let (cx, cy) = (12.0 * scale, 12.0 * scale);
-    let half = 1.1 * scale;
+    // Con aire alrededor, como los otros íconos de la barra (la imagen ocupa toda su altura).
+    let scale = SIZE as f32 / 32.0;
+    let (cx, cy) = (SIZE as f32 / 2.0, SIZE as f32 / 2.0);
+    let half = 1.15 * scale;
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
     for y in 0..SIZE {
         for x in 0..SIZE {
@@ -79,8 +80,8 @@ impl Tray {
         if key == self.last {
             return;
         }
-        // Solo el ícono; al lado, cuántas cosas mirar si hay alguna (el detalle va en el menú y el tooltip).
-        self.icon.set_title(if title.is_empty() { None } else { Some(&title) });
+        // Solo el ícono: lo que hay que mirar va en el menú y en el tooltip.
+        let _ = &title;
         let _ = self.icon.set_tooltip(Some(format!("Condx · {}", lines.first().cloned().unwrap_or_default())));
         self.icon.set_menu(Some(Box::new(menu(&lines))));
         self.last = key;

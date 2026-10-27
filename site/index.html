@@ -7,7 +7,8 @@
   <meta name="description" content="Condx runs your Convex projects with you: AI agents that fix, review and preview changes on their own branches, a phone app to talk to them and approve, and a cloud worker that keeps going when your Mac is off.">
   <meta property="og:title" content="Condx — agents and deploys for Convex">
   <meta property="og:description" content="Agents that work on branches, a phone app to steer them, approvals only you can give, and a cloud that keeps going when your Mac sleeps.">
-  <meta property="og:image" content="/shots/overview.jpg">
+  <meta property="og:image" content="https://condx.app/shots/overview.jpg">
+  <meta property="og:url" content="https://condx.app/">
   <meta name="color-scheme" content="light">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -244,8 +245,8 @@
       <h1>AI agents and safe deploys for your <img class="cvx-logo" src="assets/convex/logo-on-dark.svg" alt="Convex" width="282" height="51"> projects</h1>
       <p class="lede">They fix, review and preview changes on their own branches. You steer them from your Mac or your phone, and nothing ships without your approval.</p>
       <div class="term" data-tabs>
-        <div class="tabs"><button class="on" data-cmd="curl -fsSL https://condx.vercel.app/install.sh | bash">macOS</button><button data-cmd="claude mcp add condx -- ~/.condx/daemon/bin/condxd mcp">Claude Code</button><button data-cmd="git clone https://github.com/serlismaldonado/condx.git">Source</button></div>
-        <div class="line"><span class="p">$</span><code>curl -fsSL https://condx.vercel.app/install.sh | bash</code><button class="copy" type="button">copy</button></div>
+        <div class="tabs"><button class="on" data-cmd="curl -fsSL https://condx.app/install.sh | bash">macOS</button><button data-cmd="claude mcp add condx -- ~/.condx/daemon/bin/condxd mcp">Claude Code</button><button data-cmd="git clone https://github.com/serlismaldonado/condx.git">Source</button></div>
+        <div class="line"><span class="p">$</span><code>curl -fsSL https://condx.app/install.sh | bash</code><button class="copy" type="button">copy</button></div>
       </div>
       <p class="small">Free and open source · macOS + Android · works with Claude Code and other providers</p>
     </div>
@@ -398,7 +399,7 @@
         </div>
         <div class="steps">
           <div><h3>1 · Install the app and the daemon</h3><p>Condx.app plus <code>condxd</code>, which runs in the background.</p>
-<pre>curl -fsSL https://condx.vercel.app/install.sh | bash</pre></div>
+<pre>curl -fsSL https://condx.app/install.sh | bash</pre></div>
           <div><h3>2 · Add your Convex projects</h3><p>Or let the app find them in a folder.</p>
 <pre>~/.condx/daemon/bin/condxd project discover ~/code
 ~/.condx/daemon/bin/condxd project add ~/code/my-app</pre></div>

@@ -61,7 +61,7 @@ No accounts and no telemetry: everything stays on your machine.
 On a Mac with Apple Silicon and macOS 15 or later:
 
 ```bash
-curl -fsSL https://condx.vercel.app/install.sh | bash
+curl -fsSL https://condx.app/install.sh | bash
 ```
 
 It downloads the latest [release](https://github.com/serlismaldonado/condx/releases), checks its

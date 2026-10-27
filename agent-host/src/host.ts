@@ -175,7 +175,7 @@ export class Host {
     registry.install(chatExt);
     registry.install(taskExt);
     modeTools = { diagnose: [...READ_TOOLS, condx], fix: [...FIX_TOOLS, condx], chat: [...READ_TOOLS, condx], task: [...READ_TOOLS, condx] };
-    host.#harness = await Harness.open(await openNodeSqliteStorage(path), { models: providers.models, registry, identity: { attribution: { name: "condx", url: "https://condx.vercel.app" } } }, ctx);
+    host.#harness = await Harness.open(await openNodeSqliteStorage(path), { models: providers.models, registry, identity: { attribution: { name: "condx", url: "https://condx.app" } } }, ctx);
     host.#harness.resume();
     // Las corridas que un proceso anterior dejó a medias: se vuelven a esperar.
     const runs = await host.#runs();

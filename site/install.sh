@@ -2,7 +2,7 @@
 # Installs Condx from the latest GitHub release: the app into ~/Applications and the daemon
 # (condxd) as a launchd service. Usage:
 #
-#   curl -fsSL https://condx.vercel.app/install.sh | bash
+#   curl -fsSL https://condx.app/install.sh | bash
 #
 # CONDX_VERSION=v0.2.0 picks a release; CONDX_APP_DIR changes where the app goes;
 # CONDX_DRY_RUN=1 downloads and checks everything but installs nothing.

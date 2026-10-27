@@ -105,7 +105,7 @@ pub fn tools() -> Vec<Value> {
         tool("list_services", "A project's local development environment: Convex backend, deployer (convex dev) and frontend, with their status.", json!({ "project": project_arg() }), &[]),
         tool(
             "service_action",
-            "Starts, stops or restarts a local service (backend, deployer, frontend; in heskala-erp the frontend is vite) or all of them (all).",
+            "Starts, stops or restarts a development service (backend, deployer, frontend; in heskala-erp the frontend is vite) or all of them (all). On the Mac they're local; on the cloud site (when the Mac is off) there's no local backend: the deployer runs convex dev against the project's cloud dev and the frontend gets a public URL (list_services → publicUrl).",
             json!({ "name": { "type": "string", "enum": ["backend", "deployer", "frontend", "vite", "all"] }, "action": { "type": "string", "enum": ["start", "stop", "restart"] }, "project": project_arg() }),
             &["name", "action"],
         ),
@@ -197,6 +197,9 @@ pub fn tools() -> Vec<Value> {
 pub const EXTERNAL_TOOLS: &[&str] = &[
     "list_threads", "read_thread", "post_to_thread", "wait_for_mention", "list_agents", "start_chat", "give_task", "run_workflow", "cancel_run", "retry_run", "answer_question", "save_agent", "save_workflow",
     "request_job", "report_event", "list_projects", "list_approvals",
+    // El entorno de desarrollo: en la Mac, el local; con la Mac apagada, el sitio en la nube lo levanta
+    // contra el cloud dev del proyecto y el frontend sale con su URL pública (`publicUrl`).
+    "list_services", "service_action", "get_service_logs",
 ];
 
 /// Si este cliente ve esta herramienta.
@@ -206,7 +209,7 @@ pub fn allowed(client: &Client, name: &str) -> bool {
         "external" => {
             let scope = match name {
                 "post_to_thread" => Some(Scope::ThreadsWrite),
-                "start_chat" | "give_task" | "run_workflow" | "cancel_run" | "retry_run" | "request_job" | "report_event" => Some(Scope::Orchestrate),
+                "start_chat" | "give_task" | "run_workflow" | "cancel_run" | "retry_run" | "request_job" | "report_event" | "service_action" => Some(Scope::Orchestrate),
                 "answer_question" => Some(Scope::AnswerQuestions),
                 "save_agent" | "save_workflow" => Some(Scope::EditFlows),
                 _ => None,
@@ -438,7 +441,16 @@ pub async fn call(state: &Shared, client: &Client, by: &str, name: &str, args: &
         }
         "list_services" => {
             let project = crate::projects::get(state, args["project"].as_str())?;
-            json!(crate::services::list(state, &project).await)
+            let mut list = crate::services::list(state, &project).await;
+            // En el sitio en la nube: dónde abrir el frontend (la URL de boat, privada con su token).
+            if crate::site::is_cloud() {
+                for s in list.iter_mut().filter(|s| matches!(s["name"].as_str(), Some("frontend" | "vite"))) {
+                    if let Some(url) = crate::site::open_url(project.frontend_port) {
+                        s["publicUrl"] = json!(url);
+                    }
+                }
+            }
+            json!({ "where": if crate::site::is_cloud() { "cloud site (Mac off): against the project's cloud dev" } else { "the Mac (local)" }, "services": list })
         }
         "service_action" => {
             need(Scope::JobsRequest)?;

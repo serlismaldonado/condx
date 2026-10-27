@@ -535,7 +535,7 @@ pub fn templates(project: &str, is_default: bool, envs: &[(String, String)]) -> 
                 n.push(node("ready", NodeKind::Notify, "Ready", 1140., 0., json!({ "message": "Task ready on {node.fixer.branch}: {node.fixer.change} ({node.checks.summary})" })));
             } else {
                 n.push(node("preview", NodeKind::Recipe, "Try it on cloud dev", 1140., 0., json!({ "recipe": "preview", "env": dev, "args": { "commit": "{node.fixer.commit}" } })));
-                n.push(node("ready", NodeKind::Notify, "Ready to try", 1520., 0., json!({ "message": "Try it: {node.preview.url} · {node.fixer.change} ({node.checks.summary}, branch {node.fixer.branch})", "priority": "high" })));
+                n.push(node("ready", NodeKind::Notify, "Ready to try", 1520., 0., json!({ "message": "Ready to try on cloud dev (Condx → Environments → Open, or ask Claude for the URL): {node.fixer.change} ({node.checks.summary}, branch {node.fixer.branch})", "priority": "high" })));
             }
             n
         },

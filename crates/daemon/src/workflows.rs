@@ -1032,6 +1032,9 @@ async fn step(state: &Shared, run: &mut Run, i: usize, node: &Node, cancel: &mut
                 loop {
                     // Desde qué commit trabaja un agente que escribe: el del evento, si lo trae, o el de la corrida.
                     let base = run.event.as_ref().and_then(|e| e["evidence"]["commit"].as_str().or(e["commit"].as_str())).map(str::to_string).unwrap_or_else(|| run.commit.clone());
+                    // Uno que solo lee después de uno que escribe (el Reviewer): mira el commit de ese, no la copia del proyecto.
+                    let reviewed = run.snapshot.edges.iter().filter(|(_, b)| *b == node.id).filter_map(|(a, _)| run.nodes.iter().find(|n| &n.id == a)).filter_map(|n| n.outputs.get("commit").filter(|c| !c.is_empty()).cloned()).last();
+                    let base = match reviewed { Some(c) if role.mode != crate::roles::Mode::Write => c, _ => base };
                     match crate::agent_host::start_role(state, &role, &agent_run, &text, Some(&run.project), &run.workflow_name, Some(&base)).await {
                         Ok(_) => break,
                         // Otros agentes ocupan los lugares: espera su turno.
@@ -1114,6 +1117,9 @@ pub fn agent_task(run: &Run, node: &Node, role: &crate::roles::Role) -> String {
         // El cambio exacto de un agente que escribe: entre su base y su commit (no contra una rama local).
         if let (Some(base), Some(commit)) = (nr.outputs.get("base").filter(|b| !b.is_empty()), nr.outputs.get("commit").filter(|c| !c.is_empty())) {
             out.push_str(&format!("\nTo see exactly “{title}”'s change: `git diff {base}..{commit}` (its base is {base}; don't compare against a local branch).\n"));
+            if role.mode != crate::roles::Mode::Write {
+                out.push_str(&format!("Your working directory is checked out at {commit} (“{title}”'s commit): the files you read are the changed ones.\n"));
+            }
         }
         // Un cambio hecho sobre una base vieja: quien lo revisa lo tiene que decir.
         if nr.outputs.get("base_current").map(String::as_str) == Some("false") {

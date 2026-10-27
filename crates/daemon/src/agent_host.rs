@@ -292,6 +292,27 @@ fn fix_base(repo: &std::path::Path, incident: &Value) -> String {
 
 /// Un worktree propio en la rama `condx/fix-…`, con los node_modules del repo (los chequeos corren
 /// sin red: no se puede instalar nada).
+/// Una copia de solo lectura detenida en `sha` (para quien revisa el cambio de otro agente).
+fn review_worktree(repo: &std::path::Path, worktrees: &std::path::Path, run_id: &str, sha: &str) -> Result<PathBuf> {
+    let dir = worktrees.join(format!("{run_id}-ro"));
+    if dir.join(".git").exists() {
+        return Ok(dir);
+    }
+    std::fs::create_dir_all(worktrees)?;
+    // Las de revisiones de hace más de dos días ya no se usan (un mensaje después en ese hilo es raro).
+    for e in std::fs::read_dir(worktrees)?.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|m| m.elapsed().ok()).is_some_and(|d| d.as_secs() > 2 * 86_400);
+        if old && e.file_name().to_string_lossy().ends_with("-ro") {
+            let _ = std::process::Command::new("git").arg("-C").arg(repo).args(["worktree", "remove", "--force"]).arg(e.path()).output();
+        }
+    }
+    let out = std::process::Command::new("git").arg("-C").arg(repo).args(["worktree", "add", "--detach", "-f"]).arg(&dir).arg(sha).output()?;
+    if !out.status.success() {
+        bail!("couldn't check out {sha} to review it: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(dir)
+}
+
 fn prepare_worktree(repo: &std::path::Path, worktrees: &std::path::Path, run_id: &str, incident: &Value) -> Result<(PathBuf, String, String)> {
     git(repo, &["rev-parse", "--git-dir"]).context("fixes need the project to be a git repository")?;
     // Lo último de GitHub antes de elegir la base: sin eso, un agente trabajaría sobre lo que haya
@@ -582,6 +603,12 @@ pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str,
         let worktrees = crate::config::home().join("worktrees");
         let (dir, branch, base) = tokio::task::spawn_blocking(move || prepare_worktree(&r, &worktrees, &id, &hint)).await.map_err(|e| anyhow!(e.to_string()))??;
         (dir, Some(branch), Some(base))
+    } else if let Some(sha) = base.filter(|b| b.len() >= 7 && b.chars().all(|c| c.is_ascii_hexdigit())) {
+        // Revisa un commit (el de otro agente): una copia detenida en ese commit, no la del proyecto.
+        let (r, id, sha) = (repo.clone(), run_id.to_string(), sha.to_string());
+        let worktrees = crate::config::home().join("worktrees");
+        let dir = tokio::task::spawn_blocking(move || review_worktree(&r, &worktrees, &id, &sha)).await.map_err(|e| anyhow!(e.to_string()))??;
+        (dir, None, base.map(str::to_string))
     } else {
         (repo.clone(), None, None)
     };

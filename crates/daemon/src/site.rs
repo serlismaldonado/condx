@@ -1029,6 +1029,8 @@ fn apply_flows(state: &Shared, s: &Session) -> Result<()> {
 
 /// El hilo del sitio: espera la confirmación de la Mac y después sincroniza las claves.
 pub fn spawn(state: Shared) {
+    // Claude Code con Remote Control (con una sesión de claude.ai iniciada en el contenedor).
+    crate::remote_control::spawn(state.clone());
     let rt = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("condx-site".into())

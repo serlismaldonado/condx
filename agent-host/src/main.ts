@@ -132,6 +132,8 @@ async function main(): Promise<void> {
       send(res, 400, { error: e instanceof Error ? e.message : String(e) });
     }
   });
+  // Los chequeos de un proyecto (POST /checks) tardan minutos: sin el corte de 5 min de Node.
+  server.requestTimeout = 0;
   server.listen(0, "127.0.0.1", () => {
     const address = server.address();
     process.stdout.write(`${JSON.stringify({ listening: typeof address === "object" && address ? address.port : 0 })}\n`);

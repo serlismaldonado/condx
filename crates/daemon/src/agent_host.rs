@@ -128,9 +128,12 @@ impl AgentHost {
 
     /// Un pedido al host (bloqueante). Si no responde, lo arranca de nuevo una vez.
     pub fn call(&self, state: &Shared, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
+        // Los chequeos de un proyecto (lint, pruebas) tardan minutos: esperarlos no es que el host no
+        // conteste, y reiniciarlo los cortaría.
+        let slow = path == "/checks";
         for attempt in 0..2 {
             let (port, token) = self.ensure(state)?;
-            let req = ureq::request(method, &format!("http://127.0.0.1:{port}{path}")).set("Authorization", &format!("Bearer {token}")).timeout(Duration::from_secs(30));
+            let req = ureq::request(method, &format!("http://127.0.0.1:{port}{path}")).set("Authorization", &format!("Bearer {token}")).timeout(Duration::from_secs(if slow { 1800 } else { 30 }));
             let res = match &body {
                 Some(b) => req.send_json(b.clone()),
                 None => req.call(),
@@ -141,7 +144,7 @@ impl AgentHost {
                     let v: Value = r.into_json().unwrap_or(Value::Null);
                     bail!("agent host ({code}): {}", v["error"].as_str().unwrap_or("error"));
                 }
-                Err(e) if attempt == 0 => {
+                Err(e) if attempt == 0 && !slow => {
                     tracing::warn!("agent host didn't answer ({e}); starting it again");
                     self.stop();
                 }

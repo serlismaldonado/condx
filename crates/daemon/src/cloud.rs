@@ -1724,7 +1724,7 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     trows.insert(SETTINGS_ROW.into(), obj(json!({ "title": "settings", "settings": settings_v.to_string() })));
     let flows: Vec<Value> = state.store.projects().unwrap_or_default().iter().flat_map(|p| crate::workflows::list(state, &p.name).unwrap_or_default()).filter_map(|w| serde_json::to_value(w).ok()).collect();
     // Con los agentes del catálogo (sus instrucciones, modo y modelo): en el sitio son los mismos.
-    trows.insert(FLOWS_ROW.into(), obj(json!({ "title": "flows", "flows": serde_json::to_string(&flows).unwrap_or_default(), "roles": serde_json::to_string(&crate::roles::list(state)).unwrap_or_default() })));
+    trows.insert(FLOWS_ROW.into(), obj(json!({ "title": "flows", "flows": serde_json::to_string(&flows).unwrap_or_default(), "roles": serde_json::to_string(&roles_with_remotes(state)).unwrap_or_default() })));
     trows.insert(DEVICES_ROW.into(), obj(json!({ "title": "devices", "devices": serde_json::to_string(&trusted_devices()).unwrap_or_default() })));
     if now_ms() - s.catalog_built.0 > 60_000 {
         s.catalog_built = (now_ms(), catalog(state));
@@ -2140,4 +2140,29 @@ mod tests {
     fn huella_corta() {
         assert_eq!(fingerprint("abcdef0123456789"), "abcd ef01 2345");
     }
+}
+
+/// Los agentes del catálogo con el remoto de GitHub de cada repo propio (Mayer: condx y condx-mobile),
+/// para que el sitio en la nube los clone. Se calcula una vez por repo (no cambia).
+fn roles_with_remotes(state: &Shared) -> Vec<crate::roles::Role> {
+    static REMOTES: std::sync::Mutex<Option<std::collections::HashMap<String, Option<String>>>> = std::sync::Mutex::new(None);
+    let mut roles = crate::roles::list(state);
+    let mut cache = REMOTES.lock().unwrap();
+    let cache = cache.get_or_insert_with(Default::default);
+    for r in roles.iter_mut() {
+        for repo in r.repos.iter_mut().filter(|x| x.remote.is_none() && !x.path.trim().is_empty()) {
+            let path = repo.path.trim().to_string();
+            repo.remote = cache
+                .entry(path.clone())
+                .or_insert_with(|| {
+                    let out = std::process::Command::new("git").args(["-C", &path, "remote", "get-url", "origin"]).output().ok()?;
+                    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    // Solo los de GitHub, en https y sin credenciales.
+                    let url = url.strip_prefix("git@github.com:").map(|r| format!("https://github.com/{r}")).unwrap_or(url);
+                    (out.status.success() && url.starts_with("https://github.com/") && !url.contains('@')).then_some(url)
+                })
+                .clone();
+        }
+    }
+    roles
 }

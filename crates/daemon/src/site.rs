@@ -807,43 +807,53 @@ fn clone_project(state: &Shared, name: &str, url: &str, branch: &str) -> Result<
     }
     if !dir.join(".git").exists() {
         std::fs::create_dir_all(dir.parent().unwrap())?;
-        // Primero el token del dueño del repo (`github-token:<dueño>`), después los demás (un repo
-        // movido a una organización redirige y necesita el de la organización) y al final sin token
-        // (los públicos).
-        let owner = url.trim_start_matches("https://github.com/").split('/').next().unwrap_or_default().to_string();
-        let first = format!("github-token:{owner}");
-        let mut accounts = crate::secrets::accounts_with_prefix("github-token");
-        accounts.retain(|a| *a != first);
-        accounts.insert(0, first);
-        let mut tokens: Vec<Option<String>> = accounts.iter().filter_map(|a| crate::secrets::get(a).ok().flatten()).map(Some).collect();
-        tokens.push(None);
-        let mut last = String::new();
-        // El nombre actual del repo (uno movido a una organización redirige; la API sigue la
-        // redirección, `git clone` con el token de la organización no).
-        let url = tokens.iter().find_map(|t| canonical_url(url, t.as_deref())).unwrap_or_else(|| url.to_string());
-        let url = url.as_str();
-        for token in tokens {
-            let mut cmd = std::process::Command::new("git");
-            // El token va en un encabezado de esta orden, no en el remoto guardado.
-            if let Some(token) = &token {
-                use base64::Engine as _;
-                let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{}", token.trim()));
-                cmd.args(["-c", &format!("http.extraHeader=Authorization: Basic {basic}")]);
-            }
-            let out = cmd.env("GIT_TERMINAL_PROMPT", "0").args(["clone", "--quiet", "--branch", branch, url]).arg(&dir).output().context("couldn't run git")?;
-            if out.status.success() {
-                last.clear();
-                break;
-            }
-            let _ = std::fs::remove_dir_all(&dir);
-            last = devtool_core::redact(&String::from_utf8_lossy(&out.stderr)).chars().take(300).collect();
-        }
-        if !last.is_empty() {
-            bail!("git clone failed with every GitHub token (they need Contents: read on the repo): {last}");
-        }
+        clone_repo(url, Some(branch), &dir)?;
     }
     crate::projects::register(state, &dir, Some(name))?;
     make_ready(&dir)
+}
+
+/// Clona un repo de GitHub en `dir`: primero con el token del dueño, después con los demás y al final
+/// sin token (los públicos). El token va en un encabezado de la orden, no en el remoto guardado.
+fn clone_repo(url: &str, branch: Option<&str>, dir: &std::path::Path) -> Result<()> {
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // Primero el token del dueño del repo (`github-token:<dueño>`), después los demás (un repo
+    // movido a una organización redirige y necesita el de la organización) y al final sin token
+    // (los públicos).
+    let owner = url.trim_start_matches("https://github.com/").split('/').next().unwrap_or_default().to_string();
+    let first = format!("github-token:{owner}");
+    let mut accounts = crate::secrets::accounts_with_prefix("github-token");
+    accounts.retain(|a| *a != first);
+    accounts.insert(0, first);
+    let mut tokens: Vec<Option<String>> = accounts.iter().filter_map(|a| crate::secrets::get(a).ok().flatten()).map(Some).collect();
+    tokens.push(None);
+    let mut last = String::new();
+    // El nombre actual del repo (uno movido a una organización redirige; la API sigue la
+    // redirección, `git clone` con el token de la organización no).
+    let url = tokens.iter().find_map(|t| canonical_url(url, t.as_deref())).unwrap_or_else(|| url.to_string());
+    let url = url.as_str();
+    for token in tokens {
+        let mut cmd = std::process::Command::new("git");
+        // El token va en un encabezado de esta orden, no en el remoto guardado.
+        if let Some(token) = &token {
+            use base64::Engine as _;
+            let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{}", token.trim()));
+            cmd.args(["-c", &format!("http.extraHeader=Authorization: Basic {basic}")]);
+        }
+        let out = cmd.env("GIT_TERMINAL_PROMPT", "0").args(["clone", "--quiet"]).args(branch.map(|b| vec!["--branch", b]).unwrap_or_default()).arg(url).arg(dir).output().context("couldn't run git")?;
+        if out.status.success() {
+            last.clear();
+            break;
+        }
+        let _ = std::fs::remove_dir_all(dir);
+        last = devtool_core::redact(&String::from_utf8_lossy(&out.stderr)).chars().take(300).collect();
+    }
+    if !last.is_empty() {
+        bail!("git clone failed with every GitHub token (they need Contents: read on the repo): {last}");
+    }
+    Ok(())
 }
 
 /// Los tokens de GitHub del sitio como encabezados de git (y al final sin ninguno, para lo público).
@@ -1179,7 +1189,35 @@ fn apply_settings(state: &Shared, s: &Session) -> Result<bool> {
 fn apply_flows(state: &Shared, s: &Session) -> Result<()> {
     let row = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::FLOWS_ROW);
     // Los agentes del catálogo de la Mac (los mismos, con sus instrucciones y modelos).
-    if let Some(roles) = row.as_ref().and_then(|r| r.row.values.get("roles").and_then(Value::as_str)).and_then(|t| serde_json::from_str::<Vec<crate::roles::Role>>(t).ok()) {
+    if let Some(mut roles) = row.as_ref().and_then(|r| r.row.values.get("roles").and_then(Value::as_str)).and_then(|t| serde_json::from_str::<Vec<crate::roles::Role>>(t).ok()) {
+        // Los repos propios de un agente (Mayer: condx, condx-mobile) son rutas de la Mac: aquí, un clon.
+        for r in roles.iter_mut() {
+            for repo in r.repos.iter_mut() {
+                let Some(remote) = repo.remote.clone() else { continue };
+                let name = remote.trim_end_matches('/').trim_end_matches(".git").rsplit('/').next().unwrap_or("repo").to_string();
+                let dir = home().join("role-repos").join(&name);
+                if !dir.join(".git").exists() {
+                    // Un clon que falla se reintenta cada 10 minutos, no en cada vuelta.
+                    static TRIED: std::sync::Mutex<Option<std::collections::HashMap<String, i64>>> = std::sync::Mutex::new(None);
+                    {
+                        let mut tried = TRIED.lock().unwrap();
+                        let tried = tried.get_or_insert_with(Default::default);
+                        if tried.get(&name).is_some_and(|at| now_ms() - at < 10 * 60_000) {
+                            continue;
+                        }
+                        tried.insert(name.clone(), now_ms());
+                    }
+                    match clone_repo(&remote, None, &dir) {
+                        Ok(()) => tracing::info!("site: cloned {name} for the agent {}", r.name),
+                        Err(e) => {
+                            tracing::warn!("site: couldn't clone {name} for the agent {}: {e:#}", r.name);
+                            continue;
+                        }
+                    }
+                }
+                repo.path = dir.display().to_string();
+            }
+        }
         if serde_json::to_value(crate::roles::list(state))? != serde_json::to_value(&roles)? {
             crate::roles::replace_all(state, &roles)?;
             tracing::info!("site: {} agents copied from the Mac", roles.len());

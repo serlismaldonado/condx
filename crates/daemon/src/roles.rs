@@ -51,6 +51,9 @@ pub struct Role {
 #[serde(rename_all = "camelCase", default)]
 pub struct RoleRepo {
     pub path: String,
+    /// El remoto de GitHub del repo (lo agrega la Mac al publicar): el sitio en la nube lo clona.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
     /// Palabras del pedido que lo eligen (sin mayúsculas ni acentos).
     pub when: Vec<String>,
 }
@@ -362,7 +365,7 @@ mod tests {
 
     #[test]
     fn el_repo_de_un_rol_sale_de_las_palabras_del_pedido() {
-        let r = Role { repos: vec![RoleRepo { path: "/src/condx".into(), when: vec![] }, RoleRepo { path: "/src/condx-mobile".into(), when: vec!["teléfono".into(), "android".into(), "apk".into()] }], ..Role::default() };
+        let r = Role { repos: vec![RoleRepo { path: "/src/condx".into(), when: vec![], remote: None }, RoleRepo { path: "/src/condx-mobile".into(), when: vec!["teléfono".into(), "android".into(), "apk".into()], remote: None }], ..Role::default() };
         assert_eq!(repo_for(&r, "@mayer el botón de voz del telefono no anda").unwrap(), std::path::PathBuf::from("/src/condx-mobile"));
         assert_eq!(repo_for(&r, "la APK no instala").unwrap(), std::path::PathBuf::from("/src/condx-mobile"));
         assert_eq!(repo_for(&r, "la app de escritorio se cierra").unwrap(), std::path::PathBuf::from("/src/condx"));

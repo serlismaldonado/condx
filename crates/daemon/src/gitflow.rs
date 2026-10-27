@@ -41,8 +41,14 @@ fn api() -> String {
     std::env::var("CONDX_GITHUB_API").unwrap_or_else(|_| "https://api.github.com".into())
 }
 
-fn token() -> Option<String> {
-    crate::secrets::get(TOKEN_ACCOUNT).ok().flatten().filter(|t| !t.trim().is_empty()).map(|t| t.trim().to_string())
+/// El token para el repo de `dir`: primero el de su dueño (`github-token:<dueño>`, como en el sitio en
+/// la nube, que tiene uno por organización), después el general y los demás.
+fn token_for(dir: &Path) -> Option<String> {
+    let owner = origin(dir).and_then(|u| github_slug(&u)).map(|(o, _)| o);
+    let mut accounts: Vec<String> = owner.iter().map(|o| format!("{TOKEN_ACCOUNT}:{o}")).collect();
+    accounts.push(TOKEN_ACCOUNT.to_string());
+    accounts.extend(crate::secrets::accounts_with_prefix(&format!("{TOKEN_ACCOUNT}:")));
+    accounts.iter().find_map(|a| crate::secrets::get(a).ok().flatten().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()))
 }
 
 fn git(dir: &Path, args: &[&str], token: Option<&str>) -> Result<String> {
@@ -80,14 +86,14 @@ fn default_branch(dir: &Path) -> String {
 pub fn push(dir: &Path, branch: &str) -> Result<()> {
     let url = origin(dir).ok_or_else(|| anyhow!("the repo has no remote “origin” (create one on GitHub to back it up)"))?;
     let https = url.starts_with("https://");
-    let token = if https { Some(token().ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?) } else { None };
+    let token = if https { Some(token_for(dir).ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?) } else { None };
     git(dir, &["push", "-q", "-u", "origin", &format!("{branch}:refs/heads/{branch}")], token.as_deref())?;
     Ok(())
 }
 
 /// Abre un PR de `branch` contra la rama principal, o devuelve el que ya estaba abierto.
 pub fn open_pr(dir: &Path, branch: &str, title: &str, body: &str) -> Result<String> {
-    let token = token().ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?;
+    let token = token_for(dir).ok_or_else(|| anyhow!("there's no GitHub token (condxd secret set github-token)"))?;
     open_pr_with(dir, branch, title, body, &token, &api())
 }
 

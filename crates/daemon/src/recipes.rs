@@ -36,6 +36,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("release-condx", include_str!("../../../recipes/release-condx.toml")),
     ("release-mobile", include_str!("../../../recipes/release-mobile.toml")),
     ("deploy-condx-cloud", include_str!("../../../recipes/deploy-condx-cloud.toml")),
+    ("preview", include_str!("../../../recipes/preview.toml")),
 ];
 
 /// Tipo de entorno al que apunta una receta; `new` = crea el entorno.

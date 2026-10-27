@@ -254,9 +254,12 @@ export async function runScript(root: string, script: string): Promise<{ code: n
   const tmp = join(tmpdir(), `condx-check-${process.pid}`);
   await mkdir(tmp, { recursive: true });
   // Sin red siempre: en macOS con sandbox-exec (y su perfil de escritura); en Linux en un espacio de
-  // red propio (`unshare -rn`). Si el sistema no lo permite, no se corre sin sandbox.
+  // red propio (`unshare -rn`). Si el sistema no lo permite, no se corre sin sandbox. Salvo en el
+  // sitio en la nube (`CONDX_CHECKS_SANDBOX=container`): Docker no deja `unshare` y el contenedor, que
+  // solo tiene los clones y las llaves del sitio, ya es la frontera.
+  const container = process.env.CONDX_CHECKS_SANDBOX === "container";
   const [cmd, args] =
-    process.platform === "darwin" ? ["/usr/bin/sandbox-exec", ["-p", sandboxProfile(root, home, tmp), pm, "run", script]] : ["unshare", ["-rn", "--", pm, "run", script]];
+    process.platform === "darwin" ? ["/usr/bin/sandbox-exec", ["-p", sandboxProfile(root, home, tmp), pm, "run", script]] : container ? [pm, ["run", script]] : ["unshare", ["-rn", "--", pm, "run", script]];
   return await new Promise((ok) => {
     execFile(
       cmd,

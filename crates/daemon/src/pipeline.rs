@@ -130,6 +130,53 @@ pub async fn import(state: &Shared, job_id: &str, env: &Environment, backup: &Pa
 }
 
 /// Despliega `commit` en `env` desde un worktree propio y lo registra.
+/// La vista previa de un commit en el sitio en la nube: el clon en ese commit, `convex dev` contra el
+/// cloud dev y el frontend, hasta que las funciones quedan listas y el frontend responde. Deja `url`
+/// (la URL pública del frontend) y `commit` para el aviso del flujo. En la Mac no hace nada: su copia
+/// es la de la persona.
+async fn preview(state: &Shared, job: &mut Job, env: &Environment, commit: &str, cancel: &mut watch::Receiver<bool>) -> Result<String> {
+    if !crate::site::is_cloud() {
+        return Ok("previews run on the cloud site (the Mac's copy is yours): nothing to do here".into());
+    }
+    let project = crate::projects::get(state, job.args.get("project").map(String::as_str).or(env.project.as_deref()))?;
+    crate::services::checkout_commit(&project, commit)?;
+    log_line(&job.id, &format!("{} at {}", project.name, &commit[..commit.len().min(8)]));
+    let started = now_ms();
+    // Cuántos «listo» y cuántos errores había antes: se espera uno nuevo (el log sigue de antes).
+    let count = |logs: &str| (logs.matches("Convex functions ready").count(), logs.matches("✖").count(), logs.len());
+    let before = count(&crate::services::logs(state, &project, "deployer", 2000).await.unwrap_or_default());
+    crate::services::action(state, &project, "all", "restart")?;
+    let deadline = started + 15 * 60_000;
+    loop {
+        if *cancel.borrow() {
+            bail!("cancelled");
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let busy = crate::services::list(state, &project).await;
+        let front_ok = busy.iter().any(|s| matches!(s["name"].as_str(), Some("frontend" | "vite")) && s["healthy"] == true);
+        let logs = crate::services::logs(state, &project, "deployer", 2000).await.unwrap_or_default();
+        let (ok_now, bad_now, len) = count(&logs);
+        // Un log más corto que antes es otro archivo (el proceso empezó de cero): todo es de ahora.
+        let fresh = len < before.2;
+        let ready = if fresh { ok_now > 0 } else { ok_now > before.0 };
+        let failed = if fresh { bad_now > 0 } else { bad_now > before.1 };
+        if failed && !ready {
+            let tail: String = logs.lines().filter(|l| !l.starts_with("— ")).rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            bail!("convex dev failed on {}:\n{}", env.name, devtool_core::redact(&tail));
+        }
+        if ready && front_ok {
+            break;
+        }
+        if now_ms() > deadline {
+            bail!("the preview didn't come up in 15 minutes (functions ready: {ready}, frontend: {front_ok})");
+        }
+    }
+    let url = crate::site::open_url(project.frontend_port).unwrap_or_else(|| format!("http://localhost:{}", project.frontend_port));
+    job.outputs.insert("url".into(), url.clone());
+    job.outputs.insert("commit".into(), commit.to_string());
+    Ok(format!("{} running on {} · {url}", &commit[..commit.len().min(8)], env.name))
+}
+
 pub async fn deploy_commit(state: &Shared, job: &Job, env: &Environment, commit: &str, cancel: &mut watch::Receiver<bool>) -> Result<()> {
     let repo = crate::projects::repo_for(state, Some(env));
     let dir = home().join("worktrees").join(format!("{}-{}", job.id, &commit[..8]));
@@ -369,6 +416,7 @@ pub async fn builtin(
             }
             Ok("all met".into())
         }
+        "preview" => preview(state, job, env, &commit, cancel).await,
         "deploy-commit" => {
             deploy_commit(state, job, env, &commit, cancel).await?;
             Ok(format!("{} on {}", &commit[..8], env.name))

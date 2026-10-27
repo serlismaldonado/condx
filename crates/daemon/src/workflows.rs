@@ -515,16 +515,30 @@ pub fn templates(project: &str, is_default: bool, envs: &[(String, String)]) -> 
         crate::events::Trigger { source: "frontend-error".into(), ..Default::default() },
     ];
     out.push(fix);
-    // Una tarea pedida desde el chat: un agente la hace en su rama, otro la revisa, los chequeos.
+    // Una tarea pedida desde el chat (o desde Claude por el MCP): un agente la hace en su rama, otro la
+    // revisa, los chequeos; con cloud dev, además, la vista previa de esa rama (en el sitio en la nube:
+    // convex dev y el frontend con su URL) y un aviso con dónde probarla.
     let mut task = flow(
         "Do a task",
-        "A task you ask for in Agents → New task: an agent does it on its own branch, another reviews it, the project's checks run, and you get the branch to merge.",
-        vec![
-            node("fixer", NodeKind::Agent, "Do it", 0., 0., json!({ "agent": "fixer", "instructions": "The event is a task the developer asked for: do it." })),
-            node("review", NodeKind::Agent, "Reviewer", 380., 0., json!({ "agent": "reviewer" })),
-            node("checks", NodeKind::Check, "Project checks", 760., 0., json!({ "check": "fix-checks", "node": "fixer" })),
-            node("ready", NodeKind::Notify, "Ready", 1140., 0., json!({ "message": "Task ready on {node.fixer.branch}: {node.fixer.change} ({node.checks.summary})" })),
-        ],
+        if dev.is_empty() {
+            "A task you ask for in Agents → New task: an agent does it on its own branch, another reviews it, the project's checks run, and you get the branch to merge."
+        } else {
+            "A task you ask for (in Agents, from the phone or from Claude): an agent does it on its own branch, another reviews it, the project's checks run and, on the cloud site, the branch runs on cloud dev with a URL to try it. Reply in the thread to keep iterating."
+        },
+        {
+            let mut n = vec![
+                node("fixer", NodeKind::Agent, "Do it", 0., 0., json!({ "agent": "fixer", "instructions": "The event is a task the developer asked for: do it." })),
+                node("review", NodeKind::Agent, "Reviewer", 380., 0., json!({ "agent": "reviewer" })),
+                node("checks", NodeKind::Check, "Project checks", 760., 0., json!({ "check": "fix-checks", "node": "fixer" })),
+            ];
+            if dev.is_empty() {
+                n.push(node("ready", NodeKind::Notify, "Ready", 1140., 0., json!({ "message": "Task ready on {node.fixer.branch}: {node.fixer.change} ({node.checks.summary})" })));
+            } else {
+                n.push(node("preview", NodeKind::Recipe, "Try it on cloud dev", 1140., 0., json!({ "recipe": "preview", "env": dev, "args": { "commit": "{node.fixer.commit}" } })));
+                n.push(node("ready", NodeKind::Notify, "Ready to try", 1520., 0., json!({ "message": "Try it: {node.preview.url} · {node.fixer.change} ({node.checks.summary}, branch {node.fixer.branch})", "priority": "high" })));
+            }
+            n
+        },
     );
     task.conditions.insert(edge_key("fixer", "review"), "fixer.changes == true".into());
     task.triggers = vec![crate::events::Trigger { source: "task".into(), ..Default::default() }];

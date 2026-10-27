@@ -33,7 +33,7 @@ COPY agent-host/package.json agent-host/package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY agent-host/src ./src
 COPY --from=build /condxd /usr/local/bin/condxd
-ENV HOME=/data CONDX_HOME=/data/condx CONDX_SITE=cloud CONDX_AGENT_HOST_DIR=/opt/condx/agent-host CONDX_CONVEX_BACKEND=/usr/local/bin/convex-local-backend
+ENV HOME=/data CONDX_HOME=/data/condx CONDX_SITE=cloud CONDX_CHECKS_SANDBOX=container CONDX_AGENT_HOST_DIR=/opt/condx/agent-host CONDX_CONVEX_BACKEND=/usr/local/bin/convex-local-backend
 VOLUME /data
 WORKDIR /data
 CMD ["condxd", "serve", "--site", "cloud"]

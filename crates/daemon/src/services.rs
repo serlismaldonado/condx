@@ -453,28 +453,53 @@ pub fn cloud_checkout(state: &Shared, project: &Project, wanted: Option<&str>) -
     bail!("{} couldn't switch to a branch to deploy: {}", project.name, tried.join("; "))
 }
 
+fn git_in(project: &Project, args: &[&str]) -> Option<String> {
+    std::process::Command::new("git").arg("-C").arg(&project.repo).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// Lo que regeneran las herramientas (lockfiles al instalar, convex/_generated al desplegar, el
+/// `*.gen.ts` del router del frontend al arrancar) no es trabajo propio del clon: se descarta antes de
+/// cambiar de rama. Devuelve si el clon quedó limpio.
+fn discard_generated(project: &Project) -> bool {
+    let generated = |path: &str| path.starts_with("convex/_generated/") || path.ends_with(".gen.ts") || matches!(path, "bun.lock" | "bun.lockb" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock");
+    let changed: Vec<String> = git_in(project, &["status", "--porcelain"]).unwrap_or_default().lines().map(|l| l.get(3..).unwrap_or("").to_string()).collect();
+    let tool_made: Vec<&str> = changed.iter().map(String::as_str).filter(|p| generated(p)).collect();
+    if !tool_made.is_empty() {
+        let mut args = vec!["checkout", "--"];
+        args.extend(tool_made.iter().copied());
+        let _ = git_in(project, &args);
+    }
+    git_in(project, &["status", "--porcelain"]).is_some_and(|s| s.is_empty())
+}
+
+/// El clon del sitio en un commit (el de un agente: su rama vive en este mismo repo, en su worktree),
+/// sin rama propia para no chocar con el worktree. Error si el clon tiene cambios suyos.
+pub fn checkout_commit(project: &Project, commit: &str) -> Result<()> {
+    if !discard_generated(project) {
+        bail!("the cloud copy of {} has its own changes: it didn't switch to {commit}", project.name);
+    }
+    git_in(project, &["checkout", "-q", "--detach", commit]).ok_or_else(|| anyhow!("couldn't check out {commit} in the cloud copy of {}", project.name))?;
+    if let Err(e) = crate::site::make_ready(&project.repo) {
+        tracing::warn!("site: {} at {commit} isn't ready: {e:#}", project.name);
+    }
+    Ok(())
+}
+
 pub fn follow_branch(project: &Project, branch: &str) -> String {
-    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&project.repo).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let git = |args: &[&str]| git_in(project, args);
     let here = git(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     if branch.is_empty() {
         return format!("branch {here}");
     }
     let fetched = crate::site::fetch(&project.repo);
     if !fetched || git(&["rev-parse", "--verify", "-q", &format!("origin/{branch}")]).is_none() {
+        // Una rama de un agente del sitio (en su worktree, todavía sin subir): su commit, sin rama.
+        if git(&["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")]).is_some() && checkout_commit(project, branch).is_ok() {
+            return format!("branch {branch}");
+        }
         return format!("branch {here} (the Mac's {branch} isn't on GitHub: push it from the Mac)");
     }
-    // Lo que regeneran las herramientas (lockfiles al instalar, convex/_generated al desplegar, el
-    // `*.gen.ts` del router del frontend al arrancar) no
-    // es trabajo propio del clon: se descarta antes de cambiar de rama.
-    let generated = |path: &str| path.starts_with("convex/_generated/") || path.ends_with(".gen.ts") || matches!(path, "bun.lock" | "bun.lockb" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock");
-    let changed: Vec<String> = git(&["status", "--porcelain"]).unwrap_or_default().lines().map(|l| l.get(3..).unwrap_or("").to_string()).collect();
-    let tool_made: Vec<&str> = changed.iter().map(String::as_str).filter(|p| generated(p)).collect();
-    if !tool_made.is_empty() {
-        let mut args = vec!["checkout", "--"];
-        args.extend(tool_made.iter().copied());
-        let _ = git(&args);
-    }
-    if git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty()) {
+    if !discard_generated(project) {
         return format!("branch {here} (the cloud copy has its own changes; it didn't switch to {branch})");
     }
     match git(&["checkout", "-q", "-B", branch, &format!("origin/{branch}")]) {

@@ -69,7 +69,7 @@ const INCIDENT_FIELDS: &[&str] = &[
 /// Lo que el teléfono ve de un hilo (threads.rs, compacto): sus mensajes en `items` (JSON, los
 /// últimos 40, textos recortados), quiénes participan, si espera una respuesta, y el resultado del
 /// último mensaje que mandó el teléfono.
-const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects", "catalog", "overview", "context"];
+const THREAD_FIELDS: &[&str] = &["title", "kind", "status", "updatedAt", "items", "participants", "waitingAnswer", "project", "env", "version", "versionCode", "url", "result", "resultFor", "recipient", "aliveAt", "settings", "devices", "projects", "catalog", "overview", "context", "flows"];
 /// Lo más largo de un mensaje de un hilo en el teléfono (antes 700: las respuestas se cortaban).
 const ITEM_CHARS: usize = 12_000;
 /// Lo que ocupan los mensajes de un hilo en su fila: si se pasa, se dejan afuera los más viejos.
@@ -128,6 +128,9 @@ pub const APK_ROW: &str = "_apk";
 /// La configuración de los agentes de la Mac (proveedor y modelo por defecto, presupuesto, cuántos a
 /// la vez, autonomía, política de Git; nada secreto): el sitio en la nube la copia.
 pub const SETTINGS_ROW: &str = "_settings";
+/// Los flujos de cada proyecto (sin secretos): el sitio en la nube los copia para correrlos con la
+/// Mac apagada (una tarea pedida desde Claude o el teléfono arranca los mismos que en la Mac).
+pub const FLOWS_ROW: &str = "_flows";
 /// Los teléfonos de confianza de la Mac (id, nombre, llave pública): el sitio en la nube verifica con
 /// ellos las firmas de los mensajes cuando contesta con la Mac apagada.
 pub const DEVICES_ROW: &str = "_devices";
@@ -1666,6 +1669,8 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     // Los avisos al teléfono (ntfy, sin el token): con la Mac apagada también avisa el sitio.
     settings_v["notify"] = serde_json::to_value(crate::notify::settings(state)).unwrap_or_default();
     trows.insert(SETTINGS_ROW.into(), obj(json!({ "title": "settings", "settings": settings_v.to_string() })));
+    let flows: Vec<Value> = state.store.projects().unwrap_or_default().iter().flat_map(|p| crate::workflows::list(state, &p.name).unwrap_or_default()).filter_map(|w| serde_json::to_value(w).ok()).collect();
+    trows.insert(FLOWS_ROW.into(), obj(json!({ "title": "flows", "flows": serde_json::to_string(&flows).unwrap_or_default() })));
     trows.insert(DEVICES_ROW.into(), obj(json!({ "title": "devices", "devices": serde_json::to_string(&trusted_devices()).unwrap_or_default() })));
     if now_ms() - s.catalog_built.0 > 60_000 {
         s.catalog_built = (now_ms(), catalog(state));

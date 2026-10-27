@@ -279,6 +279,9 @@ fn tick(state: &Shared, s: &mut Session) -> Result<Value> {
     // Primero las claves: la configuración nombra al proveedor por defecto.
     let applied = apply_keys(state, s)?;
     let settings = apply_settings(state, s)?;
+    if let Err(e) = apply_flows(state, s) {
+        tracing::warn!("site: couldn't copy the flows: {e:#}");
+    }
     *SITE_LOGO_NOW.lock().unwrap() = crate::agents::logo_for(state, None);
     let mac_alive_at = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::MAC_ROW).and_then(|r| r.row.values.get("aliveAt").and_then(Value::as_i64));
     let mac_away = !mac_alive_at.is_some_and(|at| now - at < MAC_GONE_MS);
@@ -979,6 +982,35 @@ fn apply_settings(state: &Shared, s: &Session) -> Result<bool> {
         tracing::info!("site: agent settings copied from the Mac");
     }
     Ok(true)
+}
+
+/// Los flujos de la Mac (fila `_flows`): los mismos en el sitio, con el mismo id. Los de un proyecto
+/// que la Mac ya no tiene se quitan (incluidos los que el sitio sembró por su cuenta al clonar).
+fn apply_flows(state: &Shared, s: &Session) -> Result<()> {
+    let Some(text) = s.engine.rows(&s.threads_scope).into_iter().find(|r| r.row.id == crate::cloud::FLOWS_ROW).and_then(|r| r.row.values.get("flows").and_then(Value::as_str).map(str::to_string)) else { return Ok(()) };
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    if *LAST.lock().unwrap() == text {
+        return Ok(());
+    }
+    let flows: Vec<Value> = serde_json::from_str(&text)?;
+    let mut by_project: std::collections::HashMap<String, Vec<String>> = Default::default();
+    for w in &flows {
+        let (Some(id), Some(project)) = (w["id"].as_str(), w["project"].as_str()) else { continue };
+        if state.store.workflow(id)?.as_ref() != Some(w) {
+            state.store.save_workflow(id, project, w)?;
+        }
+        by_project.entry(project.to_string()).or_default().push(id.to_string());
+    }
+    for (project, ids) in &by_project {
+        for old in state.store.workflows(project)? {
+            if let Some(id) = old["id"].as_str().filter(|id| !ids.iter().any(|x| x == id)) {
+                state.store.remove_workflow(id)?;
+            }
+        }
+    }
+    tracing::info!("site: {} flows copied from the Mac", flows.len());
+    *LAST.lock().unwrap() = text;
+    Ok(())
 }
 
 /// El hilo del sitio: espera la confirmación de la Mac y después sincroniza las claves.

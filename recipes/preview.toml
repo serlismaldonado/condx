@@ -1,0 +1,21 @@
+name = "preview"
+title = "Preview on cloud dev"
+description = "On the cloud site: runs a commit (an agent's branch) against the project's cloud dev, with convex dev and the frontend, and leaves the frontend's public URL to try it (output `url`). It replaces what that cloud dev had. On the Mac it does nothing: the Mac's copy is yours."
+kinds = ["cloud-dev"]
+projects = true
+writes = true
+
+# Para las tareas que corren solas (de noche, desde Claude): el cloud dev es el de desarrollo.
+[approval]
+cloud-dev = "none"
+
+[[args]]
+name = "commit"
+type = "commit"
+default = "dev"
+description = "Branch, tag or commit to try"
+
+[[step]]
+name = "Run it on cloud dev"
+builtin = "preview"
+timeout_secs = 1200

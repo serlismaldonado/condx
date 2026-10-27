@@ -1309,6 +1309,11 @@ fn import_from_site(state: &Shared, s: &mut Session) {
         }
         let field = if id.starts_with("site-") { "items" } else { "siteItems" };
         let Some(text) = row.row.values.get(field).and_then(Value::as_str) else { continue };
+        // Lo que publicó la propia Mac en un hilo del sitio no se vuelve a importar (si no, cada
+        // respuesta de la Mac aparecía dos veces: la suya y la «importada»).
+        if field == "items" && s.threads_built.1.get(&id).and_then(|v| v.get("items")).and_then(Value::as_str) == Some(text) {
+            continue;
+        }
         let stamp = format!("{}:{}", text.len(), row.row.values.get("updatedAt").map(|v| v.to_string()).unwrap_or_default());
         if s.site_imported.get(&id) == Some(&stamp) {
             continue;

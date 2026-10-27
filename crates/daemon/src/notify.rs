@@ -131,7 +131,9 @@ pub fn local_test() {
 
 /// Los últimos avisos (para el teléfono: su lista de notificaciones, publicada en Condx Cloud).
 pub fn latest(n: usize) -> Vec<Value> {
-    RECENT.lock().unwrap().1.iter().rev().take(n).cloned().collect()
+    let mut r = RECENT.lock().unwrap();
+    load_recent(&mut r);
+    r.1.iter().rev().take(n).cloned().collect()
 }
 
 thread_local! {
@@ -146,9 +148,27 @@ fn send_about(state: &Shared, kind: &str, m: Message, about: Value) {
     ABOUT.with(|a| *a.borrow_mut() = Value::Null);
 }
 
+/// Donde quedan los avisos recientes entre reinicios (el teléfono los ve en su campana).
+fn recent_path() -> std::path::PathBuf {
+    crate::config::home().join("notifications.json")
+}
+
+/// Carga los avisos guardados la primera vez (sin volver a mostrarlos como nuevos en la Mac).
+fn load_recent(r: &mut (u64, std::collections::VecDeque<Value>)) {
+    static LOADED: std::sync::Once = std::sync::Once::new();
+    LOADED.call_once(|| {
+        let saved: Vec<Value> = std::fs::read_to_string(recent_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        r.1 = saved.into_iter().map(|mut n| {
+            n["id"] = json!(0);
+            n
+        }).collect();
+    });
+}
+
 fn remember(kind: &str, m: &Message, link: &str) {
     let about = ABOUT.with(|a| a.borrow().clone());
     let mut r = RECENT.lock().unwrap();
+    load_recent(&mut r);
     r.0 += 1;
     let mut item = json!({ "id": r.0, "kind": kind, "title": clip(&m.title, 120), "body": clip(&m.body, 300), "priority": m.priority, "link": link, "at": crate::store::now_ms() });
     for k in ["thread", "incident"] {
@@ -160,6 +180,7 @@ fn remember(kind: &str, m: &Message, link: &str) {
     while r.1.len() > 50 {
         r.1.pop_front();
     }
+    let _ = std::fs::write(recent_path(), serde_json::to_string(&r.1).unwrap_or_default());
 }
 
 /// Envía si está encendido y el tipo de aviso lo está; los errores van al log (no frenan nada).

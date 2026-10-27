@@ -9,6 +9,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 
 import { piProviderId, type Providers } from "./providers.ts";
 import { ClaudeCode } from "./claude.ts";
+import { projectContext } from "./context.ts";
 import { CONDX_TOOLS, condxTool, FIX_TOOLS, READ_TOOLS } from "./tools.ts";
 
 const ctx: Context = BACKGROUND_CONTEXT;
@@ -202,7 +203,8 @@ export class Host {
       const prompt = req.mode === "fix" ? FIX_PROMPT : req.mode === "chat" ? CHAT_PROMPT : req.mode === "task" ? TASK_PROMPT : DIAGNOSE_PROMPT;
       const first = req.mode === "chat" || req.mode === "task" ? String(req.text ?? "").trim() : (req.text?.trim() || incidentMessage(req.incident ?? {}, req.mode));
       if (!first) throw new Error("empty message");
-      const system = [prompt, req.instructions?.trim() ?? "", languageLine(req.language)].filter(Boolean).join("\n\n");
+      // Claude Code ya carga el CLAUDE.md del proyecto; Condx le agrega el AGENTS.md.
+      const system = [prompt, req.instructions?.trim() ?? "", projectContext(req.cwd, { claudeCode: true }), languageLine(req.language)].filter(Boolean).join("\n\n");
       return this.#claude!.start(req, system, first);
     }
     const model = { provider: piProviderId(provider), modelId: req.model };
@@ -212,7 +214,8 @@ export class Host {
     if (!first) throw new Error("empty message");
     // La plantilla puede quitar herramientas del modo, nunca agregar (las de escritura solo existen en arreglo).
     const allowed = req.tools && req.tools.length > 0 ? modeTools[req.mode].filter((t) => req.tools!.includes(t.name)) : undefined;
-    const instructions = [req.instructions?.trim() ?? "", languageLine(req.language)].filter(Boolean).join("\n\n") || undefined;
+    // Los demás proveedores no cargan nada del proyecto: AGENTS.md y CLAUDE.md van aquí.
+    const instructions = [req.instructions?.trim() ?? "", projectContext(req.cwd, { claudeCode: false }), languageLine(req.language)].filter(Boolean).join("\n\n") || undefined;
     const conversation = await this.#harness.createConversation(
       { ownership: { kind: "ownerless" }, agent: { model, cwd: req.cwd, extensions: [ext], ...(allowed ? { tools: allowed } : {}), ...(instructions ? { instructions } : {}) } },
       ctx,

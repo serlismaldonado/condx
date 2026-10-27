@@ -48,9 +48,10 @@
     /* El texto baja hacia el centro de la portada (sin lago que tapar, como en boat): el cielo queda arriba. */
     .hero h1 { font-size: clamp(38px, 6vw, 60px); line-height: 1.06; max-width: 640px; margin-top: clamp(28px, 8vh, 90px); }
     /* El símbolo de Convex dentro del título, delante de la palabra. */
-    /* «Convex» con el logotipo de Convex (su símbolo y su letra): el logotipo apoyado en la línea base
-       del texto, a la altura de las minúsculas del título. */
-    .cvx-logo { display: inline-block; height: 0.8em; width: auto; vertical-align: -0.115em; margin: 0 0.04em; }
+    /* «Convex» con el logotipo de Convex (su símbolo y su letra). Medido: las minúsculas del título miden
+       0.5em y la palabra «convex» ocupa 35.4 de las 51 unidades del SVG (con 6.4 por debajo). Así la
+       palabra queda a la altura exacta de las minúsculas y sobre la misma línea base. */
+    .cvx-logo { display: inline-block; height: 0.72em; width: auto; vertical-align: -0.105em; margin: 0 0.06em 0 0.02em; }
     .hero .lede { font-size: 17px; max-width: 560px; color: #efe2c0; margin: 18px 0 28px; }
 
     /* La caja de instalar, con pestañas (como boat). */

@@ -99,12 +99,26 @@ fn sync_local_branches(dir: &Path) {
     if !crate::site::is_cloud() {
         return;
     }
+    // `update-ref` sobre una rama en checkout mueve su HEAD sin el árbol: esas no se tocan.
+    let in_checkout = checked_out_branches(dir);
     for b in ["dev", "develop", "main"] {
+        if in_checkout.iter().any(|c| c == b) {
+            continue;
+        }
         let remote = format!("refs/remotes/origin/{b}");
         if git(dir, &["rev-parse", "--verify", "-q", &remote], None).is_ok() {
             let _ = git(dir, &["update-ref", &format!("refs/heads/{b}"), &remote], None);
         }
     }
+}
+
+/// Las ramas que algún worktree del repo tiene en checkout (el principal incluido).
+fn checked_out_branches(dir: &Path) -> Vec<String> {
+    git(dir, &["worktree", "list", "--porcelain"], None).map(|out| branches_in_worktree_list(&out)).unwrap_or_default()
+}
+
+fn branches_in_worktree_list(porcelain: &str) -> Vec<String> {
+    porcelain.lines().filter_map(|l| l.strip_prefix("branch refs/heads/")).map(str::to_string).collect()
 }
 
 /// La rama de desarrollo del remoto (`dev` o `develop`) y su commit, si la hay.
@@ -221,6 +235,12 @@ pub fn before_deploy(state: &Shared, run: &Value, direct: bool) -> Result<Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn las_ramas_en_checkout_salen_de_la_lista_de_worktrees() {
+        let out = "worktree /a\nHEAD abc\nbranch refs/heads/main\n\nworktree /b\nHEAD def\ndetached\n\nworktree /c\nHEAD 123\nbranch refs/heads/condx/fix-1\n";
+        assert_eq!(branches_in_worktree_list(out), ["main", "condx/fix-1"]);
+    }
 
     #[test]
     fn el_slug_de_github_sale_de_https_y_ssh() {

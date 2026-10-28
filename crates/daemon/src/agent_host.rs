@@ -339,6 +339,27 @@ fn prepare_worktree(repo: &std::path::Path, worktrees: &std::path::Path, run_id:
     Ok((dir, branch, base))
 }
 
+/// Un mensaje en un hilo cuyo worktree se borró al terminar el turno anterior (sin cambios, o
+/// descartado): lo vuelve a crear en la misma ruta y rama, sobre la misma base, para que el agente
+/// arranque con un directorio que existe.
+fn restore_worktree(repo: &std::path::Path, dir: &std::path::Path, branch: &str, base: &str) -> Result<()> {
+    let _ = git(repo, &["worktree", "prune"]);
+    std::fs::create_dir_all(dir.parent().unwrap_or(dir))?;
+    let dir_arg = dir.display().to_string();
+    let kept = git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok();
+    let added = if kept { git(repo, &["worktree", "add", "-q", &dir_arg, branch]) } else { git(repo, &["worktree", "add", "-q", "-b", branch, &dir_arg, base]) };
+    added.map_err(|e| anyhow!("couldn't recreate the worktree {dir_arg} to continue this thread: {e:#}"))?;
+    let modules = repo.join("node_modules");
+    if modules.is_dir() {
+        #[cfg(unix)]
+        let _ = std::os::unix::fs::symlink(&modules, dir.join("node_modules"));
+    }
+    if let Some(worktrees) = dir.parent() {
+        link_siblings(repo, worktrees);
+    }
+    Ok(())
+}
+
 /// Las dependencias vecinas del repo (`path = "../localfirst/…"` en su Cargo.toml, como condx-mobile):
 /// un enlace al lado de los worktrees, para que compilen igual que en la copia del proyecto.
 fn link_siblings(repo: &std::path::Path, worktrees: &std::path::Path) {
@@ -668,7 +689,7 @@ pub async fn start_role(state: &Shared, role: &crate::roles::Role, run_id: &str,
         "provider": provider_id, "model": model, "by": format!("flow “{flow}”"),
         "status": "running", "startedAt": now_ms(), "endedAt": null, "answer": null, "error": null,
         "usage": { "total": 0 }, "conversationId": res["conversationId"],
-        "worktree": write.then(|| cwd.display().to_string()), "branch": branch, "base": base, "devHead": dev_head, "fix": null,
+        "worktree": write.then(|| cwd.display().to_string()), "repo": write.then(|| repo.display().to_string()), "branch": branch, "base": base, "devHead": dev_head, "fix": null,
         "limits": { "maxTokens": role.max_tokens, "maxMinutes": role.max_minutes },
     });
     state.store.save_agent_run(&run)?;
@@ -993,6 +1014,16 @@ pub async fn message(state: &Shared, id: &str, text: &str, images: &[Value]) -> 
     // conversación larga quedaba detenida para siempre en cuanto pasaba el límite una vez).
     run["turnStart"] = json!(run["usage"]["total"].as_u64().unwrap_or(0));
     run["turnAt"] = json!(now_ms());
+    // Al terminar un turno sin cambios se borra el worktree: si el hilo sigue, se vuelve a crear.
+    if let Some(dir) = run["worktree"].as_str().filter(|w| !w.is_empty()).map(PathBuf::from).filter(|d| !d.exists()) {
+        let incident = run["incident"].as_str().and_then(|i| state.store.incident(i).ok().flatten()).unwrap_or(Value::Null);
+        let repo = run["repo"].as_str().map(PathBuf::from).unwrap_or_else(|| repo_for(state, &incident));
+        let (Some(branch), Some(base)) = (run["branch"].as_str().map(str::to_string), run["base"].as_str().map(str::to_string)) else {
+            bail!("the worktree {} of this thread is gone and has no branch to recreate it from", dir.display());
+        };
+        tokio::task::spawn_blocking(move || restore_worktree(&repo, &dir, &branch, &base)).await.map_err(|e| anyhow!(e.to_string()))??;
+        run["fix"] = Value::Null;
+    }
     let st = state.clone();
     // A uno que escribe en su worktree: Condx hace el commit al terminar (si no, dice que se lo negaron).
     let text = if run["worktree"].as_str().is_some_and(|w| !w.is_empty()) {

@@ -443,7 +443,13 @@ fn cloud_deployer_spec(state: &Shared, project: &Project) -> Result<Spec> {
 pub fn cloud_checkout(state: &Shared, project: &Project, wanted: Option<&str>) -> Result<String> {
     let env_branch = cloud_dev(state, project).ok().and_then(|e| e.branch).filter(|b| !b.is_empty());
     let mut tried = vec![];
+    let mut seen: Vec<String> = vec![];
     for b in [wanted.filter(|b| !b.is_empty()).map(str::to_string), env_branch].into_iter().flatten() {
+        // La misma rama pedida y del entorno: se prueba una vez.
+        if seen.contains(&b) {
+            continue;
+        }
+        seen.push(b.clone());
         let r = follow_branch(project, &b);
         if r == format!("branch {b}") {
             return Ok(r);
@@ -456,21 +462,100 @@ pub fn cloud_checkout(state: &Shared, project: &Project, wanted: Option<&str>) -
     bail!("{} couldn't switch to a branch to deploy: {}", project.name, tried.join("; "))
 }
 
+/// Lo más que puede tardar un `git` del clon (un `index.lock` huérfano o un disco colgado lo dejaban
+/// esperando para siempre).
+const GIT_TIMEOUT: Duration = Duration::from_secs(60);
+
 fn git_in(project: &Project, args: &[&str]) -> Option<String> {
-    std::process::Command::new("git").arg("-C").arg(&project.repo).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    use std::io::Read;
+    use std::process::Stdio;
+    // Sin `timeout` de coreutils (macOS no lo trae): se espera al proceso a ratos y se mata si se pasa.
+    let mut child = std::process::Command::new("git").arg("-C").arg(&project.repo).args(args).env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let deadline = std::time::Instant::now() + GIT_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
+            _ => {
+                tracing::warn!("services: git {} in {} passed {}s; killed", args.first().unwrap_or(&""), project.name, GIT_TIMEOUT.as_secs());
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let out = reader.join().ok()?;
+    status.success().then(|| String::from_utf8_lossy(&out).trim().to_string())
+}
+
+/// El `index.lock` del clon, si está.
+fn index_lock(project: &Project) -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(git_in(project, &["rev-parse", "--git-path", "index.lock"])?);
+    let path = if path.is_absolute() { path } else { project.repo.join(path) };
+    path.exists().then_some(path)
+}
+
+/// Un `index.lock` de más de dos minutos sin ningún git vivo es de un proceso que murió: se aparta
+/// (`index.lock.stale-<ts>`) para que el cambio de rama no falle con «Unable to create index.lock».
+fn move_stale_index_lock(project: &Project) {
+    let Some(lock) = index_lock(project) else { return };
+    let old = lock.metadata().and_then(|m| m.modified()).ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age > Duration::from_secs(120));
+    // `pgrep` sale con 1 si no hay ninguno; si no corre (o falla), no se sabe y se deja.
+    let git_alive = std::process::Command::new("pgrep").args(["-x", "git"]).output().map(|o| o.status.code() != Some(1)).unwrap_or(true);
+    if !old || git_alive {
+        return;
+    }
+    let stale = lock.with_file_name(format!("index.lock.stale-{}", now_ms() / 1000));
+    match std::fs::rename(&lock, &stale) {
+        Ok(()) => tracing::warn!("services: {} had an orphaned {}; moved to {}", project.name, lock.display(), stale.display()),
+        Err(e) => tracing::warn!("services: couldn't move the stale {}: {e}", lock.display()),
+    }
+}
+
+/// Por qué el clon no está limpio, para el mensaje: el `index.lock` o hasta cinco rutas con cambios.
+fn dirty_reason(project: &Project) -> String {
+    if index_lock(project).is_some() {
+        return "index.lock present".into();
+    }
+    let paths = changed_paths(&git_in(project, &["status", "--porcelain"]).unwrap_or_default());
+    match paths.len() {
+        0 => "no changes found".into(),
+        n if n <= 5 => paths.join(", "),
+        n => format!("{}, … and {} more", paths[..5].join(", "), n - 5),
+    }
 }
 
 /// Lo que regeneran las herramientas (lockfiles al instalar, convex/_generated al desplegar, el
 /// `*.gen.ts` del router del frontend al arrancar) no es trabajo propio del clon: se descarta antes de
 /// cambiar de rama. Devuelve si el clon quedó limpio.
 fn discard_generated(project: &Project) -> bool {
+    move_stale_index_lock(project);
     let generated = |path: &str| path.starts_with("convex/_generated/") || path.ends_with(".gen.ts") || matches!(path, "bun.lock" | "bun.lockb" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock");
     let changed = changed_paths(&git_in(project, &["status", "--porcelain"]).unwrap_or_default());
     let tool_made: Vec<&str> = changed.iter().map(String::as_str).filter(|p| generated(p)).collect();
     if !tool_made.is_empty() {
-        let mut args = vec!["checkout", "--"];
-        args.extend(tool_made.iter().copied());
-        let _ = git_in(project, &args);
+        // Un solo `checkout -- <rutas>` aborta entero si alguna no está en git: lo versionado se
+        // restaura y lo nuevo (sin seguimiento) se borra, por separado.
+        let mut ls = vec!["ls-files", "--"];
+        ls.extend(tool_made.iter().copied());
+        let tracked = git_in(project, &ls).unwrap_or_default();
+        let (restore, remove): (Vec<&str>, Vec<&str>) = tool_made.iter().copied().partition(|p| tracked.lines().any(|t| t == *p));
+        if !restore.is_empty() {
+            let mut args = vec!["checkout", "--"];
+            args.extend(restore);
+            let _ = git_in(project, &args);
+        }
+        if !remove.is_empty() {
+            let mut args = vec!["clean", "-f", "--"];
+            args.extend(remove);
+            let _ = git_in(project, &args);
+        }
     }
     git_in(project, &["status", "--porcelain"]).is_some_and(|s| s.is_empty())
 }
@@ -485,7 +570,7 @@ fn changed_paths(status: &str) -> Vec<String> {
 /// sin rama propia para no chocar con el worktree. Error si el clon tiene cambios suyos.
 pub fn checkout_commit(project: &Project, commit: &str) -> Result<()> {
     if !discard_generated(project) {
-        bail!("the cloud copy of {} has its own changes: it didn't switch to {commit}", project.name);
+        bail!("the cloud copy of {} has its own changes ({}): it didn't switch to {commit}", project.name, dirty_reason(project));
     }
     git_in(project, &["checkout", "-q", "--detach", commit]).ok_or_else(|| anyhow!("couldn't check out {commit} in the cloud copy of {}", project.name))?;
     if let Err(e) = crate::site::make_ready(&project.repo) {
@@ -509,10 +594,15 @@ pub fn follow_branch(project: &Project, branch: &str) -> String {
         return format!("branch {here} (the Mac's {branch} isn't on GitHub: push it from the Mac)");
     }
     if !discard_generated(project) {
-        return format!("branch {here} (the cloud copy has its own changes; it didn't switch to {branch})");
+        return format!("branch {here} (the cloud copy has its own changes ({}); it didn't switch to {branch})", dirty_reason(project));
     }
     match git(&["checkout", "-q", "-B", branch, &format!("origin/{branch}")]) {
         Some(_) => {
+            // Un cambio a medias deja HEAD en la rama pero el árbol atrás (o sucio): no es «branch X».
+            let at_remote = git(&["rev-parse", "HEAD"]).is_some_and(|h| git(&["rev-parse", &format!("origin/{branch}")]).is_some_and(|o| o == h));
+            if !at_remote || !git(&["status", "--porcelain"]).is_some_and(|s| s.is_empty()) {
+                return format!("branch {branch} (the switch stopped halfway: HEAD {} origin/{branch}, changes: {})", if at_remote { "matches" } else { "isn't at" }, dirty_reason(project));
+            }
             // Otra rama puede traer submódulos o dependencias que la anterior no tenía.
             if let Err(e) = crate::site::make_ready(&project.repo) {
                 tracing::warn!("site: {} on {branch} isn't ready: {e:#}", project.name);

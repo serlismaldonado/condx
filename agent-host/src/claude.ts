@@ -182,6 +182,12 @@ export class ClaudeCode {
     r.reason = undefined;
     r.transcript.push({ role: "user", text, at: Date.now() });
     this.#save(r);
+    // Sin la carpeta, spawn dice «ENOENT» del binario aunque exista: que el error nombre lo que falta.
+    if (r.cwd && !existsSync(r.cwd)) {
+      Object.assign(r, { status: "failed", reason: `the working directory ${r.cwd} no longer exists (its worktree was removed)` });
+      this.#save(r);
+      return;
+    }
     this.#live.set(r.runId, { text: "", thinking: "", tools: [] });
     // Con token (el sitio en la nube), solo para este proceso; sin él, la sesión de Claude Code de la Mac.
     const token = this.#token(r.providerId);
